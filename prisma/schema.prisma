@@ -797,6 +797,12 @@ model User {
   role         Role      @default(FINANCE_USER)
   active       Boolean   @default(true)
   lastLoginAt  DateTime?
+  /// Set when the account was created, or re-opened, by self-registration
+  /// (`/signup`) and no admin has yet approved or rejected it; cleared by
+  /// both. An account is PENDING when `active = false AND pendingSince IS NOT
+  /// NULL`. An inactive account with this null is DEACTIVATED, as before.
+  /// `isPending` in lib/admin/users.ts is the one definition.
+  pendingSince DateTime?
   createdAt    DateTime  @default(now())
 
   auditLogs         AuditLog[]
@@ -897,6 +903,24 @@ model LoginAttempt {
   // `createdAt` alone serves the retention prune, which runs on every write
   // and must never degrade into a sequential scan of an attack's worth of rows.
   @@index([email, createdAt])
+  @@index([ip, createdAt])
+  @@index([createdAt])
+}
+
+/// The self-registration throttle's counter (lib/registration-throttle.ts).
+/// One row per submission of `/signup`, whether it created an account, was
+/// refused by the throttle or was refused by the domain. A table, not a
+/// process-local map, for the reason `LoginAttempt` is one: Vercel is
+/// serverless. No foreign key to `User`: most refused submissions name no
+/// account.
+model RegistrationAttempt {
+  id        String   @id @default(cuid())
+  /// As `clientIp()` derived it, or the literal 'unknown'. Never null — a
+  /// shared 'unknown' bucket over-throttles, which is the right way to be wrong.
+  ip        String
+  email     String
+  createdAt DateTime @default(now())
+
   @@index([ip, createdAt])
   @@index([createdAt])
 }

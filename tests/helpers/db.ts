@@ -68,6 +68,10 @@ export async function resetDb() {
     // same: a failure count that leaked in from another file's fixtures would
     // lock a login test out of an account it just created.
     await tx.loginAttempt.deleteMany()
+    // The registration throttle's counter, likewise no child of User and
+    // likewise truncated so one file's submissions cannot lock another file's
+    // sign-up test out of its own address bucket.
+    await tx.registrationAttempt.deleteMany()
     await tx.syncRun.deleteMany()
     await tx.setting.deleteMany()
   }, RESET_TX_OPTIONS)
