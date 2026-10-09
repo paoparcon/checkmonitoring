@@ -1,22 +1,11 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatAmount, compareCheckNumbers } from '@/lib/transmittal'
+import type { StatusChoice, TransmittalCandidate } from '@/lib/transmittal-picker'
+import { TransmittalPicker, type ReleasedState } from './TransmittalPicker'
 
-export type TransmittalCandidate = {
-  id: string
-  checkNumber: string
-  cashAccount: string
-  poNumber: string
-  voucher: string
-  payee: string
-  amount: string | null
-  currency: string
-  status: 'SIGNATURE_PENDING' | 'SIGNED' | 'RELEASED'
-  company: string
-}
-
-type StatusFilter = 'ALL' | 'SIGNATURE_PENDING' | 'SIGNED' | 'RELEASED'
+export type { TransmittalCandidate }
 
 /** Remembered between visits, per browser: who a transmittal usually goes to and who checks and approves it. */
 const STORAGE_KEY = 'check-monitoring.transmittal.v1'
@@ -31,19 +20,35 @@ const formatDay = (iso: string) => {
   return y && m && d ? `${m}/${d}/${y}` : iso
 }
 
-const field =
-  'h-9 rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy'
 /** An input that reads as printed text on paper and as a fill-in line on screen. */
 const line =
   'w-full bg-transparent px-1 py-0.5 outline-none border-b border-dotted border-slate-400 focus:border-navy print:border-transparent'
 
 export function TransmittalBuilder({
-  candidates, preparedBy: defaultPreparedBy, truncated, includeReleased,
-}: { candidates: TransmittalCandidate[]; preparedBy: string; truncated: boolean; includeReleased: boolean }) {
+  candidates: opened, preparedBy: defaultPreparedBy, truncated: openedTruncated,
+}: { candidates: TransmittalCandidate[]; preparedBy: string; truncated: boolean }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
-  const [status, setStatus] = useState<StatusFilter>('ALL')
-  const [query, setQuery] = useState('')
-  const [company, setCompany] = useState('')
+  const [status, setStatus] = useState<StatusChoice>('ALL')
+
+  // RELEASED checks are ~10,000 rows: fetched once, the first time that option is chosen.
+  const [released, setReleased] = useState<{ candidates: TransmittalCandidate[]; truncated: boolean } | null>(null)
+  const [releasedState, setReleasedState] = useState<ReleasedState>('idle')
+  // `inFlight` rather than an effect cleanup: the effect re-runs when it sets 'loading',
+  // and a cleanup would discard the very response it is waiting for.
+  const inFlight = useRef(false)
+  useEffect(() => {
+    if (status !== 'RELEASED' || released || releasedState !== 'idle' || inFlight.current) return
+    inFlight.current = true
+    setReleasedState('loading')
+    fetch('/api/transmittal/released')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data) => { setReleased(data); setReleasedState('idle') })
+      .catch(() => setReleasedState('failed'))
+      .finally(() => { inFlight.current = false })
+  }, [status, released, releasedState])
+
+  const candidates = useMemo(() => (released ? [...opened, ...released.candidates] : opened), [opened, released])
+  const truncated = openedTruncated || Boolean(released?.truncated)
 
   const [to, setTo] = useState('')
   const [date, setDate] = useState(todayManila)
@@ -65,17 +70,6 @@ export function TransmittalBuilder({
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ to, checkedBy, approvedBy })) } catch { /* ignore */ }
   }, [to, checkedBy, approvedBy])
 
-  const companies = useMemo(() => [...new Set(candidates.map((c) => c.company))].sort(), [candidates])
-
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return candidates.filter((c) =>
-      (status === 'ALL' || c.status === status) &&
-      (!company || c.company === company) &&
-      (!q || [c.checkNumber, c.payee, c.voucher, c.poNumber, c.cashAccount].some((v) => v.toLowerCase().includes(q))),
-    )
-  }, [candidates, status, company, query])
-
   const picked = useMemo(
     () => candidates.filter((c) => selected.has(c.id)).sort((a, b) => compareCheckNumbers(a.checkNumber, b.checkNumber)),
     [candidates, selected],
@@ -86,9 +80,6 @@ export function TransmittalBuilder({
     if (next.has(id)) next.delete(id); else next.add(id)
     return next
   })
-  const addShown = () => setSelected((s) => new Set([...s, ...shown.map((c) => c.id)]))
-  const clear = () => setSelected(new Set())
-  const allShownPicked = shown.length > 0 && shown.every((c) => selected.has(c.id))
 
   return (
     <div className="space-y-4">
@@ -97,96 +88,20 @@ export function TransmittalBuilder({
       {/* ── PICKER (screen only) ─────────────────────────────────────── */}
       <section className="print-hide space-y-3 rounded-2xl bg-white p-4 ring-1 ring-hairline">
         <p className="text-sm leading-relaxed text-slate-600">
-          Tick the checks to put on the transmittal. The list holds checks at SIGNATURE PENDING or SIGNED{includeReleased ? ' and RELEASED' : ''}
-          with a recorded amount. Fill in the sheet below, then press PRINT — choose <strong>Save as PDF</strong> in
-          the print window to keep a copy. Nothing here changes a check’s status.
+          Tick the checks to put on the transmittal. The list holds checks at SIGNATURE PENDING or SIGNED with a
+          recorded amount; choose RELEASED in the status dropdown to list those instead. Filter under any column
+          header, and use COLUMNS to show, hide and reorder them. Fill in the sheet below, then press PRINT — choose{' '}
+          <strong>Save as PDF</strong> in the print window to keep a copy. Nothing here changes a check’s status.
         </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <select aria-label="Status" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} className={field}>
-            <option value="ALL">{includeReleased ? 'ALL STATUSES' : 'SIGNATURE PENDING + SIGNED'}</option>
-            <option value="SIGNATURE_PENDING">SIGNATURE PENDING</option>
-            <option value="SIGNED">SIGNED</option>
-            {includeReleased && <option value="RELEASED">RELEASED</option>}
-          </select>
-          <select aria-label="Company" value={company} onChange={(e) => setCompany(e.target.value)} className={field}>
-            <option value="">ANY COMPANY</option>
-            {companies.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <input
-            type="search" value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search check no., payee, voucher, PO…" aria-label="Search" className={`${field} w-72`}
-          />
-          <button
-            type="button" onClick={addShown} disabled={allShownPicked || shown.length === 0}
-            className="h-9 rounded-lg bg-navy px-3 text-sm font-medium tracking-wide text-white disabled:opacity-40"
-          >
-            ADD ALL SHOWN ({shown.length.toLocaleString('en-PH')})
-          </button>
-          <button
-            type="button" onClick={clear} disabled={picked.length === 0}
-            className="h-9 rounded-lg bg-white px-3 text-sm font-medium tracking-wide text-slate-600 ring-1 ring-hairline disabled:opacity-40"
-          >
-            CLEAR
-          </button>
-          {/* A link, not a toggle in place: the RELEASED checks are ~10,000 rows the
-              server only loads when asked. Switching reloads the list and clears the ticks. */}
-          <a
-            href={includeReleased ? '/transmittal' : '/transmittal?released=1'}
-            className="h-9 rounded-lg bg-white px-3 text-sm font-medium leading-9 tracking-wide text-navy ring-1 ring-hairline hover:bg-navy-bg"
-          >
-            {includeReleased ? 'HIDE RELEASED CHECKS' : 'INCLUDE RELEASED CHECKS'}
-          </a>
-          <span className="ml-auto text-xs font-medium tracking-wide text-slate-600">
-            {picked.length.toLocaleString('en-PH')} SELECTED
-          </span>
-        </div>
-        {truncated && (
-          <p className="text-xs font-semibold tracking-wide text-warning-ink">
-            THE LIST IS CAPPED — NARROW BY SEARCH TO FIND THE REST.
-          </p>
-        )}
-        <div className="max-h-72 overflow-auto rounded-lg ring-1 ring-hairline">
-          <table className="w-full border-collapse text-xs">
-            <thead className="sticky top-0 bg-slate-50 text-left tracking-wide text-slate-500">
-              <tr>
-                <th className="w-8 px-2 py-2" />
-                <th className="px-2 py-2 font-semibold">CHECK NUMBER</th>
-                <th className="px-2 py-2 font-semibold">PAYEE</th>
-                <th className="px-2 py-2 font-semibold">COMPANY</th>
-                <th className="px-2 py-2 font-semibold">STATUS</th>
-                <th className="px-2 py-2 text-right font-semibold">AMOUNT</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.length === 0 && (
-                <tr><td colSpan={6} className="px-2 py-6 text-center text-slate-500">NO CHECKS MATCH.</td></tr>
-              )}
-              {shown.slice(0, 500).map((c) => (
-                <tr key={c.id} className="cursor-pointer border-t border-slate-100 hover:bg-navy-bg" onClick={() => toggle(c.id)}>
-                  <td className="px-2 py-1.5">
-                    <input
-                      type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)}
-                      onClick={(e) => e.stopPropagation()} aria-label={`Select ${c.checkNumber}`}
-                    />
-                  </td>
-                  <td className="px-2 py-1.5 font-medium">{c.checkNumber}</td>
-                  <td className="px-2 py-1.5">{c.payee || '—'}</td>
-                  <td className="px-2 py-1.5">{c.company}</td>
-                  <td className="px-2 py-1.5">{c.status.replace(/_/g, ' ')}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{formatAmount(c.amount)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {shown.length > 500 && (
-            <p className="border-t border-slate-100 px-2 py-2 text-center text-xs text-slate-500">
-              SHOWING THE FIRST 500 OF {shown.length.toLocaleString('en-PH')} — SEARCH OR FILTER TO NARROW, OR USE ADD ALL SHOWN.
-            </p>
-          )}
-        </div>
+        <TransmittalPicker
+          candidates={candidates} selected={selected} onToggle={toggle}
+          onAdd={(ids) => setSelected((s) => new Set([...s, ...ids]))} onClear={() => setSelected(new Set())}
+          status={status} onStatus={setStatus} released={releasedState}
+          onRetry={() => setReleasedState('idle')} truncated={truncated}
+        />
         <div className="flex items-center justify-end gap-3">
           <span className="text-xs text-slate-500">OR USE YOUR BROWSER’S PRINT COMMAND</span>
-          {/* A POST, so a thousand ticked cheques are not squeezed into a URL. The
+          {/* A POST, so a thousand ticked checks are not squeezed into a URL. The
               server re-reads and re-checks every id; this carries only the picks and the typed names. */}
           <form method="post" action="/api/export/transmittal">
             <input type="hidden" name="ids" value={picked.map((c) => c.id).join(',')} />
