@@ -336,8 +336,11 @@ MARK_AVAILABLE event is queued and kicked after the response, and the `ready_for
 `marked_signed`) audit rows carry a `source` (file, sheet, row, bill; `ActionSource` in
 `lib/domain/actions.ts`). RELEASED, READY/SCHEDULED, GENERATED, non-cheques and Acumatica-Voided
 are reported, never touched; **nothing is ever demoted by a list**. A cheque whose status moved
-between preview and confirm is refused by name. The apply loop stops at 45 s and counts what it
-did not reach; the same file uploaded again finishes it (readied rows read ALREADY READY). This is
+between preview and confirm is refused by name. The apply loop stops at 30 s and counts what it
+did not reach; the same file uploaded again finishes it (readied rows read ALREADY READY). The
+portal kick after the response has 25 s (`READY_UPLOAD_KICK_MS`), not the usual 8 — the first real
+upload (2026-10-29, 165 checks marked in 3 s) sent 75 MARK_AVAILABLE events in 8 s and left 90 for
+the cron — and `/admin/import` declares `maxDuration = 60` so both budgets fit. This is
 the routine path; `release-list.ts` and `mark-ready-from-release-list.ts` remain the one-off
 catch-ups that set status directly with no approver and no portal event.
 

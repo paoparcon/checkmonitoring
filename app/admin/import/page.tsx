@@ -8,6 +8,11 @@ import { manilaToday } from '@/lib/manila-day'
 
 const n = (v: number) => v.toLocaleString('en-PH')
 
+// The ready-list confirm marks for up to 30 s and then kicks portal delivery
+// for 25 s after the response (`uploadReadyListAction`); give the function
+// room for both, as the receipt page does for its 25 s kick.
+export const maxDuration = 60
+
 export default async function ImportPage() {
   await requireAdmin()
   const staged = await getStagedSummary(prisma)

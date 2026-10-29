@@ -265,10 +265,17 @@ export type ReadyUploadResult =
   | { ok: false; message: string }
 
 /**
- * Leave the request's own limit untouched: the loop stops here and reports
- * what it did not reach, and a second upload of the same file finishes it.
+ * The confirm step has two time budgets inside the import page's 60 s
+ * `maxDuration`: the marking loop, then the portal kick that runs after the
+ * response (`after()` counts against the same limit). The loop stops at its
+ * budget and reports what it did not reach — a second upload of the same
+ * file finishes it (165 checks took 3 s on 2026-10-29). The kick then gets the
+ * same 25 s as the admin "Deliver now": the first upload's 8 s sent 75 of 165
+ * MARK_AVAILABLE events and left 90 for the next cron, which is not what
+ * "the portal updates when Finance ticks ready" means.
  */
-const READY_UPLOAD_BUDGET_MS = 45_000
+const READY_UPLOAD_BUDGET_MS = 30_000
+const READY_UPLOAD_KICK_MS = 25_000
 
 /**
  * Upload → preview → confirm → READY FOR RELEASE, from a list of check numbers
@@ -326,7 +333,7 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
       userId: user.id, pickupDate, now, deadline: new Date(now.getTime() + READY_UPLOAD_BUDGET_MS),
     })
     try {
-      afterResponse(() => kickPortalDelivery(prisma, { budgetMs: 8_000 }))
+      afterResponse(() => kickPortalDelivery(prisma, { budgetMs: READY_UPLOAD_KICK_MS }))
     } catch (e) {
       console.error('portal delivery could not be scheduled:', e instanceof Error ? e.message : e)
     }
