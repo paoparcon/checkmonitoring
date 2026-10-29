@@ -157,6 +157,7 @@ npx tsx scripts/mark-ready-from-release-list.ts "<for-release>.xlsx" --apply    
 npx tsx scripts/revert-detail1-ready.ts "<for-release>.xlsx" <ready-from-list snapshot> [--apply]  # Detail1-only READY back to prior status (run 2026-09-25)
 npx tsx scripts/void-acumatica-voided.ts [--apply]                # void what Acumatica voided (live or RELEASED here)
 npx tsx scripts/close-unmatchable-cancelled.ts [--apply]         # parked CANCELLED events whose check has no APV: close unsent
+npx tsx scripts/reinstate-register-cancelled.ts [--apply --check <number>]   # CANCELLED by the register only, live in Acumatica: list; put NAMED ones back to SIGNED with their bills
 npx tsx scripts/backfill-check-books.ts GOLIVE [--apply]       # record a missing check book from CashAccount; also moves or clears a book that differs from Acumatica's (§G1) (MANUFACTURING likewise)
 npx tsx scripts/link-vouchers-from-acumatica.ts "<for-release>.xlsx" [--apply]  # link list vouchers via AP-PAYMENTS-WITH-BILLS, ready their checks
 npx tsx scripts/sync.ts GOLIVE --bills --dry-run     # read AP-PAYMENTS-WITH-BILLS, write nothing (MANUFACTURING likewise)
@@ -343,6 +344,25 @@ upload (2026-10-29, 165 checks marked in 3 s) sent 75 MARK_AVAILABLE events in 8
 the cron — and `/admin/import` declares `maxDuration = 60` so both budgets fit. This is
 the routine path; `release-list.ts` and `mark-ready-from-release-list.ts` remain the one-off
 catch-ups that set status directly with no approver and no portal event.
+**First real upload, 2026-10-29 18:36 Manila:** `FOR RELEASE 10.30.2026 - fixed.xlsx`, sheets LIST
+(179 rows) and CHANGES (90 rows, every bill also on LIST — 0 checks from CHANGES alone): 165
+checks READY (6 signed first), 14 LIST rows left alone. Summary of the 165 written to
+`snapshots/READY FROM LIST 10.30.2026 - summary.xlsx`. One of the 14 was `1791363258`
+(CV-A1011925, GDSM MARKETING, AP-A1033419): CANCELLED here only because the register's CANCELLED
+sheet (row 751) said so on 2026-09-04, Closed in Acumatica, and the 2026-10-29 `apv_detached_on_cancel`
+run had stripped its bill, so the bill named no check. **Restored to SIGNED on the user's instruction
+2026-10-30** (`scripts/reinstate-register-cancelled.ts --apply --check 1791363258`,
+`lib/admin/register-cancelled.ts`, one `cancel_reverted_register_only` row, bill re-attached, snapshot
+`snapshots/reinstate-register-cancelled-2026-10-29T23-06-54-373Z.json`) — status only; the upload
+readies it. **Note the contradiction and keep it visible:** Finance's own `CANCELLED VS ACUMATICA
+2026-10-06..xlsx` ruled this check NEW STATUS = CANCELLED (to be voided in Acumatica); it was never
+voided, went Closed on 2026-10-12, and the 10.30 list names its bill. The user's 2026-10-30 word
+overrides the 10-06 file for this one check. **The other 17 candidates the script lists all carry a
+ruling to stay CANCELLED and were not touched:** 8 STALED by Finance 2026-10-07 (`isStale`), 4 the
+user reverted on 2026-10-07 (`1791361448`, `179174`, `179175`, `6000308871`), and 5 ruled CANCELLED in
+the 10-06 file (`1791362864`, `1791363469`, `6000318754`, `6000330347`, `1791363720` — payroll,
+INTERNAL) that have not been voided in Acumatica either. The script's dry run shows the ruling per
+check; `--check` one of them only on a new Finance ruling, never `--all` on a hunch.
 
 **`/welcome` is the public front door, and it is public by name** (2026-09-27, spec
 `2026-09-27-landing-login-and-theme-design.md`). The landing page and `/login` both render
