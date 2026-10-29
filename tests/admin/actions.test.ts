@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import ExcelJS from 'exceljs'
 import { testDb, resetDb } from '../helpers/db'
+import { makeCheck } from '../helpers/factory'
 
 // A mutable session, so one file can exercise both roles. Both admin actions
 // must refuse a FINANCE_USER by RETURNING a result, never by redirecting:
@@ -261,5 +262,56 @@ describe('importWorkbookAction', () => {
     const file = await xlsx({ Sheet1: [['a'], ['b']] })
     const result = await importWorkbookAction(fd({ workbook: file }))
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('uploadReadyListAction', () => {
+  const readyList = (rows: unknown[][], name = 'ready.xlsx') =>
+    xlsx({ READY: [['CHECK NUMBER', 'PAYEE', 'AP BILL'], ...rows] }).then((f) => new File([f], name))
+
+  it('refuses a Finance user with a result rather than a redirect', async () => {
+    const { uploadReadyListAction } = await import('@/app/admin/actions')
+    currentUser.role = 'FINANCE_USER'
+    const result = await uploadReadyListAction(fd({ list: await readyList([]), availablePickupDate: '2026-10-30' }))
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.message).toMatch(/Finance Admin/)
+  })
+
+  it('asks for the file and the pickup date before reading anything', async () => {
+    const { uploadReadyListAction } = await import('@/app/admin/actions')
+    expect(await uploadReadyListAction(fd({ availablePickupDate: '2026-10-30' }))).toMatchObject({ ok: false, message: /Choose the list/ })
+    expect(await uploadReadyListAction(fd({ list: await readyList([]) }))).toMatchObject({ ok: false, message: /pickup date/ })
+    expect(await uploadReadyListAction(fd({ list: await readyList([]), availablePickupDate: '2026-02-30' }))).toMatchObject({ ok: false, message: /pickup date/ })
+  })
+
+  it('refuses a file with no sheet carrying both columns, naming each sheet', async () => {
+    const { uploadReadyListAction } = await import('@/app/admin/actions')
+    const file = await xlsx({ PIVOT: [['Row Labels', 'Sum'], ['BPI', 1]] })
+    const result = await uploadReadyListAction(fd({ list: file, availablePickupDate: '2026-10-30' }))
+    expect(result).toMatchObject({ ok: false, message: /PIVOT — no CHECK NUMBER and AP BILL header/ })
+  })
+
+  it('previews without writing, then marks ready on confirm with the pickup date and a portal event', async () => {
+    const { uploadReadyListAction } = await import('@/app/admin/actions')
+    const check = await makeCheck({ status: 'SIGNED', checkNumber: '6000400001', apvNumbers: ['AP-ST000001'] })
+    const rows = [['6000400001', 'SUPPLIER', 'AP-ST000001'], ['6000400001', 'SUPPLIER', 'AP-ST000002']]
+
+    const preview = await uploadReadyListAction(fd({ list: await readyList(rows), availablePickupDate: '2026-10-30' }))
+    if (!preview.ok || preview.stage !== 'PREVIEW') throw new Error('expected a preview')
+    expect(preview.plan.toReady.map((t) => t.check.id)).toEqual([check.id])
+    expect(preview.plan.leftAlone.map((l) => l.kind)).toEqual(['BILL_NOT_ON_CHECK'])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).status).toBe('SIGNED')
+    expect(await testDb.portalEvent.count()).toBe(0)
+
+    const applied = await uploadReadyListAction(fd({ list: await readyList(rows), availablePickupDate: '2026-10-30', confirm: 'true' }))
+    if (!applied.ok || applied.stage !== 'APPLIED') throw new Error('expected an applied upload')
+    expect(applied.summary).toEqual({ readied: 1, signed: 0, failed: [], notReached: 0 })
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+    expect(after).toMatchObject({
+      status: 'READY_FOR_RELEASE', readyById: currentUser.id, availablePickupDate: new Date('2026-10-30T00:00:00.000Z'),
+    })
+    expect(await testDb.portalEvent.findMany()).toMatchObject([{ checkId: check.id, kind: 'MARK_AVAILABLE', status: 'PENDING' }])
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: check.id, action: 'ready_for_release' } })
+    expect(audit.details).toMatchObject({ source: { file: 'ready.xlsx' } })
   })
 })

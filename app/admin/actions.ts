@@ -21,6 +21,12 @@ import { lastSyncWatermark, runSync } from '@/lib/sync/run'
 import { runScheduledBillsSync } from '@/lib/sync/bills'
 import { runScheduledBillRefsSync } from '@/lib/sync/bill-refs'
 import { loadSettings } from '@/lib/settings/read'
+import { afterResponse, kickPortalDelivery } from '@/lib/sync/portal-kick'
+import { isIsoDay, dayToDate } from '@/lib/domain/details'
+import {
+  applyReadyUpload, planReadyUpload, readReadyUpload, sheetsFromWorkbook,
+  type ReadyUploadPlan, type ReadyUploadSummary,
+} from '@/lib/admin/ready-upload'
 
 /**
  * The two Finance Admin actions.
@@ -35,6 +41,7 @@ import { loadSettings } from '@/lib/settings/read'
 
 const ADMIN_ONLY_SYNC = 'Only a Finance Admin can run a sync.'
 const ADMIN_ONLY_IMPORT = 'Only a Finance Admin can import a workbook.'
+const ADMIN_ONLY_READY_UPLOAD = 'Only a Finance Admin can upload a ready-for-release list.'
 
 export type AdminActionResult = { ok: true } | { ok: false; message: string }
 
@@ -249,5 +256,85 @@ export async function importWorkbookAction(formData: FormData): Promise<ImportWo
   } catch (e) {
     if (isNextControlFlowError(e)) throw e
     return failure(e, 'The workbook could not be read. Check that it is the .xlsx file exported from Acumatica.')
+  }
+}
+
+export type ReadyUploadResult =
+  | { ok: true; stage: 'PREVIEW'; fileName: string; pickupDate: string; plan: ReadyUploadPlan }
+  | { ok: true; stage: 'APPLIED'; fileName: string; pickupDate: string; plan: ReadyUploadPlan; summary: ReadyUploadSummary }
+  | { ok: false; message: string }
+
+/**
+ * Leave the request's own limit untouched: the loop stops here and reports
+ * what it did not reach, and a second upload of the same file finishes it.
+ */
+const READY_UPLOAD_BUDGET_MS = 45_000
+
+/**
+ * Upload → preview → confirm → READY FOR RELEASE, from a list of check numbers
+ * and the AP bills they pay (user request 2026-10-29; `lib/admin/ready-upload.ts`).
+ *
+ * The same shape as `importWorkbookAction`: the first submission plans and
+ * writes nothing; the second carries `confirm` and the SAME file, re-planned
+ * on the server, so a confirmation can never apply to a file other than the
+ * one previewed, nor to a cheque whose status moved in between — the domain
+ * refuses that per cheque and the summary names it. FINANCE_ADMIN only, by a
+ * returned result rather than a redirect (see the note at the top).
+ *
+ * Every readied cheque goes through `markReadyForRelease`, so its MARK_AVAILABLE
+ * event is in the outbox; the kick after the response delivers it now rather
+ * than at the next cron.
+ */
+export async function uploadReadyListAction(formData: FormData): Promise<ReadyUploadResult> {
+  const user = await requireUser()
+  if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY_READY_UPLOAD }
+
+  const file = formData.get('list')
+  if (!(file instanceof File) || file.size === 0) {
+    return { ok: false, message: 'Choose the list to upload.' }
+  }
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return { ok: false, message: `That file is larger than ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.` }
+  }
+  // One pickup date for the batch, as on the list's MARK READY. The domain
+  // requires it; refusing it here reports it once, before anything is read.
+  const pickupDay = String(formData.get('availablePickupDate') ?? '').trim()
+  if (!isIsoDay(pickupDay)) {
+    return { ok: false, message: 'Enter the available pickup date before uploading the list.' }
+  }
+  const pickupDate = dayToDate(pickupDay)
+  const confirmed = String(formData.get('confirm') ?? '') === 'true'
+
+  try {
+    const sheets = await sheetsFromWorkbook(Buffer.from(await file.arrayBuffer()))
+    const list = readReadyUpload(sheets)
+    if (!list.sheets.some((s) => s.read)) {
+      return {
+        ok: false,
+        message:
+          'No sheet of this file has both a CHECK NUMBER column and an AP BILL column in its first rows: ' +
+          list.sheets.map((s) => `${s.sheet} — ${s.reason}`).join('; ') + '.',
+      }
+    }
+    const plan = await planReadyUpload(prisma, { file: file.name, list, pickupDate })
+    if (!confirmed) {
+      return { ok: true, stage: 'PREVIEW', fileName: file.name, pickupDate: pickupDay, plan }
+    }
+
+    const now = new Date()
+    const summary = await applyReadyUpload(prisma, plan, {
+      userId: user.id, pickupDate, now, deadline: new Date(now.getTime() + READY_UPLOAD_BUDGET_MS),
+    })
+    try {
+      afterResponse(() => kickPortalDelivery(prisma, { budgetMs: 8_000 }))
+    } catch (e) {
+      console.error('portal delivery could not be scheduled:', e instanceof Error ? e.message : e)
+    }
+    revalidatePath('/')
+    revalidatePath('/admin/import')
+    return { ok: true, stage: 'APPLIED', fileName: file.name, pickupDate: pickupDay, plan, summary }
+  } catch (e) {
+    if (isNextControlFlowError(e)) throw e
+    return failure(e, 'The list could not be read. Save it as .xlsx with a CHECK NUMBER column and an AP BILL column and try again.')
   }
 }

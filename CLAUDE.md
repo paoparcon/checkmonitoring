@@ -318,6 +318,25 @@ EXPORT EXCEL reorders the file's columns and never drops one. The preference sta
 default order); a column forced visible because a filter is set on it is shown but never
 persisted. Print keeps its fixed columns.
 
+**READY FOR RELEASE from an uploaded list** (`/admin/import`, top section, user request 2026-10-29;
+`lib/admin/ready-upload.ts`, `uploadReadyListAction`, `components/ReadyListUploadForm.tsx`). A Finance
+Admin uploads an .xlsx whose rows name a CHECK NUMBER and the AP BILL it pays (headers in the first
+five rows; every sheet carrying both columns is read, any other skipped and named); one pickup date
+for the batch. **The trigger is both columns together**: the number finds exactly one live cheque
+(a cancelled/voided twin is ignored; two live ones refuse), and the bill must be one that cheque
+carries (`apvNumbers` ∪ `CheckBill`) — otherwise the row is left alone and the report says where
+that bill is held. Nothing is written without a preview; the confirmation re-sends and re-plans
+the same file. Every write goes through the domain: `markSigned` first for a SIGNATURE_PENDING
+cheque, then `markReadyForRelease` — so `readyAt`/`readyById`/pickup date are set, a
+MARK_AVAILABLE event is queued and kicked after the response, and the `ready_for_release` (and
+`marked_signed`) audit rows carry a `source` (file, sheet, row, bill; `ActionSource` in
+`lib/domain/actions.ts`). RELEASED, READY/SCHEDULED, GENERATED, non-cheques and Acumatica-Voided
+are reported, never touched; **nothing is ever demoted by a list**. A cheque whose status moved
+between preview and confirm is refused by name. The apply loop stops at 45 s and counts what it
+did not reach; the same file uploaded again finishes it (readied rows read ALREADY READY). This is
+the routine path; `release-list.ts` and `mark-ready-from-release-list.ts` remain the one-off
+catch-ups that set status directly with no approver and no portal event.
+
 **`/welcome` is the public front door, and it is public by name** (2026-09-27, spec
 `2026-09-27-landing-login-and-theme-design.md`). The landing page and `/login` both render
 `components/MoneyMachines.tsx` — a cash register and a check register, inline SVG moved by the

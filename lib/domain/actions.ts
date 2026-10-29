@@ -23,6 +23,22 @@ import { isDueForAutoSign, AUTO_SIGNED_ACTION, SIGNATURE_REVERTED_ACTION } from 
 
 type Db = PrismaClient | Prisma.TransactionClient
 
+/**
+ * Where a signature or a READY FOR RELEASE came from when it was not a button
+ * on the cheque: an uploaded list (`lib/admin/ready-upload.ts`). Carried onto
+ * the audit row's details and remarks, so the trail names the file, sheet and
+ * row the admin acted on. Optional: a button leaves it unset.
+ */
+export type ActionSource = {
+  file: string
+  listRows: { sheet: string; row: number; voucher: string | null; checkNumber: string | null }[]
+}
+
+function sourceRemark(source: ActionSource | undefined): string {
+  if (!source) return ''
+  return ` From the uploaded list ${source.file} (${source.listRows.map((r) => `${r.sheet} row ${r.row}`).join(', ')}).`
+}
+
 // Every action runs in one transaction that updates the check AND appends its
 // audit row. A caller can pass an existing transaction client; otherwise we
 // open our own.
@@ -173,7 +189,7 @@ async function load(tx: Prisma.TransactionClient, checkId: string) {
 }
 
 export async function markSigned(
-  db: Db, args: { checkId: string; userId: string; now: Date },
+  db: Db, args: { checkId: string; userId: string; now: Date; source?: ActionSource },
 ): Promise<Check> {
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
@@ -185,6 +201,7 @@ export async function markSigned(
     })
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId, action: 'marked_signed',
+      ...(args.source ? { details: { source: args.source }, remarks: sourceRemark(args.source).trim() } : {}),
     })
     return updated
   })
@@ -268,7 +285,7 @@ export async function revertSignature(
 
 export async function markReadyForRelease(
   db: Db,
-  args: { checkId: string; userId: string; availablePickupDate: Date | null; now: Date },
+  args: { checkId: string; userId: string; availablePickupDate: Date | null; now: Date; source?: ActionSource },
 ): Promise<Check> {
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
@@ -347,8 +364,11 @@ export async function markReadyForRelease(
 
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId, action: 'ready_for_release',
-      details: { availablePickupDate: args.availablePickupDate?.toISOString() ?? null, portalPush: pushes },
-      remarks: `Pickup ${args.availablePickupDate?.toISOString().slice(0, 10) ?? 'unset'}`,
+      details: {
+        availablePickupDate: args.availablePickupDate?.toISOString() ?? null, portalPush: pushes,
+        ...(args.source ? { source: args.source } : {}),
+      },
+      remarks: `Pickup ${args.availablePickupDate?.toISOString().slice(0, 10) ?? 'unset'}.${sourceRemark(args.source)}`,
     })
 
     return updated

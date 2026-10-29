@@ -3,6 +3,8 @@ import { requireAdmin } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { getStagedSummary } from '@/lib/admin/staged-queue'
 import { ImportWorkbookForm } from '@/components/ImportWorkbookForm'
+import { ReadyListUploadForm } from '@/components/ReadyListUploadForm'
+import { manilaToday } from '@/lib/manila-day'
 
 const n = (v: number) => v.toLocaleString('en-PH')
 
@@ -12,6 +14,19 @@ export default async function ImportPage() {
 
   return (
     <div className="space-y-6">
+      <section className="rounded-2xl bg-white p-6 ring-1 ring-hairline">
+        <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">READY FOR RELEASE FROM A LIST</h2>
+        <p className="mt-2 max-w-3xl text-sm text-slate-600">
+          Upload a list of the checks that are ready for release. Each row names a CHECK NUMBER and
+          the AP BILL it pays; both must match one live check here before it is marked READY FOR
+          RELEASE. That is the same mark the button on a check makes: it is recorded under your name
+          with the pickup date, and the Supplier Portal is told. Nothing is written until you have
+          seen the preview and confirmed it, and nothing is ever demoted by a list.
+        </p>
+      </section>
+
+      <ReadyListUploadForm defaultPickupDate={manilaToday(new Date())} />
+
       <section className="rounded-2xl bg-white p-6 ring-1 ring-hairline">
         <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">IMPORT A WORKBOOK</h2>
         <p className="mt-2 max-w-3xl text-sm text-slate-600">
