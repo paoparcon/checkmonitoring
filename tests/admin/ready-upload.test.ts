@@ -23,25 +23,40 @@ describe('readReadyUpload', () => {
         ['BPI', '6000400004', 'SUPPLIER', null],
       ],
     }])
-    expect(r.sheets).toEqual([{ sheet: 'READY', read: true, rows: 4 }])
+    expect(r.sheets).toEqual([{ sheet: 'READY', read: true, rows: 4, keyedBy: 'NUMBER' }])
     expect(r.rows).toEqual<UploadRow[]>([
-      { sheet: 'READY', row: 4, checkNumber: '6000400001', voucher: 'AP-ST000001', rawCheckNumber: 'BPI 6000400001', rawVoucher: 'ap-st000001' },
-      { sheet: 'READY', row: 5, checkNumber: '6000400002', voucher: 'STPP-AP-000021', rawCheckNumber: '6000400002', rawVoucher: 'STPP-AP-000021' },
-      { sheet: 'READY', row: 7, checkNumber: '6000400003', voucher: null, rawCheckNumber: '6000400003', rawVoucher: 'not a bill' },
-      { sheet: 'READY', row: 8, checkNumber: '6000400004', voucher: null, rawCheckNumber: '6000400004', rawVoucher: null },
+      { sheet: 'READY', row: 4, keyedBy: 'NUMBER', checkNumber: '6000400001', voucher: 'AP-ST000001', rawCheckNumber: 'BPI 6000400001', rawVoucher: 'ap-st000001' },
+      { sheet: 'READY', row: 5, keyedBy: 'NUMBER', checkNumber: '6000400002', voucher: 'STPP-AP-000021', rawCheckNumber: '6000400002', rawVoucher: 'STPP-AP-000021' },
+      { sheet: 'READY', row: 7, keyedBy: 'NUMBER', checkNumber: '6000400003', voucher: null, rawCheckNumber: '6000400003', rawVoucher: 'not a bill' },
+      { sheet: 'READY', row: 8, keyedBy: 'NUMBER', checkNumber: '6000400004', voucher: null, rawCheckNumber: '6000400004', rawVoucher: null },
     ])
   })
 
-  it('skips, and names, a sheet with only one of the two columns or neither', () => {
+  it("reads Acumatica's AP bill export — Reference Nbr. and no check column — keyed on the bill", () => {
+    const r = readReadyUpload([{
+      name: 'LIST',
+      rows: [
+        ['Date', 'Post Period', 'Reference Nbr.', 'Vendor Ref', 'Vendor Name', 'Balance Amount'],
+        [new Date('2026-05-22'), '05-2026', 'AP-A1033419', 'PO-A1-025543', 'GDSM MARKETING', 22300],
+        [new Date('2026-06-18'), '06-2026', 'ap-st041760', 'PO-ST-028732', 'Siegwerk', 44700],
+        [null, null, null, null, null, 67000],   // a total line: nothing in the bill column
+      ],
+    }])
+    expect(r.sheets).toEqual([{ sheet: 'LIST', read: true, rows: 2, keyedBy: 'BILL' }])
+    expect(r.rows).toEqual<UploadRow[]>([
+      { sheet: 'LIST', row: 2, keyedBy: 'BILL', checkNumber: null, voucher: 'AP-A1033419', rawCheckNumber: null, rawVoucher: 'AP-A1033419' },
+      { sheet: 'LIST', row: 3, keyedBy: 'BILL', checkNumber: null, voucher: 'AP-ST041760', rawCheckNumber: null, rawVoucher: 'ap-st041760' },
+    ])
+  })
+
+  it('skips, and names, a sheet with no AP BILL column', () => {
     const r = readReadyUpload([
       { name: 'PIVOT', rows: [['Row Labels', 'Sum of Amount'], ['BPI', 100]] },
-      { name: 'VOUCHERS ONLY', rows: [['Reference Nbr.', 'Vendor'], ['AP-ST000001', 'X']] },
       { name: 'NUMBERS ONLY', rows: [['CHECK NUMBER', 'PAYEE'], ['6000400001', 'X']] },
     ])
     expect(r.rows).toEqual([])
     expect(r.sheets.map((s) => [s.sheet, s.read, s.reason])).toEqual([
-      ['PIVOT', false, 'no CHECK NUMBER and AP BILL header in its first 5 rows'],
-      ['VOUCHERS ONLY', false, 'has an AP BILL column but no CHECK NUMBER column'],
+      ['PIVOT', false, 'no AP BILL header in its first 5 rows'],
       ['NUMBERS ONLY', false, 'has a CHECK NUMBER column but no AP BILL column'],
     ])
   })
@@ -49,9 +64,10 @@ describe('readReadyUpload', () => {
 
 describe('judgeUploadRow', () => {
   const row = (o: Partial<UploadRow> = {}): UploadRow => ({
-    sheet: 'S', row: 2, checkNumber: '6000400001', voucher: 'AP-ST000001',
+    sheet: 'S', row: 2, keyedBy: 'NUMBER', checkNumber: '6000400001', voucher: 'AP-ST000001',
     rawCheckNumber: '6000400001', rawVoucher: 'AP-ST000001', ...o,
   })
+  const byBill = (o: Partial<UploadRow> = {}): UploadRow => row({ keyedBy: 'BILL', checkNumber: null, rawCheckNumber: null, ...o })
   const c = (o: Partial<UploadCheck> = {}): UploadCheck => ({
     id: 'x', checkNumber: '6000400001', companyCode: 'STK', payeeName: 'SUPPLIER', amount: '100.00', currency: 'PHP',
     checkDate: '2026-09-01T00:00:00.000Z', accountCode: 'BPI-S-4636', status: 'SIGNED', acumaticaStatus: 'Balanced',
@@ -77,6 +93,15 @@ describe('judgeUploadRow', () => {
     expect(judgeUploadRow(row({ voucher: 'AP-ST000002', rawVoucher: 'AP-ST000002' }), [c({ status: 'RELEASED' })], PICKUP)).toMatchObject({ kind: 'BILL_NOT_ON_CHECK' })
   })
 
+  it('a bill-keyed row needs only the bill, and the candidates it was given are the checks paying it', () => {
+    expect(judgeUploadRow(byBill(), [c()], PICKUP)).toEqual({ kind: 'READY', check: c(), signFirst: false })
+    expect(judgeUploadRow(byBill(), [c({ id: 'old', status: 'VOIDED' }), c({ id: 'new' })], PICKUP)).toMatchObject({ kind: 'READY', check: { id: 'new' } })
+    expect(judgeUploadRow(byBill(), [], PICKUP).kind).toBe('NO_CHECK')
+    expect(judgeUploadRow(byBill(), [c({ id: 'a' }), c({ id: 'b' })], PICKUP)).toEqual({ kind: 'AMBIGUOUS', count: 2 })
+    expect(judgeUploadRow(byBill({ voucher: null, rawVoucher: null }), [c()], PICKUP)).toMatchObject({ kind: 'INVALID_ROW', reason: /no AP bill/ })
+    expect(judgeUploadRow(byBill({ voucher: null, rawVoucher: 'CV-1' }), [c()], PICKUP)).toMatchObject({ kind: 'INVALID_ROW', reason: /not an AP bill/ })
+  })
+
   it('leaves everything that is not one promotable live check', () => {
     expect(judgeUploadRow(row(), [], PICKUP).kind).toBe('NO_CHECK')
     expect(judgeUploadRow(row(), [c({ status: 'CANCELLED' })], PICKUP).kind).toBe('ONLY_CANCELLED_OR_VOIDED')
@@ -99,9 +124,15 @@ describe('planReadyUpload and applyReadyUpload', () => {
 
   const list = (rows: [string, string][], sheet = 'READY') => ({
     rows: rows.map(([checkNumber, voucher], i): UploadRow => ({
-      sheet, row: i + 2, checkNumber: canonicalCheckNumber(checkNumber), voucher, rawCheckNumber: checkNumber, rawVoucher: voucher,
+      sheet, row: i + 2, keyedBy: 'NUMBER', checkNumber: canonicalCheckNumber(checkNumber), voucher, rawCheckNumber: checkNumber, rawVoucher: voucher,
     })),
-    sheets: [{ sheet, read: true, rows: rows.length }],
+    sheets: [{ sheet, read: true, rows: rows.length, keyedBy: 'NUMBER' as const }],
+  })
+  const billList = (vouchers: string[], sheet = 'LIST') => ({
+    rows: vouchers.map((voucher, i): UploadRow => ({
+      sheet, row: i + 2, keyedBy: 'BILL', checkNumber: null, voucher, rawCheckNumber: null, rawVoucher: voucher,
+    })),
+    sheets: [{ sheet, read: true, rows: vouchers.length, keyedBy: 'BILL' as const }],
   })
 
   it('plans one entry per check, says where a stray bill is held, and writes nothing', async () => {
@@ -141,6 +172,42 @@ describe('planReadyUpload and applyReadyUpload', () => {
     expect((await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })).status).toBe('SIGNED')
     expect(await testDb.auditLog.count()).toBe(0)
     expect(await testDb.portalEvent.count()).toBe(0)
+  })
+
+  it('a bill-keyed list finds the one live check paying each bill, through apvNumbers or an approval-workbook bill', async () => {
+    const admin = await makeUser('FINANCE_ADMIN')
+    const signed = await makeCheck({ status: 'SIGNED', checkNumber: '6000400001', apvNumbers: ['AP-ST000001', 'AP-ST000009'] })
+    const pending = await makeCheck({ status: 'SIGNATURE_PENDING', checkNumber: '6000400002', apvNumbers: [] })
+    await testDb.checkBill.create({ data: { checkId: pending.id, apvNumber: 'AP-ST000002', amount: '100.00' } })
+    await makeCheck({ status: 'VOIDED', checkNumber: '6000400003', apvNumbers: ['AP-ST000003'] })   // re-issued as:
+    const reissue = await makeCheck({ status: 'SIGNED', checkNumber: '6000400004', apvNumbers: ['AP-ST000003'] })
+    await makeCheck({ status: 'SIGNED', checkNumber: '6000400005', apvNumbers: ['AP-ST000005'] })
+    await makeCheck({ status: 'SIGNED', checkNumber: '6000400006', apvNumbers: ['AP-ST000005'] })   // two live checks, one bill
+    await makeCheck({ status: 'RELEASED', checkNumber: '6000400007', apvNumbers: ['AP-ST000007'] })
+
+    const plan = await planReadyUpload(testDb, {
+      file: 'bills.xlsx', pickupDate: PICKUP,
+      list: billList(['AP-ST000001', 'AP-ST000009', 'AP-ST000002', 'AP-ST000003', 'AP-ST000005', 'AP-ST000007', 'AP-ST000008']),
+    })
+    expect(plan.toReady.map((t) => [t.check.id, t.signFirst, t.rows.map((r) => r.row)])).toEqual([
+      [signed.id, false, [2, 3]],
+      [pending.id, true, [4]],
+      [reissue.id, false, [5]],
+    ])
+    expect(plan.counts).toMatchObject({ READY: 4, AMBIGUOUS: 1, RELEASED: 1, NO_CHECK: 1, BILL_NOT_ON_CHECK: 0 })
+    expect(plan.leftAlone.map((l) => [l.kind, l.checkNumber, l.message])).toEqual([
+      ['AMBIGUOUS', null, '2 live checks pay this AP bill — settle which one on /vouchers or in Acumatica first'],
+      ['RELEASED', '6000400007', 'already RELEASED — a release is never pulled back by a list'],
+      ['NO_CHECK', null, 'no check here pays this AP bill — has the sync read the check, and the BILLS read linked it?'],
+    ])
+
+    const summary = await applyReadyUpload(testDb, plan, { userId: admin.id, pickupDate: PICKUP, now: new Date() })
+    expect(summary).toEqual({ readied: 3, signed: 1, failed: [], notReached: 0 })
+    for (const id of [signed.id, pending.id, reissue.id]) {
+      expect((await testDb.check.findUniqueOrThrow({ where: { id } })).status).toBe('READY_FOR_RELEASE')
+    }
+    const audit = await testDb.auditLog.findFirst({ where: { checkId: pending.id, action: 'ready_for_release' } })
+    expect(audit?.details).toMatchObject({ source: { file: 'bills.xlsx', listRows: [{ sheet: 'LIST', row: 4, voucher: 'AP-ST000002', checkNumber: null }] } })
   })
 
   it('applies through the domain: ready under the admin, with the pickup date, a portal event, and the list on the audit row', async () => {

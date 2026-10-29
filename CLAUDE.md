@@ -320,12 +320,16 @@ persisted. Print keeps its fixed columns.
 
 **READY FOR RELEASE from an uploaded list** (`/admin/import`, top section, user request 2026-10-29;
 `lib/admin/ready-upload.ts`, `uploadReadyListAction`, `components/ReadyListUploadForm.tsx`). A Finance
-Admin uploads an .xlsx whose rows name a CHECK NUMBER and the AP BILL it pays (headers in the first
-five rows; every sheet carrying both columns is read, any other skipped and named); one pickup date
-for the batch. **The trigger is both columns together**: the number finds exactly one live cheque
-(a cancelled/voided twin is ignored; two live ones refuse), and the bill must be one that cheque
-carries (`apvNumbers` ∪ `CheckBill`) — otherwise the row is left alone and the report says where
-that bill is held. Nothing is written without a preview; the confirmation re-sends and re-plans
+Admin uploads an .xlsx whose rows name the AP BILL a cheque pays, and the CHECK NUMBER when the
+list has one (headers in the first five rows; every sheet carrying an AP BILL column is read, any
+other skipped and named); one pickup date for the batch. **A sheet with both columns is keyed on
+the number**: it finds exactly one live cheque (a cancelled/voided twin is ignored; two live ones
+refuse), and the bill must be one that cheque carries (`apvNumbers` ∪ `CheckBill`) — otherwise the
+row is left alone and the report says where that bill is held. **A sheet with only the bill column
+is keyed on the bill** (`UploadRow.keyedBy`, same day: the file Finance uploads is Acumatica's AP
+bill export — `Date`, `Post Period`, `Reference Nbr.`, `Vendor Ref`, `Vendor Name`, `Balance
+Amount`, no check number at all): the bill finds exactly one live cheque carrying it, none or two
+leave the row alone. Nothing is written without a preview; the confirmation re-sends and re-plans
 the same file. Every write goes through the domain: `markSigned` first for a SIGNATURE_PENDING
 cheque, then `markReadyForRelease` — so `readyAt`/`readyById`/pickup date are set, a
 MARK_AVAILABLE event is queued and kicked after the response, and the `ready_for_release` (and

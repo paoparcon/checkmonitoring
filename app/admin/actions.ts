@@ -312,7 +312,7 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
       return {
         ok: false,
         message:
-          'No sheet of this file has both a CHECK NUMBER column and an AP BILL column in its first rows: ' +
+          'No sheet of this file has an AP BILL column in its first rows: ' +
           list.sheets.map((s) => `${s.sheet} — ${s.reason}`).join('; ') + '.',
       }
     }
@@ -335,6 +335,6 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
     return { ok: true, stage: 'APPLIED', fileName: file.name, pickupDate: pickupDay, plan, summary }
   } catch (e) {
     if (isNextControlFlowError(e)) throw e
-    return failure(e, 'The list could not be read. Save it as .xlsx with a CHECK NUMBER column and an AP BILL column and try again.')
+    return failure(e, 'The list could not be read. Save it as .xlsx with an AP BILL column (and a CHECK NUMBER column if the list has one) and try again.')
   }
 }

@@ -17,9 +17,9 @@ export default async function ImportPage() {
       <section className="rounded-2xl bg-white p-6 ring-1 ring-hairline">
         <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">READY FOR RELEASE FROM A LIST</h2>
         <p className="mt-2 max-w-3xl text-sm text-slate-600">
-          Upload a list of the checks that are ready for release. Each row names a CHECK NUMBER and
-          the AP BILL it pays; both must match one live check here before it is marked READY FOR
-          RELEASE. That is the same mark the button on a check makes: it is recorded under your name
+          Upload a list of the checks that are ready for release. Each row names an AP BILL, and a
+          CHECK NUMBER if the list has one; the row must find exactly one live check here before it
+          is marked READY FOR RELEASE. That is the same mark the button on a check makes: it is recorded under your name
           with the pickup date, and the Supplier Portal is told. Nothing is written until you have
           seen the preview and confirmed it, and nothing is ever demoted by a list.
         </p>

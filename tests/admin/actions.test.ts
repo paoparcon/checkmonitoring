@@ -284,11 +284,27 @@ describe('uploadReadyListAction', () => {
     expect(await uploadReadyListAction(fd({ list: await readyList([]), availablePickupDate: '2026-02-30' }))).toMatchObject({ ok: false, message: /pickup date/ })
   })
 
-  it('refuses a file with no sheet carrying both columns, naming each sheet', async () => {
+  it('refuses a file with no sheet carrying an AP BILL column, naming each sheet', async () => {
     const { uploadReadyListAction } = await import('@/app/admin/actions')
-    const file = await xlsx({ PIVOT: [['Row Labels', 'Sum'], ['BPI', 1]] })
+    const file = await xlsx({ PIVOT: [['Row Labels', 'Sum'], ['BPI', 1]], NUMBERS: [['CHECK NUMBER'], ['6000400001']] })
     const result = await uploadReadyListAction(fd({ list: file, availablePickupDate: '2026-10-30' }))
-    expect(result).toMatchObject({ ok: false, message: /PIVOT — no CHECK NUMBER and AP BILL header/ })
+    expect(result).toMatchObject({ ok: false, message: /PIVOT — no AP BILL header.*NUMBERS — has a CHECK NUMBER column but no AP BILL column/ })
+  })
+
+  it("previews Acumatica's AP bill export (Reference Nbr., no check column) keyed on the bill", async () => {
+    const { uploadReadyListAction } = await import('@/app/admin/actions')
+    const check = await makeCheck({ status: 'SIGNED', checkNumber: '6000400001', apvNumbers: ['AP-A1033419'] })
+    const file = await xlsx({ LIST: [
+      ['Date', 'Post Period', 'Reference Nbr.', 'Vendor Ref', 'Vendor Name', 'Balance Amount'],
+      ['5/22/26', '05-2026', 'AP-A1033419', 'PO-A1-025543', 'GDSM MARKETING', 22300],
+      ['6/18/26', '06-2026', 'AP-ST041760', 'PO-ST-028732', 'Siegwerk', 44700],
+    ] })
+    const result = await uploadReadyListAction(fd({ list: new File([file], 'bills.xlsx'), availablePickupDate: '2026-10-30' }))
+    if (!result.ok || result.stage !== 'PREVIEW') throw new Error('expected a preview')
+    expect(result.plan.sheets).toEqual([{ sheet: 'LIST', read: true, rows: 2, keyedBy: 'BILL' }])
+    expect(result.plan.toReady.map((t) => t.check.id)).toEqual([check.id])
+    expect(result.plan.leftAlone.map((l) => l.kind)).toEqual(['NO_CHECK'])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).status).toBe('SIGNED')
   })
 
   it('previews without writing, then marks ready on confirm with the pickup date and a portal event', async () => {

@@ -24,9 +24,9 @@ const ROWS_SHOWN = 300
 const LEFT_ALONE_LABEL: Readonly<Record<LeftAlone['kind'], string>> = {
   ALREADY_READY: 'ALREADY READY — nothing to do',
   RELEASED: 'ALREADY RELEASED — left alone',
-  NO_CHECK: 'NO CHECK WITH THIS NUMBER',
+  NO_CHECK: 'NO CHECK FOUND',
   ONLY_CANCELLED_OR_VOIDED: 'CANCELLED OR VOIDED',
-  AMBIGUOUS: 'MORE THAN ONE LIVE CHECK HOLDS THE NUMBER',
+  AMBIGUOUS: 'MORE THAN ONE LIVE CHECK',
   BILL_NOT_ON_CHECK: 'AP BILL IS NOT ON THAT CHECK',
   NOT_PROMOTABLE: 'CANNOT BE MADE READY',
   INVALID_ROW: 'ROW CANNOT BE READ',
@@ -73,7 +73,7 @@ function PlanReport({ plan, applied }: { plan: ReadyUploadPlan; applied: boolean
           <span key={s.sheet}>
             {i > 0 && ' · '}
             <span className="font-medium">{s.sheet}</span>{' '}
-            {s.read ? `${n(s.rows)} row(s)` : `skipped (${s.reason})`}
+            {s.read ? `${n(s.rows)} row(s)${s.keyedBy === 'BILL' ? ', by AP bill' : ''}` : `skipped (${s.reason})`}
           </span>
         ))}
         {signFirst > 0 && (
@@ -189,10 +189,12 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
       <section className="space-y-4 rounded-2xl bg-white p-6 ring-1 ring-hairline">
         <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">UPLOAD THE LIST</h2>
         <p className="text-sm text-slate-600">
-          An .xlsx with a <span className="font-medium">CHECK NUMBER</span> column and an{' '}
-          <span className="font-medium">AP BILL</span> column (headed CHECK NUMBER / CHECK NO and AP BILL /
-          BILL / VOUCHER / REFERENCE NBR.), the header within the first five rows. Every sheet with both
-          columns is read; any other sheet is skipped and named.
+          An .xlsx with an <span className="font-medium">AP BILL</span> column (headed AP BILL / BILL /
+          VOUCHER / REFERENCE NBR.), the header within the first five rows — Acumatica&apos;s AP bill
+          export as it comes. A <span className="font-medium">CHECK NUMBER</span> column (CHECK NUMBER /
+          CHECK NO) beside it is optional: with one, the number finds the check and the bill must be on
+          it; without one, the bill finds the one live check that pays it. Every sheet with an AP BILL
+          column is read; any other sheet is skipped and named.
         </p>
         <div className="flex flex-wrap items-end gap-4">
           <div className="min-w-[16rem] flex-1">

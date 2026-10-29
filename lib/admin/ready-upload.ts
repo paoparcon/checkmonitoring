@@ -23,15 +23,20 @@ import { canonicalCheckNumber, cleanCell } from '@/lib/import/normalise'
  * approved in this system. This is the routine: the admin IS the approver, so
  * the domain action is the right write and the trigger is BOTH columns.
  *
- * THE TRIGGER IS THE CHECK NUMBER AND THE AP BILL, TOGETHER. The number finds
- * the cheque; the bill must be one that cheque pays (`Check.apvNumbers`, which
- * the BILLS read fills from Acumatica, or a `CheckBill` from the approval
- * workbook). A row whose bill is not on the cheque the number names is REFUSED
- * and reported with where that bill is held — a mis-keyed number or a wrong
- * row, and either way not something to guess about with money. Neither column
- * alone resolves a row: the register-era lists could name a voucher and no
- * cheque, and a voucher alone is how 428 cheques were promoted by mistake on
- * 2026-09-24.
+ * THE TRIGGER IS THE AP BILL, WITH THE CHECK NUMBER WHEN THE LIST HAS ONE.
+ * The bill must be one the cheque pays (`Check.apvNumbers`, which the BILLS
+ * read fills from Acumatica, or a `CheckBill` from the approval workbook).
+ * A sheet with both columns is keyed on the NUMBER: it finds the cheque, and a
+ * row whose bill is not on that cheque is REFUSED and reported with where the
+ * bill is held — a mis-keyed number or a wrong row, and either way not
+ * something to guess about with money. A sheet with ONLY a bill column — what
+ * Acumatica's AP bill export looks like (`Reference Nbr.`, the file Finance
+ * actually uploads, 2026-10-29) — is keyed on the BILL: the row names the one
+ * live cheque that pays it, and none or two leave it alone. That is the rule
+ * `voucher-links.ts` and `/vouchers` already hold, and the preview is what
+ * makes it safe here: the 428 cheques promoted by voucher alone on 2026-09-24
+ * came from a sheet nobody had looked at (`Detail1`), not from a bill-keyed
+ * list an admin read and confirmed.
  *
  * EXACTLY ONE LIVE CHEQUE or nothing — the rule `bills.ts`, `release-list.ts`
  * and `voucher-links.ts` all hold. A number held by two live cheques is
@@ -53,7 +58,7 @@ import { canonicalCheckNumber, cleanCell } from '@/lib/import/normalise'
  * writes only on a second submission of the same file.
  */
 
-/** The header labels accepted for each column, normalised by `label()`. */
+/** The header labels accepted for each column, normalised by `label()`. The check column is optional. */
 const CHECK_HEADERS = new Set([
   'CHECK NUMBER', 'CHECK NO', 'CHECK #', 'CHECK', 'CHECKS', 'CHECK NUM',
   'CHEQUE NUMBER', 'CHEQUE NO', 'CHEQUE', 'PAYMENT REF', 'PAYMENT REF NBR',
@@ -75,7 +80,12 @@ const DEAD: readonly CheckStatus[] = ['CANCELLED', 'VOIDED']
 export type UploadRow = {
   sheet: string
   row: number
-  /** Canonical (bank prefix stripped), or null when the cell is blank. */
+  /**
+   * What finds the cheque: the NUMBER on a sheet that has a check column (the
+   * bill must then be on that cheque), the BILL on a sheet that has none.
+   */
+  keyedBy: 'NUMBER' | 'BILL'
+  /** Canonical (bank prefix stripped), or null when the cell is blank or the sheet has no check column. */
   checkNumber: string | null
   /** Upper-cased and shape-checked, or null when the cell is blank or not a voucher. */
   voucher: string | null
@@ -88,6 +98,8 @@ export type SheetReport = {
   sheet: string
   read: boolean
   rows: number
+  /** How the sheet's rows find their cheque; absent when the sheet was not read. */
+  keyedBy?: 'NUMBER' | 'BILL'
   /** Why the sheet was not read. */
   reason?: string
 }
@@ -111,10 +123,12 @@ function label(v: unknown): string {
 }
 
 /**
- * Pure over a grid. A sheet is read when one of its first rows carries BOTH a
- * cheque-number header and an AP-bill header; a sheet carrying only one, or
- * neither (a pivot, a cover sheet), is skipped and reported by name with the
- * reason. Every row below the header with anything in either column is a row.
+ * Pure over a grid. A sheet is read when one of its first rows carries an
+ * AP-bill header; a cheque-number header on the same row makes the sheet
+ * NUMBER-keyed, its absence BILL-keyed. A sheet with no bill header (a pivot,
+ * a cover sheet, a list of numbers alone) is skipped and reported by name
+ * with the reason. Every row below the header with anything in either column
+ * is a row.
  */
 export function readReadyUpload(sheets: { name: string; rows: unknown[][] }[]): { rows: UploadRow[]; sheets: SheetReport[] } {
   const out: UploadRow[] = []
@@ -124,34 +138,32 @@ export function readReadyUpload(sheets: { name: string; rows: unknown[][] }[]): 
     let cCol = -1
     let vCol = -1
     let sawCheck = false
-    let sawBill = false
     for (let r = 0; r < Math.min(HEADER_SEARCH_ROWS, rows.length) && headerRow < 0; r++) {
       const labels = (rows[r] ?? []).map(label)
       const c = labels.findIndex((l) => CHECK_HEADERS.has(l))
       const v = labels.findIndex((l) => BILL_HEADERS.has(l))
       if (c >= 0) sawCheck = true
-      if (v >= 0) sawBill = true
-      if (c >= 0 && v >= 0) { headerRow = r; cCol = c; vCol = v }
+      if (v >= 0) { headerRow = r; cCol = c; vCol = v }
     }
     if (headerRow < 0) {
-      const reason = sawCheck && !sawBill
+      const reason = sawCheck
         ? 'has a CHECK NUMBER column but no AP BILL column'
-        : sawBill && !sawCheck
-          ? 'has an AP BILL column but no CHECK NUMBER column'
-          : `no CHECK NUMBER and AP BILL header in its first ${HEADER_SEARCH_ROWS} rows`
+        : `no AP BILL header in its first ${HEADER_SEARCH_ROWS} rows`
       reports.push({ sheet: name, read: false, rows: 0, reason })
       continue
     }
+    const keyedBy = cCol >= 0 ? 'NUMBER' : 'BILL'
 
     let n = 0
     for (let r = headerRow + 1; r < rows.length; r++) {
-      const rawCheckNumber = text(rows[r]?.[cCol])
+      const rawCheckNumber = cCol >= 0 ? text(rows[r]?.[cCol]) : null
       const rawVoucher = text(rows[r]?.[vCol])
       if (!rawCheckNumber && !rawVoucher) continue
       const v = rawVoucher?.toUpperCase() ?? null
       out.push({
         sheet: name,
         row: r + 1,
+        keyedBy,
         checkNumber: canonicalCheckNumber(rawCheckNumber),
         voucher: v && VOUCHER.test(v) ? v : null,
         rawCheckNumber,
@@ -159,7 +171,7 @@ export function readReadyUpload(sheets: { name: string; rows: unknown[][] }[]): 
       })
       n++
     }
-    reports.push({ sheet: name, read: true, rows: n })
+    reports.push({ sheet: name, read: true, rows: n, keyedBy })
   }
   return { rows: out, sheets: reports }
 }
@@ -215,15 +227,16 @@ export const VERDICT_KINDS = [
 ] as const satisfies readonly UploadVerdict['kind'][]
 
 /**
- * Pure. `candidates` are every cheque held under the row's canonical number,
- * any company; `pickupDate` is the batch's, needed because the ready guard
- * lists it as required. The order of the tests is the order a reader would
- * want to hear them: is the row readable, is there a cheque, is it the one,
- * does it pay this bill, can it be made ready.
+ * Pure. `candidates` are every cheque held under the row's key — its canonical
+ * number, any company, on a NUMBER-keyed row; every cheque carrying its bill
+ * on a BILL-keyed one. `pickupDate` is the batch's, needed because the ready
+ * guard lists it as required. The order of the tests is the order a reader
+ * would want to hear them: is the row readable, is there a cheque, is it the
+ * one, does it pay this bill, can it be made ready.
  */
 export function judgeUploadRow(row: UploadRow, candidates: readonly UploadCheck[], pickupDate: Date): UploadVerdict {
   if (!row.checkNumber && !row.rawVoucher) return { kind: 'INVALID_ROW', reason: 'blank' }
-  if (!row.checkNumber) return { kind: 'INVALID_ROW', reason: 'no check number on the row' }
+  if (row.keyedBy === 'NUMBER' && !row.checkNumber) return { kind: 'INVALID_ROW', reason: 'no check number on the row' }
   if (!row.rawVoucher) return { kind: 'INVALID_ROW', reason: 'no AP bill on the row' }
   if (!row.voucher) return { kind: 'INVALID_ROW', reason: `"${row.rawVoucher}" is not an AP bill number` }
 
@@ -233,6 +246,7 @@ export function judgeUploadRow(row: UploadRow, candidates: readonly UploadCheck[
   if (live.length > 1) return { kind: 'AMBIGUOUS', count: live.length }
   const check = live[0]
 
+  // Trivially true on a BILL-keyed row: the candidates were found by the bill.
   if (!check.vouchers.includes(row.voucher)) return { kind: 'BILL_NOT_ON_CHECK', check }
 
   if (check.status === 'READY_FOR_RELEASE' || check.status === 'SCHEDULED') return { kind: 'ALREADY_READY', check }
@@ -313,10 +327,21 @@ function emptyCounts(): Record<UploadVerdict['kind'], number> {
   return Object.fromEntries(VERDICT_KINDS.map((k) => [k, 0])) as Record<UploadVerdict['kind'], number>
 }
 
+/** Every cheque carrying any of `vouchers`, in `apvNumbers` or as an approval-workbook bill. */
+async function holdersOf(db: PrismaClient, vouchers: string[]): Promise<Loaded[]> {
+  if (vouchers.length === 0) return []
+  return db.check.findMany({
+    where: { OR: [{ apvNumbers: { hasSome: vouchers } }, { bills: { some: { apvNumber: { in: vouchers } } } }] },
+    select: SELECT,
+  })
+}
+
 /**
- * Two queries, however long the list: every cheque under every number named,
- * then — for the rows whose bill is not on the cheque their number names —
- * every cheque that does carry that bill, so the report can say where it is.
+ * Three queries at most, however long the list: every cheque under every
+ * number named; every cheque carrying a bill the BILL-keyed rows name; then —
+ * for the NUMBER-keyed rows whose bill is not on the cheque their number
+ * names — every cheque that does carry that bill, so the report can say where
+ * it is.
  */
 export async function planReadyUpload(
   db: PrismaClient,
@@ -328,12 +353,22 @@ export async function planReadyUpload(
   const byNumber = new Map<string, UploadCheck[]>()
   for (const c of held) byNumber.set(c.checkNumber, [...(byNumber.get(c.checkNumber) ?? []), toUploadCheck(c)])
 
+  const billKeyed = [...new Set(list.rows.filter((r) => r.keyedBy === 'BILL').map((r) => r.voucher).filter((v): v is string => v !== null))]
+  const byBill = new Map<string, UploadCheck[]>()
+  for (const c of await holdersOf(db, billKeyed)) {
+    const u = toUploadCheck(c)
+    for (const v of u.vouchers) if (billKeyed.includes(v)) byBill.set(v, [...(byBill.get(v) ?? []), u])
+  }
+
   const plan: ReadyUploadPlan = { file, sheets: list.sheets, rows: list.rows.length, toReady: [], leftAlone: [], counts: emptyCounts() }
   const ready = new Map<string, { check: UploadCheck; signFirst: boolean; rows: UploadRow[] }>()
   const strays: { row: UploadRow; check: UploadCheck }[] = []
 
   for (const row of list.rows) {
-    const v = judgeUploadRow(row, row.checkNumber ? byNumber.get(row.checkNumber) ?? [] : [], pickupDate)
+    const candidates = row.keyedBy === 'BILL'
+      ? (row.voucher ? byBill.get(row.voucher) ?? [] : [])
+      : (row.checkNumber ? byNumber.get(row.checkNumber) ?? [] : [])
+    const v = judgeUploadRow(row, candidates, pickupDate)
     plan.counts[v.kind]++
     if (v.kind === 'READY') {
       const prev = ready.get(v.check.id)
@@ -347,10 +382,7 @@ export async function planReadyUpload(
 
   if (strays.length > 0) {
     const vouchers = [...new Set(strays.map((s) => s.row.voucher).filter((x): x is string => x !== null))]
-    const holders = await db.check.findMany({
-      where: { OR: [{ apvNumbers: { hasSome: vouchers } }, { bills: { some: { apvNumber: { in: vouchers } } } }] },
-      select: { checkNumber: true, status: true, apvNumbers: true, bills: { select: { apvNumber: true } } },
-    })
+    const holders = await holdersOf(db, vouchers)
     for (const { row, check } of strays) {
       const where = holders
         .filter((h) => h.apvNumbers.includes(row.voucher!) || h.bills.some((b) => b.apvNumber === row.voucher))
@@ -377,9 +409,22 @@ function describe(row: UploadRow, v: Exclude<UploadVerdict, { kind: 'READY' | 'B
   switch (v.kind) {
     case 'ALREADY_READY': return { ...base, message: `already ${v.check.status.replace(/_/g, ' ')} — nothing to do` }
     case 'RELEASED': return { ...base, message: 'already RELEASED — a release is never pulled back by a list' }
-    case 'NO_CHECK': return { ...base, message: 'no check with this number here — has the sync read it?' }
-    case 'ONLY_CANCELLED_OR_VOIDED': return { ...base, message: 'every check with this number is CANCELLED or VOIDED' }
-    case 'AMBIGUOUS': return { ...base, message: `${v.count} live checks hold this number — settle it on the staged queue or in Acumatica first` }
+    case 'NO_CHECK': return {
+      ...base,
+      message: row.keyedBy === 'BILL'
+        ? 'no check here pays this AP bill — has the sync read the check, and the BILLS read linked it?'
+        : 'no check with this number here — has the sync read it?',
+    }
+    case 'ONLY_CANCELLED_OR_VOIDED': return {
+      ...base,
+      message: row.keyedBy === 'BILL' ? 'every check paying this AP bill is CANCELLED or VOIDED' : 'every check with this number is CANCELLED or VOIDED',
+    }
+    case 'AMBIGUOUS': return {
+      ...base,
+      message: row.keyedBy === 'BILL'
+        ? `${v.count} live checks pay this AP bill — settle which one on /vouchers or in Acumatica first`
+        : `${v.count} live checks hold this number — settle it on the staged queue or in Acumatica first`,
+    }
     case 'NOT_PROMOTABLE': return { ...base, message: v.reason }
     case 'INVALID_ROW': return { ...base, message: v.reason }
   }
