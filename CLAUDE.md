@@ -419,8 +419,11 @@ number is its own amber line with a tick box and a remarks field (`components/In
 saved on change through `recordInventoryNoteAction` → `recordInventoryNote` in
 `lib/numbering/inventory-notes.ts`, every Finance user), so the status of a check Acumatica does not
 hold is recorded here and not in a spreadsheet. A run of more than `INVENTORY_LIST_MAX` (100) numbers
-stays one line with one tick and remark for the whole run, keyed to its first number with `runTo`
-stored; the line says so when the run has since changed shape. Measured 2026-11-03: 687 runs in 9
+is one line with one tick and remark for the whole run, keyed to its first number with `runTo`
+stored, and **opens on a click into one row per number, 200 at a time** (`components/MissingRunRows.tsx`,
+user request the same day); the line says so when the run has since changed shape. **A note is on one
+number OR on a run — the key is (book, number, runTo), `runTo = ''` for a single number** (migration
+`20261103000100`), so the run's tick and its first number's tick are two rows. Measured 2026-11-03: 687 runs in 9
 books, 579 listed number by number at 100 (5,014 lines, at most 1,915 on BPI-S-4636). Notes live in
 `CheckInventoryNote` (book + canonical number, never deleted), each write one `inventory_note_recorded`
 audit row with NO checkId — the audit screen's check-number filter cannot find them; filter by action.

@@ -17,9 +17,18 @@ import type { SeriesEntry } from './series'
  *
  * A note is keyed by its canonical number (`inventoryKey`): BigInt order is
  * the series' order, so `007` and `7` are the same key, and a MISSING bound
- * padded to the book's width finds the note recorded on the bare number.
+ * padded to the book's width finds the note recorded on the bare number. A
+ * note is on ONE NUMBER (`runTo` null) or on a RUN (`runTo` the run's last
+ * number); the two never share a row.
+ *
+ * A long run OPENS on a click (second pass, 2026-11-03): the run line carries
+ * the notes recorded on numbers inside it, and the browser lists its numbers
+ * INVENTORY_EXPAND_PAGE at a time, each with its own tick and remark, until
+ * it is closed again. The run's own tick and remark stay on the run line.
  */
 export const INVENTORY_LIST_MAX = 100
+/** Numbers an opened run shows per click of SHOW MORE. */
+export const INVENTORY_EXPAND_PAGE = 200
 
 export type InventoryNote = {
   /** The stored key — canonical, no leading zeros. */
@@ -37,8 +46,11 @@ export type InventoryLine =
   | { kind: 'STAGED'; staged: Extract<SeriesEntry, { kind: 'STAGED' }>['staged']; number: string }
   /** One MISSING number, with its own tick and remark. */
   | { kind: 'MISSING_NUMBER'; number: string; note: InventoryNote | null }
-  /** A run longer than INVENTORY_LIST_MAX: one line, one note for the run, keyed to `from`. */
-  | { kind: 'MISSING'; from: string; to: string; count: string; note: InventoryNote | null }
+  /**
+   * A run longer than INVENTORY_LIST_MAX: one line, one note for the run (keyed to `from` with
+   * `runTo`), plus the single-number notes inside it, for when the run is opened.
+   */
+  | { kind: 'MISSING'; from: string; to: string; count: string; note: InventoryNote | null; notes: InventoryNote[] }
 
 const NUMERIC = /^\d+$/
 const ZERO = BigInt(0)
@@ -50,27 +62,48 @@ export function inventoryKey(number: string): string | null {
   return NUMERIC.test(text) ? BigInt(text).toString() : null
 }
 
-/** Every number of a run, in order, each padded to the run's width. Only for a run of at most `max`. */
-function listRun(from: string, to: string): string[] {
+/**
+ * `limit` numbers of a run from `from`, in order, each padded to `width` —
+ * the run's own width on the server, the run line's in the browser.
+ */
+export function listRun(from: string, to: string, limit: number = Number.MAX_SAFE_INTEGER, width: number = from.length): string[] {
   const out: string[] = []
   const end = BigInt(to)
-  for (let n = BigInt(from); n <= end; n += ONE) out.push(n.toString().padStart(from.length, '0'))
+  for (let n = BigInt(from); n <= end && out.length < limit; n += ONE) out.push(n.toString().padStart(width, '0'))
   return out
 }
 
 /**
+ * The run note for a run starting at `from`: the one recorded on exactly this
+ * run, else the newest recorded on a run from the same number (the screen
+ * then says the run has changed). Null when none.
+ */
+function runNoteFor(runs: readonly InventoryNote[], from: string, to: string): InventoryNote | null {
+  const key = inventoryKey(from)
+  const toKey = inventoryKey(to)
+  const same = runs.filter((n) => n.checkNumber === key)
+  if (same.length === 0) return null
+  return same.find((n) => n.runTo !== null && inventoryKey(n.runTo) === toKey)
+    ?? [...same].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0]
+}
+
+/**
  * The series as inventory lines: a run of at most `max` numbers becomes one
- * MISSING_NUMBER line each, a longer run stays one MISSING line, and every
- * line that can carry a note gets the one recorded on its number — a CHECK
- * too, so a note made while the number was missing is not lost when Acumatica
- * later sends the check.
+ * MISSING_NUMBER line each, a longer run stays one MISSING line carrying its
+ * run note and the single-number notes inside it, and every line that can
+ * carry a note gets the one recorded on its number — a CHECK too, so a note
+ * made while the number was missing is not lost when Acumatica later sends
+ * the check.
  */
 export function toInventoryLines(
-  entries: readonly SeriesEntry[], notes: ReadonlyMap<string, InventoryNote>, max: number = INVENTORY_LIST_MAX,
+  entries: readonly SeriesEntry[], notes: readonly InventoryNote[], max: number = INVENTORY_LIST_MAX,
 ): InventoryLine[] {
+  const single = new Map<string, InventoryNote>()
+  const runs: InventoryNote[] = []
+  for (const n of notes) (n.runTo === null ? single.set(n.checkNumber, n) : runs.push(n))
   const noteFor = (number: string) => {
     const key = inventoryKey(number)
-    return key === null ? null : notes.get(key) ?? null
+    return key === null ? null : single.get(key) ?? null
   }
   const lines: InventoryLine[] = []
   for (const e of entries) {
@@ -78,13 +111,20 @@ export function toInventoryLines(
     else if (e.kind === 'STAGED') lines.push({ kind: 'STAGED', staged: e.staged, number: e.number })
     else if (BigInt(e.count) <= BigInt(max)) {
       for (const number of listRun(e.from, e.to)) lines.push({ kind: 'MISSING_NUMBER', number, note: noteFor(number) })
-    } else lines.push({ kind: 'MISSING', from: e.from, to: e.to, count: e.count, note: noteFor(e.from) })
+    } else {
+      const lo = BigInt(e.from)
+      const hi = BigInt(e.to)
+      const inside = [...single.values()]
+        .filter((n) => { const v = BigInt(n.checkNumber); return v >= lo && v <= hi })
+        .sort((a, b) => (BigInt(a.checkNumber) < BigInt(b.checkNumber) ? -1 : 1))
+      lines.push({ kind: 'MISSING', from: e.from, to: e.to, count: e.count, note: runNoteFor(runs, e.from, e.to), notes: inside })
+    }
   }
   return lines
 }
 
 export type InventoryCounts = {
-  /** MISSING numbers covered by a ticked note — a ticked run counts every number it still spans. */
+  /** MISSING numbers covered by a ticked note — a ticked run counts every number it still spans, else its ticked numbers. */
   ticked: string
   /** MISSING lines (numbers and runs) carrying a remark. */
   remarked: number
@@ -105,7 +145,9 @@ export function inventoryCounts(lines: readonly InventoryLine[]): InventoryCount
     } else if (l.kind === 'MISSING') {
       count += 1
       if (l.note?.ticked) ticked += BigInt(l.count)
+      else ticked += BigInt(l.notes.filter((n) => n.ticked).length)
       if (l.note?.remarks) remarked += 1
+      remarked += l.notes.filter((n) => n.remarks).length
     }
   }
   return { ticked: ticked.toString(), remarked, lines: count }

@@ -50,16 +50,18 @@ describe('recordInventoryNote (spec §H)', () => {
     expect(await testDb.checkInventoryNote.count()).toBe(1)
     const audit = await trail()
     expect(audit).toHaveLength(2)
-    expect(audit[1].details).toMatchObject({ ticked: false, remarks: null, before: { ticked: true, remarks: 'a', runTo: null } })
+    expect(audit[1].details).toMatchObject({ ticked: false, remarks: null, before: { ticked: true, remarks: 'a' } })
     expect(audit[1].remarks).toBeNull()
   })
 
-  it('records the run a note is for, canonical, and refuses a run that ends before it starts', async () => {
+  it('records the run a note is for, canonical, and refuses a run that does not end after it starts', async () => {
     const user = await makeUser()
     const b = await book()
     const out = await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '0200', runTo: '0500', ticked: true, remarks: 'booklet in vault', userId: user.id })
     expect(out).toMatchObject({ checkNumber: '200', runTo: '500' })
     await expect(recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '600', runTo: '599', ticked: true, remarks: '', userId: user.id }))
+      .rejects.toMatchObject({ code: 'INVENTORY_RUN_INVERTED' })
+    await expect(recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '600', runTo: '600', ticked: true, remarks: '', userId: user.id }))
       .rejects.toMatchObject({ code: 'INVENTORY_RUN_INVERTED' })
     await expect(recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '600', runTo: 'MEMO', ticked: true, remarks: '', userId: user.id }))
       .rejects.toMatchObject({ code: 'INVENTORY_NOT_NUMERIC' })
@@ -93,6 +95,24 @@ describe('recordInventoryNote (spec §H)', () => {
   })
 })
 
+describe('recordInventoryNote — a run and its first number are two notes (second pass)', () => {
+  it('keeps the whole-run note and the note on the run\'s first number as separate rows, each updated in place', async () => {
+    const user = await makeUser()
+    const b = await book()
+    await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '200', runTo: '500', ticked: true, remarks: 'the run', userId: user.id })
+    await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '200', ticked: false, remarks: 'just 200', userId: user.id })
+    await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '200', runTo: '500', ticked: false, remarks: 'the run, unticked', userId: user.id })
+    const rows = await testDb.checkInventoryNote.findMany({ where: { checkBookId: b.id }, orderBy: { runTo: 'asc' }, select: { checkNumber: true, runTo: true, ticked: true, remarks: true } })
+    expect(rows).toEqual([
+      { checkNumber: '200', runTo: '', ticked: false, remarks: 'just 200' },
+      { checkNumber: '200', runTo: '500', ticked: false, remarks: 'the run, unticked' },
+    ])
+    const loaded = (await loadInventoryNotes(testDb, [b.id])).get(b.id)!
+    expect(loaded.map((n) => [n.checkNumber, n.runTo, n.remarks])).toEqual([['200', null, 'just 200'], ['200', '500', 'the run, unticked']])
+    expect((await trail())[2].details).toMatchObject({ runTo: '500', before: { ticked: true, remarks: 'the run' } })
+  })
+})
+
 describe('loadInventoryNotes', () => {
   it('groups by book and keys by canonical number; a book list narrows, undefined reads every book', async () => {
     const user = await makeUser()
@@ -102,8 +122,8 @@ describe('loadInventoryNotes', () => {
     await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '5', ticked: false, remarks: '', userId: user.id })
     const all = await loadInventoryNotes(testDb, undefined)
     expect([...all.keys()].sort()).toEqual([a.id, b.id].sort())
-    expect(all.get(a.id)?.get('5')).toMatchObject({ checkNumber: '5', ticked: true, remarks: 'r', updatedBy: user.name })
-    expect(all.get(a.id)?.get('0005')).toBeUndefined()
+    expect(all.get(a.id)).toHaveLength(1)
+    expect(all.get(a.id)?.[0]).toMatchObject({ checkNumber: '5', runTo: null, ticked: true, remarks: 'r', updatedBy: user.name })
     const onlyB = await loadInventoryNotes(testDb, [b.id])
     expect([...onlyB.keys()]).toEqual([b.id])
     expect(await loadInventoryNotes(testDb, [])).toEqual(new Map())

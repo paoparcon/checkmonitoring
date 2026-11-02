@@ -16,27 +16,26 @@ const noteSelect = {
 } as const
 type NoteRow = Prisma.CheckInventoryNoteGetPayload<{ select: typeof noteSelect }>
 
+// The column holds '' for a single number (part of the unique key); the pure layer reads null.
 const toNote = (r: NoteRow): InventoryNote =>
-  ({ checkNumber: r.checkNumber, runTo: r.runTo, ticked: r.ticked, remarks: r.remarks, updatedAt: r.updatedAt, updatedBy: r.updatedBy.name })
+  ({ checkNumber: r.checkNumber, runTo: r.runTo || null, ticked: r.ticked, remarks: r.remarks, updatedAt: r.updatedAt, updatedBy: r.updatedBy.name })
 
 /**
  * Every inventory note of the given check books (all books when undefined),
- * grouped by book and keyed by the canonical number — the key
- * `toInventoryLines` looks a line's number up under. One query per request.
+ * grouped by book, numbers canonical — what `toInventoryLines` takes. One
+ * query per request.
  */
-export async function loadInventoryNotes(db: Db, bookIds: readonly string[] | undefined): Promise<Map<string, Map<string, InventoryNote>>> {
+export async function loadInventoryNotes(db: Db, bookIds: readonly string[] | undefined): Promise<Map<string, InventoryNote[]>> {
   const rows = await db.checkInventoryNote.findMany({
     where: bookIds ? { checkBookId: { in: [...bookIds] } } : {},
+    orderBy: [{ checkNumber: 'asc' }, { runTo: 'asc' }],
     select: noteSelect,
   })
-  const out = new Map<string, Map<string, InventoryNote>>()
+  const out = new Map<string, InventoryNote[]>()
   for (const r of rows) {
-    let book = out.get(r.checkBookId)
-    if (!book) {
-      book = new Map()
-      out.set(r.checkBookId, book)
-    }
-    book.set(r.checkNumber, toNote(r))
+    const book = out.get(r.checkBookId) ?? []
+    if (book.length === 0) out.set(r.checkBookId, book)
+    book.push(toNote(r))
   }
   return out
 }
@@ -58,9 +57,11 @@ async function inTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T>)
 }
 
 /**
- * Record Finance's tick and remark against a MISSING number of a check book
- * (spec §H). Every Finance user. One row per (book, number), written in place;
- * one `inventory_note_recorded` audit row per write, carrying what it replaced.
+ * Record Finance's tick and remark against a MISSING number, or a MISSING run,
+ * of a check book (spec §H). Every Finance user. One row per (book, number,
+ * run end) — a run's note and its first number's note are two rows — written
+ * in place; one `inventory_note_recorded` audit row per write, carrying what
+ * it replaced.
  *
  * Refused for a number a check in that book already holds: the number is not
  * missing, and a check's status is recorded on the check. Refused for a
@@ -73,7 +74,8 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
   if (key === null) throw new DomainError('INVENTORY_NOT_NUMERIC', 'Only an all-digit check number can carry an inventory note.')
   const runTo = args.runTo ? inventoryKey(args.runTo) : null
   if (args.runTo && runTo === null) throw new DomainError('INVENTORY_NOT_NUMERIC', 'The end of a run must be an all-digit check number.')
-  if (runTo !== null && BigInt(runTo) < BigInt(key)) throw new DomainError('INVENTORY_RUN_INVERTED', 'A run ends at or after the number it starts on.')
+  if (runTo !== null && BigInt(runTo) <= BigInt(key)) throw new DomainError('INVENTORY_RUN_INVERTED', 'A run ends after the number it starts on.')
+  const runKey = runTo ?? ''
   const remarks = args.remarks.trim()
   if (remarks.length > INVENTORY_REMARKS_MAX) {
     throw new DomainError('INVENTORY_REMARKS_TOO_LONG', `Remarks are at most ${INVENTORY_REMARKS_MAX} characters.`)
@@ -92,13 +94,13 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
         `Check ${held.checkNumber} is on record in ${book.code} (${held.status.replace(/_/g, ' ')}); its status is recorded on the check, not here.`)
     }
     const before = await tx.checkInventoryNote.findUnique({
-      where: { checkBookId_checkNumber: { checkBookId: book.id, checkNumber: key } },
-      select: { ticked: true, remarks: true, runTo: true },
+      where: { checkBookId_checkNumber_runTo: { checkBookId: book.id, checkNumber: key, runTo: runKey } },
+      select: { ticked: true, remarks: true },
     })
     const row = await tx.checkInventoryNote.upsert({
-      where: { checkBookId_checkNumber: { checkBookId: book.id, checkNumber: key } },
-      create: { checkBookId: book.id, checkNumber: key, runTo, ticked: args.ticked, remarks: remarks || null, updatedById: args.userId },
-      update: { runTo, ticked: args.ticked, remarks: remarks || null, updatedById: args.userId },
+      where: { checkBookId_checkNumber_runTo: { checkBookId: book.id, checkNumber: key, runTo: runKey } },
+      create: { checkBookId: book.id, checkNumber: key, runTo: runKey, ticked: args.ticked, remarks: remarks || null, updatedById: args.userId },
+      update: { ticked: args.ticked, remarks: remarks || null, updatedById: args.userId },
       select: noteSelect,
     })
     await writeAudit(tx, {
@@ -106,7 +108,7 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
       details: {
         checkBook: book.code, checkBookId: book.id, checkNumber: key, runTo,
         ticked: args.ticked, remarks: remarks || null,
-        before: before ? { ticked: before.ticked, remarks: before.remarks, runTo: before.runTo } : null,
+        before: before ? { ticked: before.ticked, remarks: before.remarks } : null,
       },
       remarks: remarks || undefined,
     })

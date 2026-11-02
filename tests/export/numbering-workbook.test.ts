@@ -14,7 +14,7 @@ const ch = (n: string, status: SeriesCheque['status'] = 'RELEASED'): SeriesChequ
 const withLines = (
   a: { accountId: string; account: string; bank: string; company: string; series: AccountSeries }, notes: InventoryNote[] = [],
 ): NumberingAccount => {
-  const lines = toInventoryLines(a.series.entries, new Map(notes.map((n) => [n.checkNumber, n])))
+  const lines = toInventoryLines(a.series.entries, notes)
   return { ...a, lines, inventory: inventoryCounts(lines) }
 }
 const account = (code: string, cheques: SeriesCheque[], notes: InventoryNote[] = []): NumberingAccount =>

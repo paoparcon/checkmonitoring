@@ -174,12 +174,14 @@ model CheckBook {
 /// 2026-10-01-cheque-numbering-and-cancel-guard-design §H): a tick and a
 /// remark against a number the series shows as MISSING — no check in this
 /// system holds it — so the status of a physical check Acumatica does not
-/// know is recorded here and not in a spreadsheet. Keyed by check book and
-/// the number, stored canonical (decimal, no leading zeros; the screen shows
-/// it in the book's width). `runTo` is set when the note was recorded on a
-/// MISSING run too long to list number by number (`INVENTORY_LIST_MAX`): the
-/// note then stands for `checkNumber`..`runTo` as the run was that day, and
-/// the screen says so when the run has since changed shape. Never deleted:
+/// know is recorded here and not in a spreadsheet. A note is on ONE NUMBER
+/// (`runTo` empty) or on a RUN (`runTo` = the run's last number): the key is
+/// (book, number, runTo), so the whole-run tick on 174267–174389 and the tick
+/// on 174267 itself are two rows, not one (2026-11-03, second pass — a run
+/// opens into its numbers on a click). Numbers are stored canonical (decimal,
+/// no leading zeros; the screen shows them in the book's width). A run note
+/// stands for `checkNumber`..`runTo` as the run was that day, and the screen
+/// says so when the run has since changed shape. Never deleted:
 /// an untick with no remark is a note that says nothing, and the history is
 /// on the audit trail (`inventory_note_recorded`, no checkId — there is no
 /// check). A note whose number later arrives from Acumatica is shown
@@ -188,7 +190,7 @@ model CheckInventoryNote {
   id          String    @id @default(cuid())
   checkBookId String
   checkNumber String
-  runTo       String?
+  runTo       String    @default("")
   ticked      Boolean   @default(false)
   remarks     String?
   updatedById String
@@ -197,7 +199,7 @@ model CheckInventoryNote {
   checkBook   CheckBook @relation(fields: [checkBookId], references: [id])
   updatedBy   User      @relation("inventoryNoteUpdatedBy", fields: [updatedById], references: [id])
 
-  @@unique([checkBookId, checkNumber])
+  @@unique([checkBookId, checkNumber, runTo])
 }
 
 model Vendor {

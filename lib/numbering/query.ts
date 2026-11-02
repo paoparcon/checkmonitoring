@@ -125,7 +125,7 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
   return [...byBook.entries()]
     .map(([accountId, g]) => {
       const series = buildSeries(g.cheques, g.staged)
-      const lines = toInventoryLines(series.entries, notes.get(accountId) ?? new Map())
+      const lines = toInventoryLines(series.entries, notes.get(accountId) ?? [])
       return { accountId, account: g.account, bank: g.bank, company: companyLabel(g.companies), series, lines, inventory: inventoryCounts(lines) }
     })
     .sort((a, b) => a.account.localeCompare(b.account) || a.accountId.localeCompare(b.accountId))

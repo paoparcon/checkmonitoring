@@ -581,7 +581,29 @@ held number / non-numeric / unknown book / long remark, loading by book);
 `actions/inventory-note-action`; `numbering/query` +2; `numbering-view` +1;
 `export/numbering-workbook` +3 and the MISSING-row expectations updated.
 
-### H6. Out of scope
+### H6. Second pass, same day — a long run opens on a click
+
+User, on seeing `174267 – 174389 · MISSING · 123` in production: *"this can be click then back to
+collapse."* The run line is now a button: a click lists the run's numbers beneath it, one amber
+row each with its own tick and remark, `INVENTORY_EXPAND_PAGE = 200` at a time with SHOW NEXT for
+the rest (a run can be billions, so nothing is listed until asked, and the numbers are generated in
+the browser from `from` and `to`); another click closes it. The whole-run tick and remark stay on
+the run line. Consequences:
+
+- **A note is on one number OR on a run, never both in one row.** The key is now
+  `(checkBookId, checkNumber, runTo)`, `runTo = ''` for a single number (migration
+  `20261103000100_check_inventory_note_run_key`; existing null → ''). The whole-run tick on
+  174267–174389 and the tick on 174267 itself are two rows. The pure layer still reads `runTo` as
+  null for a single number.
+- A run line carries `notes`: the single-number notes recorded inside it, so an opened run shows
+  them. `inventoryCounts` counts a ticked run as every number it spans, else its ticked numbers.
+- A run note recorded on exactly this run wins; failing that, the newest recorded on a run from the
+  same first number, and the line says the run has changed.
+- `components/MissingRunRows.tsx` (client) is the run line and its opened rows;
+  `components/MissingNumberRow.tsx` is one MISSING number, used by both the server table and an
+  opened run. The file is unchanged: a run is still one row there.
+
+### H7. Out of scope
 
 Ticking a HELD check (its status is its record); a bulk "tick all"; a note on a range Finance
 types by hand; reading the inventory back into Acumatica.

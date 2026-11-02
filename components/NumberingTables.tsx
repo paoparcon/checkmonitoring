@@ -6,7 +6,9 @@ import { missingLabel, numberingHref } from '@/lib/numbering-view'
 import type { NumberingAccount } from '@/lib/numbering/query'
 import type { SeriesCheque, SeriesEntry, SeriesStaged } from '@/lib/numbering/series'
 import { runNoteStale, type InventoryLine, type InventoryNote } from '@/lib/numbering/inventory'
-import { InventoryNoteCell, type InventoryNoteView } from '@/components/InventoryNoteCell'
+import type { InventoryNoteView } from '@/components/InventoryNoteCell'
+import { MissingNumberRow } from '@/components/MissingNumberRow'
+import { MissingRunRows } from '@/components/MissingRunRows'
 
 const fmtDay = (d: Date | null) =>
   d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '—'
@@ -101,10 +103,6 @@ function StagedRow({ s, inventory }: { s: SeriesStaged; inventory?: boolean }) {
   )
 }
 
-const MissingPill = () => (
-  <span className="inline-block whitespace-nowrap rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold tracking-wide text-amber-800">MISSING</span>
-)
-
 /**
  * One check book's series in number order as the inventory (spec §H): each
  * MISSING number on its own highlighted line with Finance's tick box and
@@ -126,37 +124,16 @@ export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly 
         <tbody>
           {lines.map((e) => {
             if (e.kind === 'MISSING_NUMBER') {
-              return (
-                <tr key={`n-${e.number}`} className="border-b border-amber-200 bg-amber-50">
-                  <td className={`${th} font-semibold tabular-nums text-amber-800`}>{e.number}</td>
-                  <td className={`${th} text-amber-800/60`}>—</td>
-                  <td className={`${th} text-amber-800/60`}>NO CHECK IN THIS SYSTEM</td>
-                  <td className={`${th} text-right text-amber-800/60`}>—</td>
-                  <td className={th}><MissingPill /></td>
-                  <td className={`${th} py-2`}>
-                    <InventoryNoteCell checkBookId={checkBookId} checkNumber={e.number} note={e.note ? toView(e.note) : null} label={e.number} />
-                  </td>
-                </tr>
-              )
+              return <MissingNumberRow key={`n-${e.number}`} checkBookId={checkBookId} number={e.number} note={e.note ? toView(e.note) : null} />
             }
             if (e.kind === 'MISSING') {
-              const stale = runNoteStale(e)
+              const stale = e.note && runNoteStale(e) ? { from: e.note.checkNumber, to: e.note.runTo ?? e.note.checkNumber } : null
               return (
-                <tr key={`m-${e.from}`} className="border-b border-amber-200 bg-amber-50">
-                  <td colSpan={4} className={`${th} font-semibold tabular-nums text-amber-800`}>
-                    {missingLabel(e)}
-                    <span className="ml-2 font-normal text-amber-800/70">· too many to list one by one — one tick and one remark for the whole run</span>
-                  </td>
-                  <td className={th}><MissingPill /></td>
-                  <td className={`${th} py-2`}>
-                    <InventoryNoteCell checkBookId={checkBookId} checkNumber={e.from} runTo={e.to} note={e.note ? toView(e.note) : null} label={`${e.from} – ${e.to}`} />
-                    {stale && e.note && (
-                      <p className="mt-1 text-[11px] text-amber-800">
-                        Recorded on the run {e.note.checkNumber} – {e.note.runTo ?? e.note.checkNumber}; the run has since changed. Tick or remark again to confirm it for {e.from} – {e.to}.
-                      </p>
-                    )}
-                  </td>
-                </tr>
+                <MissingRunRows
+                  key={`m-${e.from}`} checkBookId={checkBookId} from={e.from} to={e.to} count={e.count} label={missingLabel(e)}
+                  runNote={e.note ? toView(e.note) : null} stale={stale}
+                  notes={Object.fromEntries(e.notes.map((n) => [n.checkNumber, toView(n)]))}
+                />
               )
             }
             if (e.kind === 'STAGED') return <StagedRow key={`s-${e.staged.acumaticaTenant}-${e.staged.acumaticaRef}`} s={e.staged} inventory />
