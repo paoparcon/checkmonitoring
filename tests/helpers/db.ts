@@ -58,6 +58,9 @@ export async function resetDb() {
     // on another file's cheques.
     await tx.acumaticaBill.deleteMany()
     await tx.cashAccount.deleteMany()
+    // Finance's inventory notes hang off a check book and a user (RESTRICT
+    // both ways), so they go before either.
+    await tx.checkInventoryNote.deleteMany()
     await tx.checkBook.deleteMany()
     await tx.vendor.deleteMany()
     await tx.company.deleteMany()

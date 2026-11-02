@@ -4,13 +4,23 @@ import ExcelJS from 'exceljs'
 import {
   buildNumberingWorkbook, sheetNameFor, NUMBERING_SUMMARY_SHEET, NUMBERING_ACCOUNT_HEADERS, NUMBERING_TO_FIX_SHEET, NUMBERING_TO_FIX_HEADERS,
 } from '@/lib/export/numbering-workbook'
-import { buildSeries, type SeriesCheque, type SeriesStaged } from '@/lib/numbering/series'
+import { buildSeries, type AccountSeries, type SeriesCheque, type SeriesStaged } from '@/lib/numbering/series'
+import { toInventoryLines, inventoryCounts, type InventoryNote } from '@/lib/numbering/inventory'
 import type { NumberingAccount } from '@/lib/numbering/query'
 
 const ch = (n: string, status: SeriesCheque['status'] = 'RELEASED'): SeriesCheque =>
   ({ id: `id-${n}`, checkNumber: n, checkDate: new Date('2026-09-01T00:00:00Z'), payeeName: 'HENKEL', amount: '197715.42', currency: 'PHP', status, cv: `CV-${n}` })
-const account = (code: string, cheques: SeriesCheque[]): NumberingAccount =>
-  ({ accountId: `acc-${code}`, account: code, bank: 'BPI', company: 'STK', series: buildSeries(cheques) })
+/** A NumberingAccount as the query builds one: the series plus its inventory lines (spec §H). */
+const withLines = (
+  a: { accountId: string; account: string; bank: string; company: string; series: AccountSeries }, notes: InventoryNote[] = [],
+): NumberingAccount => {
+  const lines = toInventoryLines(a.series.entries, new Map(notes.map((n) => [n.checkNumber, n])))
+  return { ...a, lines, inventory: inventoryCounts(lines) }
+}
+const account = (code: string, cheques: SeriesCheque[], notes: InventoryNote[] = []): NumberingAccount =>
+  withLines({ accountId: `acc-${code}`, account: code, bank: 'BPI', company: 'STK', series: buildSeries(cheques) }, notes)
+const note = (checkNumber: string, o: Partial<InventoryNote> = {}): InventoryNote =>
+  ({ checkNumber, runTo: null, ticked: true, remarks: 'spoiled form', updatedAt: new Date('2026-11-03T02:00:00Z'), updatedBy: 'Ana', ...o })
 const META = { generatedAt: new Date('2026-10-01T02:00:00Z'), generatedBy: 'Paolo Parcon', filterDescription: 'No filters applied', missingOnly: false, noAccountCount: 3, registerOnlyCount: 5, rowLimit: 50_000 }
 
 async function load(buf: ArrayBuffer) {
@@ -41,7 +51,7 @@ describe('buildNumberingWorkbook', () => {
   it('sets an auto-filter over the header and every written row', async () => {
     const wb = await load(await buildNumberingWorkbook({ accounts: [account('BPI STK', [ch('101'), ch('104')])], meta: META }))
     const af = wb.getWorksheet('BPI STK')!.autoFilter
-    expect(af).toBe('A1:J4')
+    expect(af).toBe('A1:N5') // header, 101, 102 MISSING, 103 MISSING, 104
   })
 
   it('writes a null amount as an empty cell and a real amount as a number', async () => {
@@ -64,7 +74,7 @@ describe('buildNumberingWorkbook', () => {
     expect(wb.getWorksheet('BPI STK')!.getRow(3).getCell(10).fill).toMatchObject({ type: 'pattern' })
   })
 
-  it('writes SUMMARY and one sheet per account, MISSING lines in their own columns, numbers as text', async () => {
+  it('writes SUMMARY and one sheet per account, each MISSING number as its own row with FROM, TO and COUNT, numbers as text', async () => {
     const wb = await load(await buildNumberingWorkbook({
       accounts: [account('BPI STK', [ch('101'), ch('104', 'VOIDED')]), account('MBTC A1', [ch('7')])],
       meta: META,
@@ -74,11 +84,14 @@ describe('buildNumberingWorkbook', () => {
     const ws = wb.getWorksheet('BPI STK')!
     expect(ws.getRow(1).values).toEqual([undefined, ...NUMBERING_ACCOUNT_HEADERS])
     expect(ws.getRow(2).getCell(1).value).toBe('101')
+    expect(ws.getRow(3).getCell(1).value).toBe('102')
     expect(ws.getRow(3).getCell(4).value).toBe('MISSING')
     expect(ws.getRow(3).getCell(7).value).toBe('102')
-    expect(ws.getRow(3).getCell(8).value).toBe('103')
-    expect(ws.getRow(3).getCell(9).value).toBe(2)
-    expect(ws.getRow(4).getCell(4).value).toBe('VOIDED')
+    expect(ws.getRow(3).getCell(8).value).toBe('102')
+    expect(ws.getRow(3).getCell(9).value).toBe(1)
+    expect(ws.getRow(4).getCell(1).value).toBe('103')
+    expect(ws.getRow(4).getCell(4).value).toBe('MISSING')
+    expect(ws.getRow(5).getCell(4).value).toBe('VOIDED')
 
     const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
     const text = summary.getSheetValues().flat().filter((v) => typeof v === 'string').join(' ')
@@ -111,8 +124,9 @@ describe('buildNumberingWorkbook', () => {
       meta: { ...META, missingOnly: true },
     }))
     const ws = wb.getWorksheet('BPI STK')!
-    expect(ws.rowCount).toBe(2)
+    expect(ws.rowCount).toBe(3) // 102 and 103, one row each
     expect(ws.getRow(2).getCell(4).value).toBe('MISSING')
+    expect(ws.getRow(3).getCell(4).value).toBe('MISSING')
   })
 
   it('missing-only writes no sheet for an account with nothing missing', async () => {
@@ -144,12 +158,64 @@ describe('buildNumberingWorkbook', () => {
   })
 })
 
+describe('the inventory columns (spec §H)', () => {
+  it('writes the tick, remark, who and when (Manila) on a MISSING number row, and nothing on an unnoted one', async () => {
+    const wb = await load(await buildNumberingWorkbook({
+      accounts: [account('BPI STK', [ch('101'), ch('104')], [note('102', { remarks: 'spoiled form' }), note('103', { ticked: false, remarks: null })])],
+      meta: META,
+    }))
+    const ws = wb.getWorksheet('BPI STK')!
+    expect(NUMBERING_ACCOUNT_HEADERS.slice(10)).toEqual(['TICKED', 'REMARKS', 'RECORDED BY', 'RECORDED AT'])
+    const r102 = ws.getRow(3)
+    expect(r102.getCell(1).value).toBe('102')
+    expect(r102.getCell(11).value).toBe('YES')
+    expect(r102.getCell(12).value).toBe('spoiled form')
+    expect(r102.getCell(13).value).toBe('Ana')
+    expect(r102.getCell(14).value).toEqual(new Date('2026-11-03T10:00:00Z')) // 02:00Z shown as 10:00 Manila
+    const r103 = ws.getRow(4)
+    expect(r103.getCell(11).value).toBe('NO')
+    expect(r103.getCell(12).value ?? null).toBeNull()
+    const r101 = ws.getRow(2)
+    expect(r101.getCell(11).value ?? null).toBeNull()
+  })
+
+  it('a run too long to list is one MISSING row carrying its run note, with the reason in NOTE', async () => {
+    const wb = await load(await buildNumberingWorkbook({
+      accounts: [account('BPI STK', [ch('1'), ch('500')], [note('2', { runTo: '499', remarks: 'booklet in vault' })])],
+      meta: META,
+    }))
+    const ws = wb.getWorksheet('BPI STK')!
+    expect(ws.rowCount).toBe(4)
+    const run = ws.getRow(3)
+    expect(run.getCell(1).value).toBe('2 – 499')
+    expect(run.getCell(9).value).toBe(498)
+    expect(String(run.getCell(10).value)).toContain('TOO LONG TO LIST')
+    expect(run.getCell(11).value).toBe('YES')
+    expect(run.getCell(12).value).toBe('booklet in vault')
+  })
+
+  it('a check holding a noted number shows the note with a word in NOTE, and SUMMARY carries TICKED', async () => {
+    const wb = await load(await buildNumberingWorkbook({
+      accounts: [account('BPI STK', [ch('101'), ch('102'), ch('105')], [note('101', { remarks: 'was missing' }), note('103'), note('104')])],
+      meta: META,
+    }))
+    const ws = wb.getWorksheet('BPI STK')!
+    expect(ws.getRow(2).getCell(10).value).toBe('INVENTORY NOTE RECORDED WHILE MISSING')
+    expect(ws.getRow(2).getCell(12).value).toBe('was missing')
+    const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
+    const labels = Array.from({ length: 14 }, (_, i) => summary.getRow(6).getCell(i + 1).value)
+    const col = labels.indexOf('TICKED') + 1
+    expect(col).toBe(labels.indexOf('MISSING RUNS') + 2)
+    expect(summary.getRow(7).getCell(col).value).toBe(2) // 103 and 104; the held 101 does not count
+  })
+})
+
 const stg = (ref: string, cv: string): SeriesStaged =>
   ({ acumaticaTenant: 'GOLIVE', acumaticaRef: cv, statedCheckRef: ref, checkDate: new Date('2026-09-02T00:00:00Z'), payeeName: 'HENKEL', amount: '500.00', currency: 'PHP' })
 
 describe('STAGED lines', () => {
   it('writes a STAGED row with the stated reference verbatim and the CV in NOTE', async () => {
-    const acc = { accountId: 'acc-X', account: 'BPI STK', bank: 'BPI', company: 'STK', series: buildSeries([ch('101'), ch('103')], [stg('102.', 'CV-ST000102')]) }
+    const acc = withLines({ accountId: 'acc-X', account: 'BPI STK', bank: 'BPI', company: 'STK', series: buildSeries([ch('101'), ch('103')], [stg('102.', 'CV-ST000102')]) })
     const wb = await load(await buildNumberingWorkbook({ accounts: [acc], meta: META }))
     const ws = wb.getWorksheet('BPI STK')!
     const row = ws.getRow(3)
@@ -170,14 +236,14 @@ describe('STAGED lines', () => {
     expect(ws.getRow(26).getCell(1).value).toBe('6000100024')
 
     const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
-    const labels = Array.from({ length: 13 }, (_, i) => summary.getRow(6).getCell(i + 1).value)
+    const labels = Array.from({ length: 14 }, (_, i) => summary.getRow(6).getCell(i + 1).value)
     const col = labels.indexOf('OUT OF PATTERN') + 1
     expect(col).toBe(labels.indexOf('NOT NUMERIC') + 2)
     expect(summary.getRow(7).getCell(col).value).toBe(1)
   })
 
   it('SUMMARY carries a STAGED column', async () => {
-    const acc = { accountId: 'acc-X', account: 'BPI STK', bank: 'BPI', company: 'STK', series: buildSeries([ch('101')], [stg('102.', 'CV-1'), stg('102..', 'CV-2')]) }
+    const acc = withLines({ accountId: 'acc-X', account: 'BPI STK', bank: 'BPI', company: 'STK', series: buildSeries([ch('101')], [stg('102.', 'CV-1'), stg('102..', 'CV-2')]) })
     const wb = await load(await buildNumberingWorkbook({ accounts: [acc], meta: META }))
     const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
     const header = summary.getRow(6)
@@ -192,10 +258,10 @@ describe('TO FIX IN ACUMATICA (spec §G3)', () => {
   /** BPI STK: 25 in pattern (6000100000..24), a stray first 6000000001, one cheque and one staged line out of pattern. */
   function toFixBook(): NumberingAccount {
     const inPattern = Array.from({ length: 25 }, (_, i) => ch(String(6000100000 + i)))
-    return {
+    return withLines({
       accountId: 'acc-BPI', account: 'BPI STK', bank: 'BPI', company: 'STK',
       series: buildSeries([ch('6000000001'), ...inPattern, ch('1791361374', 'VOIDED')], [stg('1791361375.', 'CV-ST000777')]),
-    }
+    })
   }
   const rowsOf = (ws: ExcelJS.Worksheet) =>
     Array.from({ length: ws.rowCount - 1 }, (_, i) => Array.from({ length: 7 }, (_, c) => ws.getRow(i + 2).getCell(c + 1).value))
@@ -221,14 +287,14 @@ describe('TO FIX IN ACUMATICA (spec §G3)', () => {
     const dated = (n: string, day: string | null, status: SeriesCheque['status'] = 'RELEASED'): SeriesCheque =>
       ({ ...ch(n, status), checkDate: day ? new Date(`${day}T00:00:00Z`) : null })
     const inPattern = (base: number) => Array.from({ length: 25 }, (_, i) => ch(String(base + i)))
-    const older: NumberingAccount = {
+    const older: NumberingAccount = withLines({
       accountId: 'acc-A', account: 'AAA BOOK', bank: 'BPI', company: 'STK',
       series: buildSeries([...inPattern(6000100000), dated('1791000001', '2026-02-10'), dated('1791000002', null)]),
-    }
-    const newer: NumberingAccount = {
+    })
+    const newer: NumberingAccount = withLines({
       accountId: 'acc-Z', account: 'ZZZ BOOK', bank: 'BPI', company: 'STK',
       series: buildSeries([...inPattern(6000200000), dated('1791000003', '2026-10-05', 'SIGNATURE_PENDING')]),
-    }
+    })
     const wb = await load(await buildNumberingWorkbook({ accounts: [older, newer], meta: META }))
     const numbers = rowsOf(wb.getWorksheet(NUMBERING_TO_FIX_SHEET)!).map((r) => r[1])
     expect(numbers).toEqual(['1791000003', '1791000001', '1791000002'])

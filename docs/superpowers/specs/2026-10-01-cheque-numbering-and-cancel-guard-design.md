@@ -505,3 +505,83 @@ null), a cheque whose book changed after planning is untouched, fill behaviour u
 register-only cheques. `numbering/series`: `strayEnds` (first/last beyond 10,000; inward up to 3;
 none when gaps are small; ignores out-of-pattern). `export/numbering-workbook`: the TO FIX sheet's
 rows and reasons; the register-only line on SUMMARY.
+
+---
+
+## H. Addendum, 2026-11-03 — NUMBERING is the check inventory
+
+User request, 2026-11-03: *"we will use numbering module for check inventory, have a check box for
+tick marks and remarks if the checks are missing. It should be in series even the checks are
+missing from acumatica so the finance will record the status."* This is the item the original
+"Out of scope" list deferred ("Recording an explanation against a MISSING number"), now wanted.
+
+### H1. The rule
+
+A **MISSING number is a line of its own**, with a tick box and a remarks field, so the status of a
+physical check Acumatica does not hold — unused in the vault, spoiled, lost, written by hand and
+never encoded — is recorded here and not in a spreadsheet. Nothing about the series changes:
+`buildSeries` still reports a gap as one MISSING run with its exact count, and every count on the
+page and on SUMMARY is the same as before.
+
+- **A run of at most `INVENTORY_LIST_MAX = 100` numbers is listed one number per line.** Measured
+  on production the day this was built: 687 MISSING runs across 9 books; at 100, 579 runs (84%)
+  are listed number by number — 5,014 lines in all, at most 1,915 on one book (BPI-S-4636) — and
+  the 108 longer runs stay one line each. The largest run is 11,913,041,270 numbers.
+- **A longer run is one line with one tick and one remark for the whole run**, keyed to the run's
+  first number; the note also stores the run's last number (`runTo`) as it was that day. If the
+  run has since changed shape (a check arrived inside it), the line says which run the note was
+  recorded on and asks for it to be confirmed again. Nothing is inferred.
+- **A note is keyed by check book and canonical number** (decimal, no leading zeros), so a bound
+  padded to the book's width finds the note recorded on the bare number, and `007` and `7` are one
+  key.
+- **A note on a number that later arrives from Acumatica is kept** and shown read-only beside the
+  check (RECORDED WHILE MISSING), on screen and in the file. It is never written onto the check:
+  a check's status and remarks are the check's own.
+- **A note is refused for a number a check in that book holds** (the number is not missing; the
+  refusal names the check and its status), for a number that is not all digits, for a run end
+  that is not a number or precedes its start, and for a remark over 500 characters.
+- **Every Finance user** may tick and remark, as with FINANCE NOTES on a check. Each save is one
+  `inventory_note_recorded` audit row — `actorType USER`, **no `checkId`** (there is no check) —
+  carrying the book, the number, the run end, the tick and remark, and what it replaced. Rows in
+  `CheckInventoryNote` are written in place and never deleted; the history is the audit trail.
+
+### H2. Screen
+
+The one-book view (`/numbering?account=…`) gains an INVENTORY · TICK AND REMARKS column. Each
+MISSING number is an amber row — number, NO CHECK IN THIS SYSTEM, a MISSING pill — whose cell is
+`components/InventoryNoteCell.tsx`: a tick box saved the moment it changes and a remarks box saved
+when it is left (or Enter) with text that differs from what is recorded; the row then states who
+recorded it and when, with no page reload (a book can show 7,000 lines). A refused save puts the
+box back as recorded and shows the domain's words. A line above the table states the inventory:
+MISSING numbers, lines, TICKED, WITH REMARKS. MISSING ONLY shows the gap lines alone — the
+worksheet. SUMMARY gains a TICKED column: the MISSING numbers covered by a ticked note, a ticked
+run counting every number it still spans.
+
+### H3. File
+
+The book sheets write each MISSING number as its own row (FROM = TO = the number, COUNT 1), a
+long run as one row whose NOTE says it is too long to list, and four new columns at the end —
+TICKED (YES/NO), REMARKS, RECORDED BY, RECORDED AT (Manila) — so the file is the inventory as the
+screen shows it. SUMMARY gains TICKED. The row cap applies as before.
+
+### H4. Code
+
+`lib/numbering/inventory.ts` (pure: `inventoryKey`, `toInventoryLines`, `inventoryCounts`,
+`runNoteStale`, `INVENTORY_LIST_MAX`); `lib/numbering/inventory-notes.ts` (`loadInventoryNotes`,
+`recordInventoryNote` — the one writer, with its audit row); `NumberingAccount.lines` and
+`.inventory` from `listNumberingAccounts`; `app/numbering/actions.ts`
+(`recordInventoryNoteAction`); migration `20261103000000_check_inventory_note`.
+
+### H5. Tests
+
+`numbering/inventory` (pure: key, short run listed, cap, billion-number run, padded bounds, a
+held number keeps its note, staged passes through, counts, stale run note);
+`numbering/inventory-notes` (row and audit, update in place with `before`, run bounds, refused
+held number / non-numeric / unknown book / long remark, loading by book);
+`actions/inventory-note-action`; `numbering/query` +2; `numbering-view` +1;
+`export/numbering-workbook` +3 and the MISSING-row expectations updated.
+
+### H6. Out of scope
+
+Ticking a HELD check (its status is its record); a bulk "tick all"; a note on a range Finance
+types by hand; reading the inventory back into Acumatica.

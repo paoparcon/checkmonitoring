@@ -5,6 +5,8 @@ import { StatusPill } from '@/components/StatusPill'
 import { missingLabel, numberingHref } from '@/lib/numbering-view'
 import type { NumberingAccount } from '@/lib/numbering/query'
 import type { SeriesCheque, SeriesEntry, SeriesStaged } from '@/lib/numbering/series'
+import { runNoteStale, type InventoryLine, type InventoryNote } from '@/lib/numbering/inventory'
+import { InventoryNoteCell, type InventoryNoteView } from '@/components/InventoryNoteCell'
 
 const fmtDay = (d: Date | null) =>
   d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '—'
@@ -22,6 +24,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
             <th className={th}>FIRST</th><th className={th}>LAST</th>
             <th className={`${th} text-right`}>HELD</th><th className={`${th} text-right`}>VOIDED</th>
             <th className={`${th} text-right`}>CANCELLED</th><th className={`${th} text-right`}>STAGED</th><th className={`${th} text-right`}>MISSING</th>
+            <th className={`${th} text-right`}>TICKED</th>
             <th className={`${th} text-right`}>NOT NUMERIC</th><th className={`${th} text-right`}>OUT OF PATTERN</th>
           </tr>
         </thead>
@@ -42,6 +45,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
                 <td className={`${th} text-right tabular-nums ${s.missingRuns ? 'font-semibold text-amber-700' : ''}`}>
                   {fmtCount(s.missingNumbers)}{s.missingRuns ? ` (${s.missingRuns.toLocaleString('en-PH')})` : ''}
                 </td>
+                <td className={`${th} text-right tabular-nums ${a.inventory.ticked !== '0' ? 'font-semibold text-success-ink' : ''}`}>{fmtCount(a.inventory.ticked)}</td>
                 <td className={`${th} text-right tabular-nums`}>{s.notNumeric.toLocaleString('en-PH')}</td>
                 <td className={`${th} text-right tabular-nums`}>{s.outOfPattern.toLocaleString('en-PH')}</td>
               </tr>
@@ -53,7 +57,22 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
   )
 }
 
-function ChequeRow({ c, note }: { c: SeriesCheque; note?: string }) {
+const toView = (n: InventoryNote): InventoryNoteView =>
+  ({ ticked: n.ticked, remarks: n.remarks, updatedBy: n.updatedBy, updatedAt: n.updatedAt.toISOString() })
+
+/** A note recorded while the number was MISSING, shown read-only once a check holds the number. */
+function HeldNote({ note }: { note: InventoryNote | null }) {
+  if (!note) return null
+  return (
+    <div className="text-xs text-slate-500">
+      <span className={`font-semibold ${note.ticked ? 'text-success-ink' : 'text-slate-400'}`}>{note.ticked ? 'TICKED' : 'NOT TICKED'}</span>
+      {note.remarks && <span> · {note.remarks}</span>}
+      <span className="block text-[11px] text-slate-400">RECORDED WHILE MISSING · {note.updatedBy}</span>
+    </div>
+  )
+}
+
+function ChequeRow({ c, note, inventory }: { c: SeriesCheque; note?: string; inventory?: InventoryNote | null }) {
   return (
     <tr className="border-b border-slate-100 odd:bg-white even:bg-ground">
       <td className={`${th} tabular-nums`}><Link prefetch={false} href={`/checks/${c.id}`} className="underline underline-offset-2">{c.checkNumber}</Link></td>
@@ -61,11 +80,12 @@ function ChequeRow({ c, note }: { c: SeriesCheque; note?: string }) {
       <td className={th}>{c.payeeName ?? '—'}</td>
       <td className={`${th} text-right tabular-nums`}>{formatMoney(c.amount, c.currency)}</td>
       <td className={th}><StatusPill status={c.status} />{note && <span className="ml-2 text-xs font-semibold text-amber-700">{note}</span>}</td>
+      {inventory !== undefined && <td className={th}><HeldNote note={inventory} /></td>}
     </tr>
   )
 }
 
-function StagedRow({ s }: { s: SeriesStaged }) {
+function StagedRow({ s, inventory }: { s: SeriesStaged; inventory?: boolean }) {
   return (
     <tr className="border-b border-slate-100 bg-slate-50 text-slate-600">
       <td className={`${th} tabular-nums`}>{s.statedCheckRef}</td>
@@ -76,31 +96,72 @@ function StagedRow({ s }: { s: SeriesStaged }) {
         <span className="inline-block whitespace-nowrap rounded-full bg-slate-200 px-2.5 py-1 text-xs font-semibold tracking-wide text-slate-700">STAGED</span>
         <span className="ml-2 text-xs text-slate-500">Acumatica {s.acumaticaRef}</span>
       </td>
+      {inventory && <td className={th} />}
     </tr>
   )
 }
 
+const MissingPill = () => (
+  <span className="inline-block whitespace-nowrap rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold tracking-wide text-amber-800">MISSING</span>
+)
+
 /**
- * One account's series in number order, each MISSING run as one highlighted line
- * and each number Acumatica re-used with a trailing dot as a grey STAGED line.
+ * One check book's series in number order as the inventory (spec §H): each
+ * MISSING number on its own highlighted line with Finance's tick box and
+ * remarks, a run too long to list as one line with one tick and remark for
+ * the whole run, and each number Acumatica re-used with a trailing dot as a
+ * grey STAGED line. A check that now holds a number noted while it was
+ * missing shows that note read-only.
  */
-export function NumberingEntriesTable({ entries }: { entries: readonly SeriesEntry[] }) {
+export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly InventoryLine[]; checkBookId: string }) {
   return (
     <section className="overflow-x-auto rounded-2xl bg-white ring-1 ring-hairline">
       <table className="w-full text-sm">
         <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-          <tr><th className={th}>CHECK NUMBER</th><th className={th}>CHECK DATE</th><th className={th}>PAYEE</th><th className={`${th} text-right`}>AMOUNT</th><th className={th}>STATUS</th></tr>
+          <tr>
+            <th className={th}>CHECK NUMBER</th><th className={th}>CHECK DATE</th><th className={th}>PAYEE</th>
+            <th className={`${th} text-right`}>AMOUNT</th><th className={th}>STATUS</th><th className={th}>INVENTORY · TICK AND REMARKS</th>
+          </tr>
         </thead>
         <tbody>
-          {entries.map((e) => e.kind === 'MISSING'
-            ? (
-              <tr key={`m-${e.from}`} className="border-b border-amber-200 bg-amber-50">
-                <td colSpan={5} className={`${th} font-semibold tabular-nums text-amber-800`}>{missingLabel(e)}</td>
-              </tr>
-            )
-            : e.kind === 'STAGED'
-            ? <StagedRow key={`s-${e.staged.acumaticaTenant}-${e.staged.acumaticaRef}`} s={e.staged} />
-            : <ChequeRow key={e.cheque.id} c={e.cheque} note={e.duplicate ? 'DUPLICATE NUMBER' : undefined} />)}
+          {lines.map((e) => {
+            if (e.kind === 'MISSING_NUMBER') {
+              return (
+                <tr key={`n-${e.number}`} className="border-b border-amber-200 bg-amber-50">
+                  <td className={`${th} font-semibold tabular-nums text-amber-800`}>{e.number}</td>
+                  <td className={`${th} text-amber-800/60`}>—</td>
+                  <td className={`${th} text-amber-800/60`}>NO CHECK IN THIS SYSTEM</td>
+                  <td className={`${th} text-right text-amber-800/60`}>—</td>
+                  <td className={th}><MissingPill /></td>
+                  <td className={`${th} py-2`}>
+                    <InventoryNoteCell checkBookId={checkBookId} checkNumber={e.number} note={e.note ? toView(e.note) : null} label={e.number} />
+                  </td>
+                </tr>
+              )
+            }
+            if (e.kind === 'MISSING') {
+              const stale = runNoteStale(e)
+              return (
+                <tr key={`m-${e.from}`} className="border-b border-amber-200 bg-amber-50">
+                  <td colSpan={4} className={`${th} font-semibold tabular-nums text-amber-800`}>
+                    {missingLabel(e)}
+                    <span className="ml-2 font-normal text-amber-800/70">· too many to list one by one — one tick and one remark for the whole run</span>
+                  </td>
+                  <td className={th}><MissingPill /></td>
+                  <td className={`${th} py-2`}>
+                    <InventoryNoteCell checkBookId={checkBookId} checkNumber={e.from} runTo={e.to} note={e.note ? toView(e.note) : null} label={`${e.from} – ${e.to}`} />
+                    {stale && e.note && (
+                      <p className="mt-1 text-[11px] text-amber-800">
+                        Recorded on the run {e.note.checkNumber} – {e.note.runTo ?? e.note.checkNumber}; the run has since changed. Tick or remark again to confirm it for {e.from} – {e.to}.
+                      </p>
+                    )}
+                  </td>
+                </tr>
+              )
+            }
+            if (e.kind === 'STAGED') return <StagedRow key={`s-${e.staged.acumaticaTenant}-${e.staged.acumaticaRef}`} s={e.staged} inventory />
+            return <ChequeRow key={e.cheque.id} c={e.cheque} note={e.duplicate ? 'DUPLICATE NUMBER' : undefined} inventory={e.note} />
+          })}
         </tbody>
       </table>
     </section>

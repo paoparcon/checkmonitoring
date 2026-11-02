@@ -93,6 +93,42 @@ describe('listNumberingAccounts', () => {
   })
 })
 
+describe('listNumberingAccounts — the inventory (spec §H)', () => {
+  it('lists each MISSING number on its own line with the note recorded on it, and counts what is ticked', async () => {
+    const user = await testDb.user.create({ data: { email: 'ana@rcl.test', name: 'Ana', passwordHash: 'x' } })
+    const first = await acuCheck({ checkNumber: '100' })
+    const book = await bookFor(first)
+    await inBook(book, { checkNumber: '104' })
+    await testDb.checkInventoryNote.create({ data: { checkBookId: book.id, checkNumber: '101', ticked: true, remarks: 'spoiled', updatedById: user.id } })
+    await testDb.checkInventoryNote.create({ data: { checkBookId: book.id, checkNumber: '103', ticked: false, remarks: 'asked the bank', updatedById: user.id } })
+    const [acc] = await listNumberingAccounts(testDb, {})
+    expect(acc.lines.map((l) => (l.kind === 'MISSING_NUMBER' ? `N ${l.number}` : l.kind === 'CHECK' ? l.cheque.checkNumber : l.kind)))
+      .toEqual(['100', 'N 101', 'N 102', 'N 103', '104'])
+    const n101 = acc.lines[1]
+    expect(n101.kind === 'MISSING_NUMBER' && n101.note).toMatchObject({ ticked: true, remarks: 'spoiled', updatedBy: 'Ana' })
+    const n102 = acc.lines[2]
+    expect(n102.kind === 'MISSING_NUMBER' && n102.note).toBeNull()
+    expect(acc.inventory).toEqual({ ticked: '1', remarked: 2, lines: 3 })
+    // The series itself is unchanged: one MISSING run of three.
+    expect(acc.series.summary).toMatchObject({ missingNumbers: '3', missingRuns: 1 })
+  })
+
+  it("another book's note on the same number is not read into this one", async () => {
+    const user = await testDb.user.create({ data: { email: 'ana@rcl.test', name: 'Ana', passwordHash: 'x' } })
+    const a = await acuCheck({ checkNumber: '100' })
+    const bookA = await bookFor(a, 'AAA')
+    await inBook(bookA, { checkNumber: '102' })
+    const b = await acuCheck({ checkNumber: '100' })
+    const bookB = await bookFor(b, 'BBB')
+    await inBook(bookB, { checkNumber: '102' })
+    await testDb.checkInventoryNote.create({ data: { checkBookId: bookB.id, checkNumber: '101', ticked: true, updatedById: user.id } })
+    const [accA, accB] = await listNumberingAccounts(testDb, {})
+    expect(accA.inventory.ticked).toBe('0')
+    expect(accB.inventory.ticked).toBe('1')
+    expect((await listNumberingAccounts(testDb, { checkBookId: bookA.id }))[0].inventory.ticked).toBe('0')
+  })
+})
+
 describe('listNumberingAccounts — a check book shared across companies (spec §E)', () => {
   /** Book 500-502: X holds 500 and 502, Y holds 501. A second book holds only X's 900. */
   async function sharedBook() {

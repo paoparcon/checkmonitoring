@@ -44,6 +44,11 @@ describe('visibleEntries', () => {
     expect(visibleEntries([cheque, gap], false)).toEqual([cheque, gap])
     expect(visibleEntries([cheque, gap], true)).toEqual([gap])
   })
+  it('MISSING ONLY keeps a MISSING number listed on its own line too (spec §H)', () => {
+    const number = { kind: 'MISSING_NUMBER', number: '2', note: null } as const
+    const staged = { kind: 'STAGED' } as const
+    expect(visibleEntries([cheque, number, staged, gap], true)).toEqual([number, gap])
+  })
 })
 
 describe('labels', () => {

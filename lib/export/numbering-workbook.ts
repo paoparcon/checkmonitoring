@@ -4,20 +4,25 @@ import { currencyNumberFormat } from './report'
 import { BAND_FILL, COUNT_FORMAT, DATE_FORMAT, styleHeaderCell } from './sheet-style'
 import type { NumberingAccount } from '@/lib/numbering/query'
 import { strayEnds, type SeriesCheque, type SeriesStaged, type StrayEnd } from '@/lib/numbering/series'
+import type { InventoryNote } from '@/lib/numbering/inventory'
 import { visibleEntries, registerOnlyLine, NUMBERING_SCOPE_NOTE } from '@/lib/numbering-view'
 
 /**
  * The numbering report as a workbook: SUMMARY, TO FIX IN ACUMATICA (spec §G3), then one sheet per cheque book with
- * every cheque in number order, each MISSING run as one row whose FROM, TO
+ * every cheque in number order, each MISSING number as one row (spec §H — a
+ * run of more than INVENTORY_LIST_MAX numbers stays one row) whose FROM, TO
  * and COUNT have their own columns, and each number Acumatica re-used with a
  * trailing dot as a STAGED row (spec §C) — so a filter on STATUS = MISSING works
- * (spec 2026-10-01-cheque-numbering-and-cancel-guard-design §B4). Cheque
+ * (spec 2026-10-01-cheque-numbering-and-cancel-guard-design §B4). Finance's
+ * inventory tick and remark, with who recorded them and when, are the last
+ * four columns — the file is the inventory as the screen shows it. Cheque
  * numbers are text cells. Amounts are Excel numbers in the cells, the one
  * sanctioned use of a JS number for money, as in `recon-workbook.ts`.
  */
 export const NUMBERING_SUMMARY_SHEET = 'SUMMARY'
 export const NUMBERING_ACCOUNT_HEADERS = [
   'CHECK NUMBER', 'CHECK DATE', 'PAYEE', 'STATUS', 'CURRENCY', 'AMOUNT', 'FROM', 'TO', 'COUNT', 'NOTE',
+  'TICKED', 'REMARKS', 'RECORDED BY', 'RECORDED AT',
 ] as const
 /**
  * TO FIX IN ACUMATICA (spec §G3): every OUT OF PATTERN cheque or staged line and
@@ -26,7 +31,7 @@ export const NUMBERING_ACCOUNT_HEADERS = [
  */
 export const NUMBERING_TO_FIX_SHEET = 'TO FIX IN ACUMATICA'
 export const NUMBERING_TO_FIX_HEADERS = ['CHECK BOOK', 'CHECK NUMBER', 'CV', 'CHECK DATE', 'PAYEE', 'STATUS', 'REASON'] as const
-const SUMMARY_HEADERS =['CHECK BOOK', 'BANK', 'COMPANY', 'FIRST', 'LAST', 'HELD', 'VOIDED', 'CANCELLED', 'STAGED', 'MISSING NUMBERS', 'MISSING RUNS', 'NOT NUMERIC', 'OUT OF PATTERN'] as const
+const SUMMARY_HEADERS =['CHECK BOOK', 'BANK', 'COMPANY', 'FIRST', 'LAST', 'HELD', 'VOIDED', 'CANCELLED', 'STAGED', 'MISSING NUMBERS', 'MISSING RUNS', 'TICKED', 'NOT NUMERIC', 'OUT OF PATTERN'] as const
 
 export type NumberingMeta = {
   generatedAt: Date; generatedBy: string; filterDescription: string
@@ -73,7 +78,7 @@ export async function buildNumberingWorkbook(
   wb.creator = 'Check Release Monitoring'
   wb.created = meta.generatedAt
 
-  const lines = accounts.map((a) => ({ a, entries: visibleEntries(a.series.entries, meta.missingOnly) }))
+  const lines = accounts.map((a) => ({ a, entries: visibleEntries(a.lines, meta.missingOnly) }))
   const totalLines = lines.reduce(
     (n, l) => n + l.entries.length + (meta.missingOnly ? 0 : l.a.series.notNumeric.length + l.a.series.outOfPattern.length), 0)
 
@@ -101,7 +106,7 @@ export async function buildNumberingWorkbook(
     const row = ws.getRow(7 + i)
     const values: (string | number | null)[] = [
       a.account, a.bank, a.company, s.first, s.last, s.held, s.voided, s.cancelled, s.staged,
-      countCell(s.missingNumbers), s.missingRuns, s.notNumeric, s.outOfPattern,
+      countCell(s.missingNumbers), s.missingRuns, countCell(a.inventory.ticked), s.notNumeric, s.outOfPattern,
     ]
     values.forEach((v, col) => {
       row.getCell(col + 1).value = v
@@ -109,7 +114,7 @@ export async function buildNumberingWorkbook(
     })
     if (i % 2 === 1) row.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL } } })
   })
-  ;[22, 10, 10, 14, 14, 10, 10, 12, 10, 18, 14, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w })
+  ;[22, 10, 10, 14, 14, 10, 10, 12, 10, 18, 14, 10, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
   const fix = wb.addWorksheet(NUMBERING_TO_FIX_SHEET, { views: [{ state: 'frozen', ySplit: 1 }] })
   NUMBERING_TO_FIX_HEADERS.forEach((label, i) => styleHeaderCell(fix.getRow(1).getCell(i + 1), label, 'left'))
@@ -156,7 +161,16 @@ export async function buildNumberingWorkbook(
     const h = sheet.getRow(1)
     NUMBERING_ACCOUNT_HEADERS.forEach((label, i) => styleHeaderCell(h.getCell(i + 1), label, label === 'AMOUNT' || label === 'COUNT' ? 'right' : 'left'))
     let r = 2
-    const chequeRow = (c: SeriesCheque, note: string | null) => {
+    // The inventory columns (spec §H): the tick as YES/NO, the remark, who and when (Manila).
+    const noteCells = (row: ExcelJS.Row, n: InventoryNote | null) => {
+      if (!n) return
+      row.getCell(11).value = n.ticked ? 'YES' : 'NO'
+      row.getCell(12).value = n.remarks
+      row.getCell(13).value = n.updatedBy
+      row.getCell(14).value = new Date(n.updatedAt.getTime() + 8 * 60 * 60 * 1000)
+      row.getCell(14).numFmt = 'dd mmm yyyy hh:mm'
+    }
+    const chequeRow = (c: SeriesCheque, note: string | null, inventory: InventoryNote | null = null) => {
       const row = sheet.getRow(r++)
       row.getCell(1).value = c.checkNumber
       row.getCell(2).value = c.checkDate
@@ -166,7 +180,8 @@ export async function buildNumberingWorkbook(
       row.getCell(5).value = c.currency
       row.getCell(6).value = c.amount === null ? null : Number(c.amount)
       row.getCell(6).numFmt = currencyNumberFormat(c.currency)
-      row.getCell(10).value = note
+      row.getCell(10).value = inventory ? [note, 'INVENTORY NOTE RECORDED WHILE MISSING'].filter(Boolean).join('; ') : note
+      noteCells(row, inventory)
     }
     const stagedRow = (s: SeriesStaged, note?: string) => {
       const row = sheet.getRow(r++)
@@ -196,22 +211,25 @@ export async function buildNumberingWorkbook(
         continue
       }
       const e = item.e
-      if (e.kind === 'CHECK') { chequeRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : null); continue }
+      if (e.kind === 'CHECK') { chequeRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : null, e.note); continue }
       if (e.kind === 'STAGED') { stagedRow(e.staged); continue }
       const row = sheet.getRow(r++)
-      row.getCell(1).value = e.from === e.to ? e.from : `${e.from} – ${e.to}`
+      const from = e.kind === 'MISSING_NUMBER' ? e.number : e.from
+      const to = e.kind === 'MISSING_NUMBER' ? e.number : e.to
+      row.getCell(1).value = from === to ? from : `${from} – ${to}`
       row.getCell(4).value = 'MISSING'
-      row.getCell(7).value = e.from
-      row.getCell(8).value = e.to
-      row.getCell(9).value = countCell(e.count)
+      row.getCell(7).value = from
+      row.getCell(8).value = to
+      row.getCell(9).value = countCell(e.kind === 'MISSING_NUMBER' ? '1' : e.count)
       row.getCell(9).numFmt = COUNT_FORMAT
       row.font = { bold: true }
-      row.getCell(10).value = null
+      row.getCell(10).value = e.kind === 'MISSING' ? 'RUN TOO LONG TO LIST ONE BY ONE; ONE TICK AND REMARK FOR THE WHOLE RUN' : null
+      noteCells(row, e.note)
       row.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } } })
     }
     sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: r - 1, column: NUMBERING_ACCOUNT_HEADERS.length } }
     budget -= Math.min(rows.length, budget)
-    ;[22, 14, 36, 18, 10, 18, 14, 14, 12, 18].forEach((w, i) => { sheet.getColumn(i + 1).width = w })
+    ;[22, 14, 36, 18, 10, 18, 14, 14, 12, 28, 8, 36, 18, 18].forEach((w, i) => { sheet.getColumn(i + 1).width = w })
   }
 
   return wb.xlsx.writeBuffer()

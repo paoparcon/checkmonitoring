@@ -14,10 +14,13 @@ import { NumberingSummaryTable, NumberingEntriesTable, NotNumericTable, OutOfPat
 
 /**
  * CHEQUE NUMBERING — consecutives per cheque book (spec
- * 2026-10-01-cheque-numbering-and-cancel-guard-design §B3). Every cheque of
- * every status, in number order, with each unused number between the first and
- * last as one MISSING line. Everything shown is decided in `lib/numbering/`;
- * the export reads the same parameters, so the file and the screen agree.
+ * 2026-10-01-cheque-numbering-and-cancel-guard-design §B3), and since §H
+ * (2026-11-03) the check INVENTORY: every cheque of every status in number
+ * order, each MISSING number on its own line with Finance's tick box and
+ * remarks (a run of more than INVENTORY_LIST_MAX numbers as one line with one
+ * note), so the status of a check Acumatica does not hold is recorded here.
+ * Everything shown is decided in `lib/numbering/`; the export reads the same
+ * parameters, so the file and the screen agree.
  */
 export default async function NumberingPage({
   searchParams,
@@ -31,6 +34,7 @@ export default async function NumberingPage({
   const accountParam = params.account?.trim() || undefined
   const account = books.find((b) => b.id === accountParam)
   const missingOnly = isMissingOnly(params.missing)
+  const fmtBig = (s: string) => (s.length <= 15 ? Number(s).toLocaleString('en-PH') : s)
   const field = 'h-10 rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy'
 
   if (accountParam && !account) {
@@ -78,6 +82,12 @@ export default async function NumberingPage({
             {account ? account.code : `${accounts.length.toLocaleString('en-PH')} CHECK BOOK${accounts.length === 1 ? '' : 'S'}`}
             {' · '}{describeNumberingFilters({ company: scopedCompany?.code, account: account?.code, missingOnly })}
           </p>
+          {one && (
+            <p className="text-xs font-medium tracking-wide text-slate-500">
+              INVENTORY: {fmtBig(one.series.summary.missingNumbers)} MISSING NUMBER{one.series.summary.missingNumbers === '1' ? '' : 'S'} ON {one.inventory.lines.toLocaleString('en-PH')} LINE{one.inventory.lines === 1 ? '' : 'S'}
+              {' · '}{fmtBig(one.inventory.ticked)} TICKED · {one.inventory.remarked.toLocaleString('en-PH')} WITH REMARKS. A tick or a remark is saved as you change it.
+            </p>
+          )}
           {!account && noAccountCount > 0 && (
             <p className="text-xs font-medium tracking-wide text-slate-500">
               NOT IN ANY SERIES: {noAccountCount.toLocaleString('en-PH')} CHECK{noAccountCount === 1 ? '' : 'S'} WITH NO CHECK BOOK.
@@ -107,14 +117,14 @@ export default async function NumberingPage({
       {account && !one && <EmptyState title="NO CHECKS IN THIS CHECK BOOK">No check on record carries this check book.</EmptyState>}
 
       {one && (() => {
-        const entries = visibleEntries(one.series.entries, missingOnly)
+        const entries = visibleEntries(one.lines, missingOnly)
         return (
           <>
             {entries.length === 0 && one.series.summary.first === null && !missingOnly
               ? <EmptyState title="NO NUMERIC CHECKS">Every check in this check book carries a number that is not all digits; they are listed below.</EmptyState>
               : entries.length === 0
               ? <EmptyState title="NOTHING MISSING" tone="good">Every number from {one.series.summary.first ?? '—'} to {one.series.summary.last ?? '—'} is used here — held as a check or staged as a re-use.</EmptyState>
-              : <NumberingEntriesTable entries={entries} />}
+              : <NumberingEntriesTable lines={entries} checkBookId={one.accountId} />}
             {!missingOnly && one.series.notNumeric.length > 0 && (
               <>
                 <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">NOT NUMERIC — NOT IN THE SEQUENCE</h2>

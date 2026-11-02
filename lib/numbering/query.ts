@@ -1,6 +1,8 @@
 // lib/numbering/query.ts
 import type { Prisma, PrismaClient } from '@prisma/client'
 import { buildSeries, stagedSeriesNumber, type AccountSeries, type SeriesCheque, type SeriesStaged } from './series'
+import { toInventoryLines, inventoryCounts, type InventoryLine, type InventoryCounts } from './inventory'
+import { loadInventoryNotes } from './inventory-notes'
 
 type Db = PrismaClient | Prisma.TransactionClient
 
@@ -9,8 +11,14 @@ export type NumberingFilters = { companyId?: string; checkBookId?: string }
  * One series. `accountId` / `account` name the cheque book (`CheckBook.id` /
  * `.code`). `company` is the companies among the series' cheques, most
  * cheques first, joined ", " — `""` for a book holding staged lines only.
+ * `lines` is the same series as the inventory shows it (spec §H): a MISSING
+ * run of at most INVENTORY_LIST_MAX numbers listed one per line, each with
+ * Finance's tick and remark; `inventory` counts what is recorded.
  */
-export type NumberingAccount = { accountId: string; account: string; bank: string; company: string; series: AccountSeries }
+export type NumberingAccount = {
+  accountId: string; account: string; bank: string; company: string; series: AccountSeries
+  lines: InventoryLine[]; inventory: InventoryCounts
+}
 
 type Group = { account: string; bank: string; companies: Map<string, number>; cheques: SeriesCheque[]; staged: SeriesStaged[] }
 type BookRef = { id: string; code: string; bank: { code: string } }
@@ -111,8 +119,15 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
     })
   }
 
+  // Finance's inventory notes, one query for the books shown (spec §H).
+  const notes = await loadInventoryNotes(db, bookIds ?? [...byBook.keys()])
+
   return [...byBook.entries()]
-    .map(([accountId, g]) => ({ accountId, account: g.account, bank: g.bank, company: companyLabel(g.companies), series: buildSeries(g.cheques, g.staged) }))
+    .map(([accountId, g]) => {
+      const series = buildSeries(g.cheques, g.staged)
+      const lines = toInventoryLines(series.entries, notes.get(accountId) ?? new Map())
+      return { accountId, account: g.account, bank: g.bank, company: companyLabel(g.companies), series, lines, inventory: inventoryCounts(lines) }
+    })
     .sort((a, b) => a.account.localeCompare(b.account) || a.accountId.localeCompare(b.accountId))
 }
 

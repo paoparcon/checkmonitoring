@@ -1,5 +1,4 @@
 import { slugify } from './export/report'
-import type { SeriesEntry } from './numbering/series'
 
 /** The numbering screen's arithmetic — parameters, hrefs, labels, the filename. Pure. */
 export const NUMBERING_PATH = '/numbering'
@@ -22,8 +21,9 @@ export function isMissingOnly(value: string | null | undefined): boolean {
   return (value ?? '').trim() === '1'
 }
 
-export function visibleEntries(entries: readonly SeriesEntry[], missingOnly: boolean): SeriesEntry[] {
-  return missingOnly ? entries.filter((e) => e.kind === 'MISSING') : [...entries]
+/** MISSING ONLY keeps the gaps: a run line and every number listed one by one (spec §H). */
+export function visibleEntries<T extends { kind: string }>(entries: readonly T[], missingOnly: boolean): T[] {
+  return missingOnly ? entries.filter((e) => e.kind === 'MISSING' || e.kind === 'MISSING_NUMBER') : [...entries]
 }
 
 export function describeNumberingFilters(
@@ -62,4 +62,7 @@ export const NUMBERING_SCOPE_NOTE =
   'used and is listed as STAGED. A check Acumatica holds with a memo in place of its number is on /admin/staged, ' +
   'not here — its number may still be one of the MISSING. A number that does not match its book\'s usual length ' +
   'and first digits is listed as OUT OF PATTERN — usually a mistyped or misfiled check number in Acumatica — and ' +
-  'left out of the gap count.'
+  'left out of the gap count. ' +
+  'INVENTORY: each MISSING number is listed on its own line with a tick box and a remarks field, so the status ' +
+  'of a check Acumatica does not hold is recorded here; a run of more than 100 missing numbers is one line with ' +
+  'one tick and one remark for the whole run. Every tick and remark is on the audit trail.'

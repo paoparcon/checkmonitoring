@@ -132,7 +132,8 @@ It follows that:
 ## Commands
 
 ```bash
-npm run dev                    # local dev server
+npm run dev                    # local dev server — against PRODUCTION (DATABASE_URL)
+node --env-file=.env scripts/dev-testdb.mjs   # dev server on :3001 against the TEST database (seed it first)
 npm test                       # full suite (Vitest, hits the TEST database)
 npx tsc --noEmit               # REQUIRED before claiming done - see below
 npx next build
@@ -412,6 +413,23 @@ payment reference (`renumbered_by_acumatica`) and the series corrects itself. Me
 the page says so. Since 2026-10-05 (spec §G) only Acumatica checks are shown (register-only checks are a stated count), `backfill-check-books.ts --apply` moves a check whose book differs from Acumatica's onto Acumatica's (and clears it when Acumatica names a non-book account) — **run 2026-10-06 by the user on both tenants: 61 `check_book_realigned_to_acumatica` rows (56 moved, 5 cleared), snapshot `snapshots/check-books-GOLIVE-2026-10-05T23-03-14-358Z.json`; after it 0 to fill, realign or clear on either tenant — every Acumatica check's book is Acumatica's. 11,934 Acumatica checks, 11,043 with a book; 1,142 register-only, not shown** — and the Excel has a TO FIX IN ACUMATICA sheet — the OUT OF PATTERN checks and each book's stray ends (> 10,000 from the next number) with their CV, newest check date first (undated last; user request 2026-10-06). `next build` failed with *Cannot mix BigInt
 and other types* (Next's file tracer) on `1n`-style literal arithmetic in `lib/numbering/series.ts`;
 it uses `BigInt(0)` / `BigInt(1)` constants instead — keep it that way.
+
+**NUMBERING is also the CHECK INVENTORY (2026-11-03, spec §H).** On a book's page every MISSING
+number is its own amber line with a tick box and a remarks field (`components/InventoryNoteCell.tsx`,
+saved on change through `recordInventoryNoteAction` → `recordInventoryNote` in
+`lib/numbering/inventory-notes.ts`, every Finance user), so the status of a check Acumatica does not
+hold is recorded here and not in a spreadsheet. A run of more than `INVENTORY_LIST_MAX` (100) numbers
+stays one line with one tick and remark for the whole run, keyed to its first number with `runTo`
+stored; the line says so when the run has since changed shape. Measured 2026-11-03: 687 runs in 9
+books, 579 listed number by number at 100 (5,014 lines, at most 1,915 on BPI-S-4636). Notes live in
+`CheckInventoryNote` (book + canonical number, never deleted), each write one `inventory_note_recorded`
+audit row with NO checkId — the audit screen's check-number filter cannot find them; filter by action.
+A note is refused for a number a check in the book holds; a note whose number later arrives from
+Acumatica is shown read-only beside the check, never written onto it. `buildSeries` and every count
+are unchanged; `NumberingAccount.lines` (`lib/numbering/inventory.ts`, pure) is the series as the
+inventory shows it, and the Excel book sheets write one row per listed MISSING number plus TICKED,
+REMARKS, RECORDED BY, RECORDED AT. **Migration `20261103000000_check_inventory_note` must reach
+production BEFORE the deploy that carries it** — the page reads the table on every request.
 
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`
 mis-tokenises the pipe; `node node_modules/vitest/vitest.mjs run file -t "a|b"` is the same

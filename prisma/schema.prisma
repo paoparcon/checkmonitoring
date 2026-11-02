@@ -167,6 +167,37 @@ model CheckBook {
   bank      Bank    @relation(fields: [bankId], references: [id])
   company   Company @relation(fields: [companyId], references: [id])
   checks    Check[]
+  inventoryNotes CheckInventoryNote[]
+}
+
+/// Finance's check inventory on NUMBERING (2026-11-03, spec
+/// 2026-10-01-cheque-numbering-and-cancel-guard-design §H): a tick and a
+/// remark against a number the series shows as MISSING — no check in this
+/// system holds it — so the status of a physical check Acumatica does not
+/// know is recorded here and not in a spreadsheet. Keyed by check book and
+/// the number, stored canonical (decimal, no leading zeros; the screen shows
+/// it in the book's width). `runTo` is set when the note was recorded on a
+/// MISSING run too long to list number by number (`INVENTORY_LIST_MAX`): the
+/// note then stands for `checkNumber`..`runTo` as the run was that day, and
+/// the screen says so when the run has since changed shape. Never deleted:
+/// an untick with no remark is a note that says nothing, and the history is
+/// on the audit trail (`inventory_note_recorded`, no checkId — there is no
+/// check). A note whose number later arrives from Acumatica is shown
+/// read-only beside that check, never lost.
+model CheckInventoryNote {
+  id          String    @id @default(cuid())
+  checkBookId String
+  checkNumber String
+  runTo       String?
+  ticked      Boolean   @default(false)
+  remarks     String?
+  updatedById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  checkBook   CheckBook @relation(fields: [checkBookId], references: [id])
+  updatedBy   User      @relation("inventoryNoteUpdatedBy", fields: [updatedById], references: [id])
+
+  @@unique([checkBookId, checkNumber])
 }
 
 model Vendor {
@@ -815,6 +846,7 @@ model User {
   plannedOutflowsPaid      PlannedOutflow[] @relation("PlannedOutflowPaidBy")
   plannedOutflowsCancelled PlannedOutflow[] @relation("PlannedOutflowCancelledBy")
   receiptFilesUploaded     CheckReceiptFile[] @relation("receiptFileUploadedBy")
+  inventoryNotesUpdated    CheckInventoryNote[] @relation("inventoryNoteUpdatedBy")
 }
 
 /// An outflow that is not a cheque — payroll, a tax remittance, loan
