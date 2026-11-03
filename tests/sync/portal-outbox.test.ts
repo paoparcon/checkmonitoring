@@ -584,7 +584,7 @@ describe('kindMatchesStatus', () => {
     const all = ['GENERATED', 'SIGNATURE_PENDING', 'SIGNED', 'READY_FOR_RELEASE', 'SCHEDULED', 'RELEASED', 'CANCELLED', 'VOIDED'] as const
     const allowed = (kind: Parameters<typeof kindMatchesStatus>[0]) => all.filter((s) => kindMatchesStatus(kind, s))
     expect(allowed('MARK_AVAILABLE')).toEqual(['READY_FOR_RELEASE', 'SCHEDULED'])
-    expect(allowed('RELEASE_REVERSED')).toEqual(['READY_FOR_RELEASE', 'SCHEDULED'])
+    expect(allowed('RELEASE_REVERSED')).toEqual(['SIGNED', 'READY_FOR_RELEASE', 'SCHEDULED'])
     expect(allowed('RELEASED')).toEqual(['RELEASED'])
     expect(allowed('REVERT')).toEqual(['GENERATED', 'SIGNATURE_PENDING', 'SIGNED'])
     expect(allowed('CANCELLED')).toEqual(['CANCELLED', 'VOIDED'])

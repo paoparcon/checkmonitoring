@@ -237,6 +237,24 @@ describe('reverseReleaseAction', () => {
     }
   })
 
+  it('sends the cheque to SIGNED on that destination, and refuses an unknown one (2026-11-03)', async () => {
+    const { reverseReleaseAction } = await import('@/app/checks/actions')
+    const check = await releasedCheck()
+    ;(currentUser as { role: string }).role = 'FINANCE_ADMIN'
+    try {
+      const refused = await reverseReleaseAction(fd({ checkId: check.id, reason: 'recon', destination: 'CANCELLED' }))
+      expect(refused.ok).toBe(false)
+      expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).status).toBe('RELEASED')
+      const result = await reverseReleaseAction(fd({ checkId: check.id, reason: 'recon', destination: 'SIGNED' }))
+      expect(result.ok).toBe(true)
+      const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+      expect(after.status).toBe('SIGNED')
+      expect(after.availablePickupDate).toBeNull()
+    } finally {
+      ;(currentUser as { role: string }).role = 'FINANCE_USER'
+    }
+  })
+
   it('refuses a blank reason even for an admin', async () => {
     const { reverseReleaseAction } = await import('@/app/checks/actions')
     const check = await releasedCheck()

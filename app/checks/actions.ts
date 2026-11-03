@@ -11,6 +11,7 @@ import {
   markSigned, markReadyForRelease, revertAvailability,
   releaseDirectly, recordClearing, cancelCheck, deleteIncompleteCheck, recordReceipt,
   reverseRelease, updateDetails, revertSignature, restoreCancelled, attachReceiptFile, removeReceipt,
+  REVERSAL_DESTINATIONS, type ReversalDestination,
 } from '@/lib/domain/actions'
 import { readReceiptFields } from '@/lib/receipt-form'
 import { notifyReady } from '@/lib/notifications/ready'
@@ -120,11 +121,18 @@ export async function reverseReleaseAction(formData: FormData): Promise<ActionRe
     return { ok: false, message: 'Only a Finance Admin can reverse a release.' }
   }
   const checkId = str(formData, 'checkId')
-  // The date is read only for a cheque that has none (released outside the
-  // app); the domain ignores it otherwise and refuses without it (2026-11-03).
+  // DESTINATION (2026-11-03): READY FOR RELEASE or SIGNED; absent means the
+  // original one-rung reversal, anything else is refused by name rather than
+  // read as a default. The date is read only for a cheque that has none
+  // (released outside the app); the domain ignores it otherwise.
+  const destination = str(formData, 'destination') || 'READY_FOR_RELEASE'
+  if (!(REVERSAL_DESTINATIONS as readonly string[]).includes(destination)) {
+    return { ok: false, message: `Unknown destination "${destination}": choose READY FOR RELEASE or SIGNED.` }
+  }
   return run(checkId, () => reverseRelease(prisma, {
     checkId, userId: user.id,
     reason: str(formData, 'reason'), now: new Date(),
+    destination: destination as ReversalDestination,
     availablePickupDate: date(formData, 'availablePickupDate'),
   }))
 }

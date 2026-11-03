@@ -27,13 +27,14 @@ const TRANSITIONS: Record<CheckStatus, readonly CheckStatus[]> = {
   SIGNED:            ['READY_FOR_RELEASE', 'SIGNATURE_PENDING', 'CANCELLED', 'VOIDED'],
   READY_FOR_RELEASE: ['SCHEDULED', 'RELEASED', 'SIGNED', 'CANCELLED', 'VOIDED'],
   SCHEDULED:         ['RELEASED', 'SIGNED', 'CANCELLED', 'VOIDED'],
-  // READY_FOR_RELEASE is the reversal: a FINANCE_ADMIN undoing a release that
-  // was ticked by mistake goes back exactly one rung, to where the cheque was
-  // available — never to SIGNED, which would withdraw it from the supplier.
-  // `reverseRelease` in actions.ts refuses it when a receipt is on record or
-  // the bank has cleared the cheque. RELEASED stays CLOSED for every scope;
-  // this edge is a correction, not a stage.
-  RELEASED:          ['READY_FOR_RELEASE', 'VOIDED'],
+  // READY_FOR_RELEASE and SIGNED are the reversal: a FINANCE_ADMIN undoing a
+  // release that was ticked by mistake chooses where the cheque goes
+  // (`reverseRelease` in actions.ts, destination added 2026-11-03 on the
+  // user's request) — back to where it was available, or withdrawn to SIGNED.
+  // It is refused when a receipt is on record or the bank has cleared the
+  // cheque. RELEASED stays CLOSED for every scope; these edges are a
+  // correction, not a stage. Only `reverseRelease` walks them.
+  RELEASED:          ['READY_FOR_RELEASE', 'SIGNED', 'VOIDED'],
   // A cancellation can be undone (client, 2026-10-06): back to SIGNED, by
   // `restoreCancelled` in actions.ts, with a reason, and refused once the
   // portal has been told the cheque is cancelled.

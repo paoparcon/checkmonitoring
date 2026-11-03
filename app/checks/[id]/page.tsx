@@ -10,6 +10,7 @@ import { Panel, Field } from '@/components/Panel'
 import { AuditTrail } from '@/components/AuditTrail'
 import { ReadyForReleaseForm } from '@/components/ReadyForReleaseForm'
 import { ActionForm } from '@/components/ActionForm'
+import { ReverseReleaseFields } from '@/components/ReverseReleaseFields'
 import { DeleteIncompleteCheckForm } from '@/components/DeleteIncompleteCheckForm'
 import { DetailsForm } from '@/components/DetailsForm'
 import { ClearingForm } from '@/components/ClearingForm'
@@ -20,8 +21,8 @@ import { RECEIPT_TYPE_LABELS } from '@/lib/domain/receipt'
 import { isoDay } from '@/lib/domain/details'
 import { loadSettings } from '@/lib/settings/read'
 import { signAction, releaseAction, revertAction, reverseReleaseAction, removeReceiptAction, revertSignatureAction, restoreCancelledAction } from '../actions'
-
 import { formatManila } from '@/lib/manila-format'
+
 /**
  * ONE CHEQUE.
  *
@@ -398,39 +399,15 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
                   label="REVERSE RELEASE"
                   className="block rounded-lg border border-hairline bg-white px-4 py-2 text-sm font-medium tracking-wide text-navy transition hover:bg-ground disabled:opacity-50"
                 >
-                  <label className="block text-[11px] font-semibold tracking-widest text-slate-400">
-                    REASON <span className="text-danger-ink">— REQUIRED</span>
-                  </label>
-                  <input name="reason" required placeholder="Ticked the wrong row"
-                    className="h-10 w-full max-w-md rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy" />
-                  {/* A cheque released outside the app (the register, a catch-up) has
-                      no availability to fall back to, and the portal refuses a
-                      RELEASE_REVERSED without a pickup date (2026-11-03). The domain
-                      refuses without the date; asking for it here is what makes the
-                      refusal unreachable from this form. A cheque readied here keeps
-                      the date it has, and the box is not shown. */}
-                  {check.availablePickupDate === null && (
-                    <>
-                      <label className="block text-[11px] font-semibold tracking-widest text-slate-400">
-                        AVAILABLE PICKUP DATE <span className="text-danger-ink">— REQUIRED</span>
-                      </label>
-                      <input name="availablePickupDate" type="date" required
-                        className="h-10 rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy" />
-                      <p className="text-[11px] text-slate-500">
-                        This check was released outside the app and has no pickup date on record.
-                        Enter the day it is available for pickup again.
-                      </p>
-                    </>
-                  )}
-                  <p className="text-[11px] text-slate-500">
-                    Returns this check to READY FOR RELEASE, clears any pickup that was booked
-                    {/* Rule 2: an INTERNAL cheque never produces a portal call, and this reversal
-                        is no exception — `reverseRelease` queues nothing for it. Stating the portal
-                        clause anyway would tell Finance something false about a payroll, tax or
-                        inter-company cheque, which does reach RELEASED and does render this form. */}
-                    {check.eligibility !== 'INTERNAL' && ', and tells the supplier portal it is available again'}.
-                    The release stays on the audit trail with your reason.
-                  </p>
+                  {/* The reason, the destination and — for a cheque released
+                      outside the app — the pickup date live in a client
+                      component, because the date box depends on the destination
+                      chosen (2026-11-03). What the portal is told is decided by
+                      the domain, not here: see `reverseRelease`. */}
+                  <ReverseReleaseFields
+                    hasPickupDate={check.availablePickupDate !== null}
+                    internal={check.eligibility === 'INTERNAL'}
+                  />
                 </ActionForm>
               ) : (
                 <div className="space-y-3">

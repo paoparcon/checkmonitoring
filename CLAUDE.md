@@ -1112,6 +1112,29 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    keeps its own date and ignores a supplied one. The check page shows the date box only for a
    check with none. RETRY on `/admin/portal` cannot clear a MISSING_DATE park on its own — the
    check needs the date first.
+   **The same day, two rulings widened it.** *(1) "This should not reach the portal"* (on
+   `6000353139`, whose parked reversal and its REVERT were then closed unsent by hand, snapshot
+   `snapshots/quiet-revert-6000353139-2026-11-03T09-15-46-022Z.json`): **a reversal is queued for
+   the portal only when the portal was told of the release** — a RELEASED event delivered or
+   IN_FLIGHT (`deliveredToPortal`, `lib/integrations/portal/delivered.ts`: SYNCED and not closed
+   unsent; the closed-unsent prefixes are `superseded by`, `stale:`, `unmatchable:`, `closed
+   unsent:`). Every check the register delivered at RELEASED, and any release the outbox has not
+   sent yet, reverses silently; the audit row's `details` carry `portalTold` and `portalEvent`.
+   *(2) "Make a selection where the checks will reside next after reversal":* REVERSE RELEASE
+   has a DESTINATION (`components/ReverseReleaseFields.tsx`, `ReversalDestination` in
+   `lib/domain/actions.ts`) — READY FOR RELEASE (the original one-rung reversal, availability kept
+   or created) or SIGNED (withdrawn: availability cleared as `revertAvailability` clears it, no
+   date needed; the ladder now has `RELEASED → SIGNED`, walked only by `reverseRelease`). When
+   the portal was told: READY sends RELEASE_REVERSED, SIGNED sends ONE REVERT — **the portal
+   applies a REVERT to a RELEASED bill since 2026-11-03** (`src/integrations/check-monitoring.js`,
+   REVERT case: un-released silently, then withdrawn as an available bill is; test in
+   `test/checks-cm-pickups.test.js`; edited in the user's ZIP extract
+   `~/Downloads/Supplier-Database-claude-reissue-revives-cancelled-row`, the tree the 2026-10-29
+   portal deploy came from, NOT a git checkout and its tests not run there — it must be carried
+   into the portal repo and deployed before a SIGNED reversal of a portal-known check is used;
+   until then that REVERT is a noop at the portal and the bill stays paid there). An INTERNAL
+   check gets the quiet RELEASE_REVERSED for either destination (REVERT is never sent for one,
+   rule 2), which is why `kindMatchesStatus` admits RELEASE_REVERSED on a SIGNED check.
 9. The test suite takes ~20 minutes because every test crosses the South China Sea. A local Postgres
    would make it ~2. It is the tax on every deploy.
 10. **The cash-outflow forecast is BUILT** (2026-09-11) — `/forecast`, on the check date read as

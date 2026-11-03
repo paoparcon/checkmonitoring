@@ -113,7 +113,7 @@ encoder does the same thing in the UI. Every handler is idempotent and reads the
 | `MARK_AVAILABLE` | `markAvailable({ tradeIds, pickupDate: availablePickupDate, checkNumbers })` — revives a `CANCELLED` row (`fromImport`), one email per supplier | already: `AVAILABLE_FOR_RELEASE` or `RELEASED` |
 | `RELEASED` | `getOrCreateCheckRelease` then `updateCheckRelease({ status: 'RELEASED', releaseDate, orNumber, orDate, checkNumber })` — stamps `released_at`, settles SOAs | already: `RELEASED`; refused: `CANCELLED` (the portal's cancellation is terminal; a human resolves) |
 | `RELEASE_REVERSED` | `updateCheckRelease({ status: 'AVAILABLE_FOR_RELEASE', releaseDate: availablePickupDate })` — clears `released_at` | noop: not `RELEASED`; refused: `CANCELLED` |
-| `REVERT` | `updateCheckRelease({ status: 'REVERTED_FOR_REUPLOADING' })` (Plan 3's reading: withdrawn for re-upload) | noop: not `AVAILABLE_FOR_RELEASE` |
+| `REVERT` | `updateCheckRelease({ status: 'REVERTED_FOR_REUPLOADING' })` (Plan 3's reading: withdrawn for re-upload). Since 2026-11-03 a `RELEASED` row is first un-released (release cleared, silently) and then withdrawn — Check Monitoring's REVERSE RELEASE to SIGNED sends one REVERT, because its outbox keeps only the newest message per cheque | noop: not `AVAILABLE_FOR_RELEASE` or `RELEASED` |
 | `CANCELLED` | new `cancelDirect({ id })`: the body of `approveCancel` without the request precondition — sets `CANCELLED`, clears release/pickup/latch columns, audit `check_cancel_service`, tells the payee only if `notified_at` was set | already: `CANCELLED` |
 
 Broker twins for every row (`markBrokerAvailable`, `updateBrokerCheckRelease`,

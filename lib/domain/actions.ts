@@ -7,6 +7,7 @@ import { writeAudit } from '@/lib/audit'
 import { portalApvs } from '@/lib/integrations/portal/apvs'
 import { loadSettings } from '@/lib/settings/read'
 import { DomainError } from './errors'
+import { deliveredToPortal } from '@/lib/integrations/portal/delivered'
 import { portalRoute, type Eligibility } from './eligibility'
 import { checkDeletable } from './incomplete'
 import {
@@ -525,38 +526,58 @@ export async function revertAvailability(
  * A release, undone. FINANCE_ADMIN only — enforced by the server action, as
  * `revertAvailability`'s is — with a mandatory reason.
  *
- * Client design 2026-09-10, one point settled 2026-09-11: the cheque goes back
- * ONE rung, to READY_FOR_RELEASE, and stays available to the supplier. The
- * portal is therefore told the cheque is available again — `RELEASE_REVERSED`,
- * delivered through the same status endpoint RELEASED uses — and NOT `REVERT`,
- * which the portal reads as withdrawn for re-upload. Two systems disagreeing
- * about whether a supplier may collect is the failure this distinction avoids.
+ * Client design 2026-09-10, one point settled 2026-09-11, widened 2026-11-03 on
+ * the user's request: the admin chooses the DESTINATION. `READY_FOR_RELEASE`
+ * keeps the cheque available to the supplier (the original one-rung rule);
+ * `SIGNED` withdraws it. What is cleared either way: the release itself
+ * (`releasedAt`, `releasedById`) and the collection that did not happen (the
+ * scheduled pickup and its confirmation). Finance's `remarks` are kept. The
+ * reason goes on the audit row, whose `details` record what was undone and
+ * where the cheque went, so the trail says more than "reversed".
  *
- * What is cleared: the release itself (`releasedAt`, `releasedById`) and the
- * collection that did not happen (the scheduled pickup and its confirmation).
- * What is kept: the availability (`availablePickupDate`, `readyById`,
- * `readyAt`) and Finance's `remarks`. The reason goes on the audit row, whose
- * `details` record what was undone, so the trail says more than "reversed".
+ * THE PORTAL IS TOLD ONLY WHAT IT WAS TOLD BEFORE (user ruling 2026-11-03 on
+ * `6000353139`: "this should not reach the portal"). A reversal describes an
+ * undo of a RELEASED the portal received; when no RELEASED event for the cheque
+ * was ever delivered — every cheque the register delivered at RELEASED, and
+ * any release the outbox has not sent yet — the portal has nothing to undo and
+ * nothing is queued. When it was told: `RELEASE_REVERSED` for
+ * READY_FOR_RELEASE (the bill goes back to available, with the pickup date)
+ * and `REVERT` for SIGNED (withdrawn; the portal applies a REVERT to a RELEASED
+ * bill since 2026-11-03). An INTERNAL cheque gets the quiet `RELEASE_REVERSED`
+ * for either destination — REVERT is never sent for one (rule 2), and the
+ * quiet reversal is what lets its bill age again. `kindMatchesStatus` admits
+ * RELEASE_REVERSED on a SIGNED cheque for exactly that case.
  *
- * A cheque that was never readied HERE has no availability to keep (2026-11-03):
- * the 11,225 cheques the register delivered at RELEASED carry no
- * `availablePickupDate`, and the portal refuses a RELEASE_REVERSED without one
- * — `6000353139` parked that way, and the parked reversal then locked REVERT
- * TO SIGNED as well. So for such a cheque the caller must supply the day it is
- * available again (`PICKUP_DATE_REQUIRED` otherwise, nothing written), and the
- * reversal records the availability it is creating: the date, `readyById` and
- * `readyAt`, as `markReadyForRelease` would. A cheque that already has a date
- * keeps it; a date supplied for one is ignored, because the availability is
- * not what is being undone.
+ * Availability. A cheque reversed to READY_FOR_RELEASE keeps the availability
+ * it has. One that was never readied HERE has none to keep: the 11,225 cheques
+ * the register delivered at RELEASED carry no `availablePickupDate`, and the
+ * portal refuses a RELEASE_REVERSED without one. So for such a cheque the
+ * caller must supply the day it is available again (`PICKUP_DATE_REQUIRED`
+ * otherwise, nothing written) and the reversal records the availability it is
+ * creating: the date, `readyById` and `readyAt`, as `markReadyForRelease`
+ * would. A date supplied for a cheque that has one is ignored. To SIGNED, the
+ * availability is cleared as `revertAvailability` clears it, and no date is
+ * needed.
  *
  * Refused — before anything is written — when a receipt is on record or the
  * bank has cleared the cheque. See `checkReleaseReversible`.
  */
+export type ReversalDestination = 'READY_FOR_RELEASE' | 'SIGNED'
+export const REVERSAL_DESTINATIONS: readonly ReversalDestination[] = ['READY_FOR_RELEASE', 'SIGNED']
+
 export async function reverseRelease(
-  db: Db, args: { checkId: string; userId: string; reason: string; now: Date; availablePickupDate?: Date | null },
+  db: Db,
+  args: {
+    checkId: string; userId: string; reason: string; now: Date
+    destination?: ReversalDestination; availablePickupDate?: Date | null
+  },
 ): Promise<Check> {
   if (!args.reason || args.reason.trim() === '') {
     throw new DomainError('REASON_REQUIRED', 'A reason is required to reverse a release.')
+  }
+  const destination: ReversalDestination = args.destination ?? 'READY_FOR_RELEASE'
+  if (!REVERSAL_DESTINATIONS.includes(destination)) {
+    throw new DomainError('INVALID_DESTINATION', 'A reversed release goes to READY FOR RELEASE or SIGNED.')
   }
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
@@ -566,19 +587,19 @@ export async function reverseRelease(
     // `markReadyForRelease` itself refuses for a non-cheque.
     assertReleasable({ isCheque: check.isCheque })
     // `assertTransition` alone cannot tell this reversal apart from the
-    // forward edge `markReadyForRelease` uses: READY_FOR_RELEASE is reachable
-    // from SIGNED just as it is from RELEASED (`check-status.ts`'s ladder).
-    // This action IS the RELEASED -> READY_FOR_RELEASE edge specifically, so
-    // the starting status is checked directly before falling through to the
-    // same ladder check every other action uses.
+    // forward edges: READY_FOR_RELEASE is reachable from SIGNED and SIGNED from
+    // CANCELLED. This action IS the edge out of RELEASED, so the starting
+    // status is checked directly before the same ladder check every other
+    // action uses.
     if (check.status !== 'RELEASED') {
-      throw new DomainError('ILLEGAL_TRANSITION', `Cannot move a check from ${check.status} to READY_FOR_RELEASE.`)
+      throw new DomainError('ILLEGAL_TRANSITION', `Cannot move a check from ${check.status} to ${destination}.`)
     }
-    assertTransition(check.status as CheckStatus, 'READY_FOR_RELEASE')
+    assertTransition(check.status as CheckStatus, destination)
     const guard = checkReleaseReversible(check)
     if (!guard.ok) throw new DomainError(guard.code, guard.message)
 
-    const newAvailability = check.availablePickupDate === null
+    const toReady = destination === 'READY_FOR_RELEASE'
+    const newAvailability = toReady && check.availablePickupDate === null
     if (newAvailability && !args.availablePickupDate) {
       throw new DomainError(
         'PICKUP_DATE_REQUIRED',
@@ -586,34 +607,47 @@ export async function reverseRelease(
       )
     }
 
+    // Was the portal told of this release? A RELEASED event delivered (or on
+    // its way): anything else — never queued, closed unsent, still pending —
+    // means the portal holds nothing this reversal would undo.
+    const releasedEvents = await tx.portalEvent.findMany({
+      where: { checkId: check.id, kind: 'RELEASED' }, select: { status: true, lastError: true },
+    })
+    const portalTold = releasedEvents.some((e) => e.status === 'IN_FLIGHT' || deliveredToPortal(e))
+
     const route = portalRoute(check.eligibility as Eligibility)
-    const pushes = route !== null
-    const quiet = !pushes && await queuesQuietStatus(tx, check)
+    const routed = route !== null
+    const quiet = !routed && await queuesQuietStatus(tx, check)
+    const kind: PortalEventKind | null = !portalTold ? null
+      : routed ? (toReady ? 'RELEASE_REVERSED' : 'REVERT')
+      : quiet ? 'RELEASE_REVERSED'
+      : null
 
     const updated = await tx.check.update({
       where: { id: check.id },
       data: {
-        status: 'READY_FOR_RELEASE',
+        status: destination,
         releasedAt: null,
         releasedById: null,
         scheduledPickupDate: null,
         scheduledPickupTime: null,
         pickupRep: null,
         portalConfirmedAt: null,
-        portalSyncStatus: pushes ? 'PENDING' : 'NOT_APPLICABLE',
+        portalSyncStatus: routed && kind !== null ? 'PENDING' : 'NOT_APPLICABLE',
         portalDomain: route,
         ...(newAvailability
           ? { availablePickupDate: args.availablePickupDate, readyById: args.userId, readyAt: args.now }
           : {}),
+        ...(!toReady ? { availablePickupDate: null, readyById: null, readyAt: null } : {}),
       },
     })
 
-    if (pushes || quiet) {
+    if (kind !== null) {
       await tx.portalEvent.create({
         data: {
-          checkId: check.id, direction: 'OUT', kind: 'RELEASE_REVERSED', status: 'PENDING',
-          idempotencyKey: portalEventKey(check.id, 'RELEASE_REVERSED', args.now),
-          payload: { action: 'RELEASE_REVERSED', checkNumber: check.checkNumber },
+          checkId: check.id, direction: 'OUT', kind, status: 'PENDING',
+          idempotencyKey: portalEventKey(check.id, kind, args.now),
+          payload: { action: kind, checkNumber: check.checkNumber },
         },
       })
     }
@@ -621,12 +655,15 @@ export async function reverseRelease(
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId,
       action: 'release_reversed', remarks: args.reason,
-      // What was undone, as it stood: the trail must say more than "reversed".
-      // And, for a cheque that had no availability here, the one this reversal
-      // created — so the row says where the pickup date came from.
+      // What was undone, as it stood, where the cheque went, and what the
+      // portal was told: the trail must say more than "reversed".
       details: {
         releasedAt: check.releasedAt?.toISOString() ?? null, releasedById: check.releasedById,
+        destination, portalTold, portalEvent: kind,
         ...(newAvailability ? { availablePickupDate: args.availablePickupDate!.toISOString() } : {}),
+        ...(!toReady && check.availablePickupDate
+          ? { availabilityCleared: { availablePickupDate: check.availablePickupDate.toISOString(), readyAt: check.readyAt?.toISOString() ?? null, readyById: check.readyById } }
+          : {}),
       },
     })
 

@@ -89,6 +89,8 @@ describe('revertAvailability after a reversed release', () => {
     const check = await releasedWithReceipt()
     const admin = await makeUser('FINANCE_ADMIN')
     await removeReceipt(testDb, { checkId: check.id, userId: admin.id, reason: 'mistake', now: LATER })
+    // The portal received the RELEASED (2026-11-03: a reversal is queued only then).
+    await testDb.portalEvent.updateMany({ where: { checkId: check.id, kind: 'RELEASED' }, data: { status: 'SYNCED', lastError: null } })
     await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'mistake', now: LATER })
     const ev = await testDb.portalEvent.findFirstOrThrow({ where: { checkId: check.id, kind: 'RELEASE_REVERSED' } })
     expect(ev.status).toBe('PENDING')

@@ -80,8 +80,14 @@ export function emptyOutcome(): PortalOutboxOutcome {
 export function kindMatchesStatus(kind: PortalEventKind, status: CheckStatus): boolean {
   switch (kind) {
     case 'MARK_AVAILABLE':
-    case 'RELEASE_REVERSED':
       return status === 'READY_FOR_RELEASE' || status === 'SCHEDULED'
+    // SIGNED too (2026-11-03): an INTERNAL cheque reversed to SIGNED gets the
+    // quiet RELEASE_REVERSED, the only kind that lets its bill age again, since
+    // REVERT is never sent for one (rule 2). A routed cheque reaches SIGNED
+    // from a pending reversal only through `revertAvailability`, which refuses
+    // while the reversal is undelivered, so this admits no wrong message.
+    case 'RELEASE_REVERSED':
+      return status === 'READY_FOR_RELEASE' || status === 'SCHEDULED' || status === 'SIGNED'
     case 'RELEASED':
       return status === 'RELEASED'
     case 'REVERT':

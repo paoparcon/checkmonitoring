@@ -36,21 +36,21 @@ describe('release ladder transitions', () => {
   })
 
   it('treats RELEASED as closed; CANCELLED only restores to SIGNED', () => {
-    expect(canTransition('RELEASED', 'SIGNED')).toBe(false)
     expect(canTransition('RELEASED', 'CANCELLED')).toBe(false)
     expect(canTransition('CANCELLED', 'SIGNED')).toBe(true) // restoreCancelled, 2026-10-06
   })
 
   /**
-   * The one edge out of RELEASED that is a correction rather than a fact from
-   * the bank. A FINANCE_ADMIN who ticked the wrong row goes back exactly one
-   * rung, to where the cheque was available — not to SIGNED, which would
-   * withdraw it from the supplier. RELEASED is still CLOSED for every scope.
+   * The edges out of RELEASED that are a correction rather than a fact from
+   * the bank. A FINANCE_ADMIN who ticked the wrong row chooses (2026-11-03)
+   * between the rung where the cheque was available and SIGNED, which
+   * withdraws it from the supplier. RELEASED is still CLOSED for every scope.
    */
-  it('allows a release to be reversed back to READY_FOR_RELEASE, and nowhere else', () => {
+  it('allows a release to be reversed to READY_FOR_RELEASE or SIGNED, and nowhere else', () => {
     expect(canTransition('RELEASED', 'READY_FOR_RELEASE')).toBe(true)
-    expect(canTransition('RELEASED', 'SIGNED')).toBe(false)
+    expect(canTransition('RELEASED', 'SIGNED')).toBe(true)
     expect(canTransition('RELEASED', 'SCHEDULED')).toBe(false)
+    expect(canTransition('RELEASED', 'SIGNATURE_PENDING')).toBe(false)
     expect(canTransition('RELEASED', 'VOIDED')).toBe(true)
   })
 

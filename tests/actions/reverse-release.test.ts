@@ -11,8 +11,14 @@ const PICKUP = new Date('2026-09-03')
 
 beforeEach(resetDb)
 
-/** A cheque released through the app, the way every future release will be. */
-async function released(opts: { eligibility?: 'SUPPLIER' | 'INTERNAL'; withReceipt?: boolean; apvNumbers?: string[] } = {}) {
+/**
+ * A cheque released through the app, the way every future release will be —
+ * and, unless `told: false`, its RELEASED event delivered to the portal, as the
+ * outbox does within seconds of a release. The reversal tells the portal only
+ * what it was told (2026-11-03), so the delivered state is what the portal
+ * cases below rely on.
+ */
+async function released(opts: { eligibility?: 'SUPPLIER' | 'INTERNAL'; withReceipt?: boolean; apvNumbers?: string[]; told?: boolean } = {}) {
   const user = await makeUser()
   const check = await makeCheck({ status: 'SIGNED', eligibility: opts.eligibility ?? 'SUPPLIER', ...(opts.apvNumbers ? { apvNumbers: opts.apvNumbers } : {}) })
   await markReadyForRelease(testDb, { checkId: check.id, userId: user.id, availablePickupDate: PICKUP, now: NOW })
@@ -20,8 +26,16 @@ async function released(opts: { eligibility?: 'SUPPLIER' | 'INTERNAL'; withRecei
     checkId: check.id, userId: user.id, now: NOW, remarks: 'Handed to the courier',
     ...(opts.withReceipt ? { orNumber: 'OR-000123', receiptType: 'OR' as const } : {}),
   })
+  if (opts.told !== false) await delivered(check.id)
   return { user, check }
 }
+
+/** The portal received the cheque's RELEASED: the outbox's own mark for a delivery. */
+async function delivered(checkId: string) {
+  await testDb.portalEvent.updateMany({ where: { checkId, kind: 'RELEASED' }, data: { status: 'SYNCED', lastError: null } })
+}
+
+const REVERSED_TO_READY = { destination: 'READY_FOR_RELEASE', portalTold: true, portalEvent: 'RELEASE_REVERSED' }
 
 describe('reverseRelease — the happy path', () => {
   it('returns the check to READY_FOR_RELEASE, clears the release and the collection, keeps the availability', async () => {
@@ -71,7 +85,7 @@ describe('reverseRelease — the happy path', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].userId).toBe(admin.id)
     expect(rows[0].remarks).toBe('Ticked the wrong row')
-    expect(rows[0].details).toEqual({ releasedAt: NOW.toISOString(), releasedById: user.id })
+    expect(rows[0].details).toEqual({ releasedAt: NOW.toISOString(), releasedById: user.id, ...REVERSED_TO_READY })
   })
 })
 
@@ -106,6 +120,100 @@ describe('reverseRelease — the portal', () => {
     expect(out.portalSyncStatus).toBe('NOT_APPLICABLE')
     expect(out.portalDomain).toBeNull()
   })
+
+  /**
+   * User ruling 2026-11-03 (`6000353139`, "this should not reach the portal"):
+   * a reversal undoes a RELEASED the portal received. When none was delivered
+   * — never queued, still pending, or closed unsent — the portal holds nothing
+   * to undo, and nothing is queued.
+   */
+  it('queues nothing when the portal was never told of the release', async () => {
+    const { check } = await released({ told: false })
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER })
+    expect(out.status).toBe('READY_FOR_RELEASE')
+    expect(out.portalSyncStatus).toBe('NOT_APPLICABLE')
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id, kind: 'RELEASE_REVERSED' } })).toBe(0)
+    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
+    expect(rows[0].details).toMatchObject({ destination: 'READY_FOR_RELEASE', portalTold: false, portalEvent: null })
+  })
+
+  it('a RELEASED closed unsent does not count as told; one the portal answered "unmatched" does', async () => {
+    const { check } = await released({ told: false })
+    await testDb.portalEvent.updateMany({ where: { checkId: check.id, kind: 'RELEASED' }, data: { status: 'SYNCED', lastError: 'superseded by x' } })
+    const admin = await makeUser('FINANCE_ADMIN')
+    await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER })
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id, kind: 'RELEASE_REVERSED' } })).toBe(0)
+
+    const second = await released({ told: false })
+    await testDb.portalEvent.updateMany({ where: { checkId: second.check.id, kind: 'RELEASED' }, data: { status: 'SYNCED', lastError: 'unmatched: AP-9' } })
+    await reverseRelease(testDb, { checkId: second.check.id, userId: admin.id, reason: 'x', now: LATER })
+    expect(await testDb.portalEvent.count({ where: { checkId: second.check.id, kind: 'RELEASE_REVERSED' } })).toBe(1)
+  })
+})
+
+/**
+ * The destination (user request 2026-11-03: "make a selection where the checks
+ * will reside next after reversal"). SIGNED withdraws the cheque: the
+ * availability is cleared as `revertAvailability` clears it, and the portal —
+ * when it was told of the release — gets one REVERT, which it applies to a
+ * RELEASED bill since the same day. An INTERNAL cheque gets the quiet
+ * RELEASE_REVERSED instead, REVERT being never sent for one (rule 2).
+ */
+describe('reverseRelease — destination SIGNED', () => {
+  it('withdraws the cheque, clears its availability, and queues one REVERT when the portal was told', async () => {
+    const { user, check } = await released()
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'Still in the vault', now: LATER, destination: 'SIGNED' })
+    expect(out.status).toBe('SIGNED')
+    expect(out.releasedAt).toBeNull()
+    expect(out.availablePickupDate).toBeNull()
+    expect(out.readyAt).toBeNull()
+    expect(out.readyById).toBeNull()
+    expect(out.scheduledPickupDate).toBeNull()
+    expect(out.portalSyncStatus).toBe('PENDING')
+    const events = await testDb.portalEvent.findMany({ where: { checkId: check.id, kind: 'REVERT' } })
+    expect(events).toHaveLength(1)
+    expect(events[0].status).toBe('PENDING')
+    expect(events[0].idempotencyKey).toBe(`${check.id}:REVERT:${LATER.toISOString()}`)
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id, kind: 'RELEASE_REVERSED' } })).toBe(0)
+    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
+    expect(rows[0].details).toEqual({
+      releasedAt: NOW.toISOString(), releasedById: user.id,
+      destination: 'SIGNED', portalTold: true, portalEvent: 'REVERT',
+      availabilityCleared: { availablePickupDate: PICKUP.toISOString(), readyAt: NOW.toISOString(), readyById: user.id },
+    })
+  })
+
+  it('queues nothing when the portal was never told, and needs no pickup date', async () => {
+    const check = await makeCheck({ status: 'RELEASED', eligibility: 'SUPPLIER', availablePickupDate: null, apvNumbers: ['AP-1'] })
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'recon', now: LATER, destination: 'SIGNED' })
+    expect(out.status).toBe('SIGNED')
+    expect(out.portalSyncStatus).toBe('NOT_APPLICABLE')
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
+    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
+    expect(rows[0].details).toEqual({ releasedAt: null, releasedById: null, destination: 'SIGNED', portalTold: false, portalEvent: null })
+  })
+
+  it('an INTERNAL cheque gets the quiet RELEASE_REVERSED, never a REVERT (rule 2)', async () => {
+    const { check } = await released({ eligibility: 'INTERNAL', apvNumbers: ['AP-1'] })
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER, destination: 'SIGNED' })
+    expect(out.status).toBe('SIGNED')
+    expect(out.portalSyncStatus).toBe('NOT_APPLICABLE')
+    const kinds = (await testDb.portalEvent.findMany({ where: { checkId: check.id }, orderBy: { createdAt: 'asc' } })).map((e) => e.kind)
+    expect(kinds).toEqual(['RELEASED', 'RELEASE_REVERSED'])
+  })
+
+  it('refuses an unknown destination and writes nothing', async () => {
+    const { check } = await released()
+    const admin = await makeUser('FINANCE_ADMIN')
+    await expect(reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER, destination: 'SIGNATURE_PENDING' as never }))
+      .rejects.toMatchObject({ code: 'INVALID_DESTINATION' })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).status).toBe('RELEASED')
+    expect(await testDb.auditLog.count({ where: { checkId: check.id, action: 'release_reversed' } })).toBe(0)
+  })
 })
 
 /**
@@ -135,7 +243,7 @@ describe('reverseRelease — a check released outside the app has no availabilit
     expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
   })
 
-  it('with a date, records the availability it creates and queues a deliverable RELEASE_REVERSED', async () => {
+  it('with a date, records the availability it creates; the portal, never told of the release, hears nothing', async () => {
     const check = await registerReleased()
     const admin = await makeUser('FINANCE_ADMIN')
     const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'Check available as of 3 Nov', now: LATER, availablePickupDate: NEW_PICKUP })
@@ -144,12 +252,33 @@ describe('reverseRelease — a check released outside the app has no availabilit
     expect(out.readyById).toBe(admin.id)
     expect(out.readyAt).toEqual(LATER)
     expect(out.releasedAt).toBeNull()
+    expect(out.portalSyncStatus).toBe('NOT_APPLICABLE')
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
+    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].details).toEqual({
+      releasedAt: null, releasedById: null, destination: 'READY_FOR_RELEASE', portalTold: false, portalEvent: null,
+      availablePickupDate: NEW_PICKUP.toISOString(),
+    })
+  })
+
+  /**
+   * The register-released cheque the portal DID hear about: `queueReleasedForStale`
+   * (2026-10-07) reported every release since go-live, so such a cheque has a
+   * delivered RELEASED event — and its reversal then needs the date to be
+   * deliverable, which is the whole reason the date is asked for.
+   */
+  it('with a date and the release reported, queues a deliverable RELEASE_REVERSED', async () => {
+    const check = await registerReleased()
+    await testDb.portalEvent.create({
+      data: { checkId: check.id, direction: 'OUT', kind: 'RELEASED', status: 'SYNCED', idempotencyKey: `${check.id}:RELEASED:stale`, payload: { action: 'RELEASED' } },
+    })
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER, availablePickupDate: NEW_PICKUP })
+    expect(out.portalSyncStatus).toBe('PENDING')
     const events = await testDb.portalEvent.findMany({ where: { checkId: check.id, kind: 'RELEASE_REVERSED' } })
     expect(events).toHaveLength(1)
     expect(events[0].status).toBe('PENDING')
-    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
-    expect(rows).toHaveLength(1)
-    expect(rows[0].details).toEqual({ releasedAt: null, releasedById: null, availablePickupDate: NEW_PICKUP.toISOString() })
   })
 
   it('a check readied here keeps its own date; one supplied for it is ignored', async () => {
@@ -160,7 +289,7 @@ describe('reverseRelease — a check released outside the app has no availabilit
     expect(out.readyById).toBe(user.id)
     expect(out.readyAt).toEqual(NOW)
     const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
-    expect(rows[0].details).toEqual({ releasedAt: NOW.toISOString(), releasedById: user.id })
+    expect(rows[0].details).toEqual({ releasedAt: NOW.toISOString(), releasedById: user.id, ...REVERSED_TO_READY })
   })
 })
 
