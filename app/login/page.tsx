@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
+import { AuthError } from 'next-auth'
 import { getSessionUser, signIn } from '@/lib/auth'
+import { isNextControlFlowError } from '@/lib/next-errors'
 import { MoneyMachines } from '@/components/MoneyMachines'
 
 /**
@@ -16,7 +18,9 @@ import { MoneyMachines } from '@/components/MoneyMachines'
  * about it should: the `signIn` call, the field names, the generic error and
  * the throttle note below are all load-bearing and are reproduced exactly as
  * they were. In particular the error says the same thing whatever went wrong —
- * see the comment on the throttle note.
+ * see the comment on the throttle note. The one addition (2026-11-03) is the
+ * catch around `signIn`, which turns a refusal that Auth.js THROWS into the
+ * redirect this page always meant to make; what the visitor is told is unchanged.
  */
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   if (await getSessionUser()) redirect('/')
@@ -83,11 +87,28 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
             className="rounded-2xl bg-white p-8 shadow-md ring-1 ring-hairline"
             action={async (formData: FormData) => {
               'use server'
-              await signIn('credentials', {
-                email: formData.get('email'),
-                password: formData.get('password'),
-                redirectTo: '/',
-              })
+              try {
+                await signIn('credentials', {
+                  email: formData.get('email'),
+                  password: formData.get('password'),
+                  redirectTo: '/',
+                })
+              } catch (e) {
+                // A successful sign-in is itself a thrown redirect; let it through.
+                if (isNextControlFlowError(e)) throw e
+                // A refused sign-in — wrong password, unknown address, deactivated
+                // account or the throttle — reaches here as next-auth's
+                // CredentialsSignin, THROWN out of the action because the
+                // server-side `signIn` asks Auth.js for a raw result (measured
+                // 2026-11-03, next-auth 5.0.0-beta.32: Finance saw "Application
+                // error: a server-side exception has occurred" with a digest in
+                // production, three times in a minute, for a mistyped password).
+                // Any AuthError is answered the one way this page answers every
+                // refusal: back to the form, with the generic message. Anything
+                // else is a real fault and stays one.
+                if (e instanceof AuthError) redirect('/login?error=CredentialsSignin')
+                throw e
+              }
             }}
           >
             <p className="mb-5 text-sm text-slate-500">Sign in with your Finance account to continue.</p>
