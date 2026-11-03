@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { formatMoney } from '@/lib/money'
 import { StatusPill } from '@/components/StatusPill'
-import { missingLabel, numberingHref } from '@/lib/numbering-view'
+import { missingLabel, numberingHref, numberingTotals } from '@/lib/numbering-view'
 import type { NumberingAccount } from '@/lib/numbering/query'
 import type { SeriesCheque, SeriesEntry, SeriesStaged } from '@/lib/numbering/series'
 import { runNoteStale, type InventoryLine, type InventoryNote } from '@/lib/numbering/inventory'
@@ -26,16 +26,22 @@ const CHECK_COLUMNS: KitColumn[] = [
 ]
 
 /**
- * The inventory column (spec §H): the tick box and remarks on every line. Its
- * filter is "contains" over TICKED / UNTICKED and the remark's words, so
- * Finance can narrow to what is still unticked or to one remark; it never sorts.
+ * The inventory columns (spec §H). INVENTORY holds the tick box and remarks on
+ * every line; its filter is a dropdown, TICKED or UNTICKED (user request
+ * 2026-11-03: "the ticked should have filter" — the old "contains" over the
+ * words matched UNTICKED on TICKED), and it never sorts. REMARKS, hidden by
+ * default, is the remark's text for a "contains" search; filtering on it
+ * shows it beside the box.
  */
-const INVENTORY_COLUMN: KitColumn = { key: 'inventory', label: 'INVENTORY · TICK AND REMARKS', kind: 'text', locked: true, noSort: true, className: 'py-2' }
+const TICK_OPTIONS = [{ value: 'TICKED', label: 'TICKED' }, { value: 'UNTICKED', label: 'UNTICKED' }] as const
+const INVENTORY_COLUMN: KitColumn = { key: 'inventory', label: 'INVENTORY · TICK AND REMARKS', kind: 'enum', options: TICK_OPTIONS, locked: true, noSort: true, className: 'py-2' }
+const REMARKS_COLUMN: KitColumn = { key: 'remarks', label: 'REMARKS (SEARCH)', kind: 'text', defaultHidden: true, noSort: true, className: 'max-w-xs text-xs text-slate-600' }
 
 export const toView = (n: InventoryNote): InventoryNoteView =>
   ({ ticked: n.ticked, remarks: n.remarks, updatedBy: n.updatedBy, updatedAt: n.updatedAt.toISOString() })
 
-const inventoryValue = (n: InventoryNote | null) => [n?.ticked ? 'TICKED' : 'UNTICKED', n?.remarks ?? ''].join(' ').trim()
+const inventoryValue = (n: InventoryNote | null) => (n?.ticked ? 'TICKED' : 'UNTICKED')
+const remarksValue = (n: InventoryNote | null) => n?.remarks ?? null
 
 /** The tag on a check with no check book shown where its number falls (spec §I): names Acumatica's cash account. */
 const noBookTag = (c: SeriesCheque) => `NO CHECK BOOK · ${c.cashAccount ?? 'NO CASH ACCOUNT'}`
@@ -94,8 +100,12 @@ function withInventory(row: KitRow, checkBookId: string, checkNumber: string, no
   if (!('values' in row)) return row
   return {
     ...row,
-    values: { ...row.values, inventory: inventoryValue(note) },
-    cells: { ...row.cells, inventory: <InventoryNoteCell checkBookId={checkBookId} checkNumber={checkNumber} note={note ? toView(note) : null} label={checkNumber} /> },
+    values: { ...row.values, inventory: inventoryValue(note), remarks: remarksValue(note) },
+    cells: {
+      ...row.cells,
+      inventory: <InventoryNoteCell checkBookId={checkBookId} checkNumber={checkNumber} note={note ? toView(note) : null} label={checkNumber} />,
+      remarks: note?.remarks ?? '—',
+    },
   }
 }
 
@@ -104,7 +114,10 @@ function missingNumberRow(checkBookId: string, number: string, note: InventoryNo
   return {
     key: `n-${number}`,
     className: 'border-b border-amber-200 bg-amber-50',
-    values: { checkNumber: number, checkDate: null, payee: 'NO CHECK IN THIS SYSTEM', amount: null, status: 'MISSING', inventory: inventoryValue(note) },
+    values: {
+      checkNumber: number, checkDate: null, payee: 'NO CHECK IN THIS SYSTEM', amount: null, status: 'MISSING',
+      inventory: inventoryValue(note), remarks: remarksValue(note),
+    },
     cells: {
       checkNumber: <span className="font-semibold text-amber-800">{number}</span>,
       checkDate: <span className="text-amber-800/60">—</span>,
@@ -112,6 +125,7 @@ function missingNumberRow(checkBookId: string, number: string, note: InventoryNo
       amount: <span className="text-amber-800/60">—</span>,
       status: <MissingPill />,
       inventory: <InventoryNoteCell checkBookId={checkBookId} checkNumber={number} note={note ? toView(note) : null} label={number} />,
+      remarks: note?.remarks ?? '—',
     },
   }
 }
@@ -125,8 +139,13 @@ function entryRows(entries: readonly SeriesEntry[]): KitRow[] {
     : e.kind === 'STAGED' ? stagedRow(e.staged) : checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook))
 }
 
-/** One row per check book. The check book links to its own series. TICKED is the inventory's count, held and missing ticks alike. */
+/**
+ * One row per check book, and a TOTAL row over the books shown (user request
+ * 2026-11-03). The check book links to its own series. TICKED is the inventory's
+ * count, held and missing ticks alike.
+ */
 export function NumberingSummaryTable({ accounts, company }: { accounts: readonly NumberingAccount[]; company?: string }) {
+  const t = numberingTotals(accounts)
   const count = (key: string, label: string): KitColumn => ({ key, label, kind: 'amount', align: 'right', className: 'tabular-nums' })
   const opts = (xs: string[]) => [...new Set(xs)].sort().map((v) => ({ value: v, label: v }))
   const columns: KitColumn[] = [
@@ -165,7 +184,15 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
       },
     }
   })
-  return <KitTable tableId="numbering-books-inventory" columns={columns} rows={rows} />
+  const footer = {
+    account: `TOTAL · ${t.books.toLocaleString('en-PH')} CHECK BOOK${t.books === 1 ? '' : 'S'}`,
+    held: t.held.toLocaleString('en-PH'), voided: t.voided.toLocaleString('en-PH'), cancelled: t.cancelled.toLocaleString('en-PH'),
+    staged: t.staged.toLocaleString('en-PH'),
+    missing: <span className={t.missingRuns ? 'text-amber-700' : ''}>{fmtCount(t.missingNumbers)}{t.missingRuns ? ` (${t.missingRuns.toLocaleString('en-PH')})` : ''}</span>,
+    ticked: <span className={t.ticked !== '0' ? 'text-success-ink' : ''}>{fmtCount(t.ticked)}</span>,
+    notNumeric: t.notNumeric.toLocaleString('en-PH'), outOfPattern: t.outOfPattern.toLocaleString('en-PH'), noBook: t.noBook.toLocaleString('en-PH'),
+  }
+  return <KitTable tableId="numbering-books-inventory" columns={columns} rows={rows} footer={footer} stickyHead />
 }
 
 /**
@@ -206,7 +233,7 @@ export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly 
     }
   })
   return (
-    <KitTable tableId="numbering-inventory" columns={[...CHECK_COLUMNS, INVENTORY_COLUMN]} rows={rows}
+    <KitTable tableId="numbering-inventory" columns={[...CHECK_COLUMNS, INVENTORY_COLUMN, REMARKS_COLUMN]} rows={rows} stickyHead
       bandsNote="LONG MISSING RUNS ARE HIDDEN WHILE A FILTER OR SORT IS IN FORCE; EVERY LISTED NUMBER STAYS." />
   )
 }

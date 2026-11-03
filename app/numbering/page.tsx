@@ -8,6 +8,7 @@ import { listNumberingAccounts, countChequesWithoutCheckBook, countRegisterOnlyC
 import {
   NUMBERING_PATH, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
   numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, registerOnlyLine, noBookLine, unbookedShown,
+  numberingTotals, totalChecksLine,
 } from '@/lib/numbering-view'
 import { AppHeader } from '@/components/AppHeader'
 import { EmptyState } from '@/components/EmptyState'
@@ -84,6 +85,9 @@ export default async function NumberingPage({
             {account ? account.code : `${accounts.length.toLocaleString('en-PH')} CHECK BOOK${accounts.length === 1 ? '' : 'S'}`}
             {' · '}{describeNumberingFilters({ company: scopedCompany?.code, account: account?.code, missingOnly })}
           </p>
+          {!account && accounts.length > 0 && (
+            <p className="text-xs font-semibold tracking-wide text-slate-700">{totalChecksLine(numberingTotals(accounts))}</p>
+          )}
           {one && (
             <p className="text-xs font-medium tracking-wide text-slate-500">
               INVENTORY: {one.series.summary.held.toLocaleString('en-PH')} HELD · {fmtBig(one.series.summary.missingNumbers)} MISSING NUMBER{one.series.summary.missingNumbers === '1' ? '' : 'S'} ON {one.inventory.lines.toLocaleString('en-PH')} LINE{one.inventory.lines === 1 ? '' : 'S'}

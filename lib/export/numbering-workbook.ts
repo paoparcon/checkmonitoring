@@ -5,7 +5,7 @@ import { BAND_FILL, COUNT_FORMAT, DATE_FORMAT, styleHeaderCell } from './sheet-s
 import type { NumberingAccount } from '@/lib/numbering/query'
 import { strayEnds, type SeriesCheque, type SeriesStaged, type StrayEnd } from '@/lib/numbering/series'
 import type { InventoryNote } from '@/lib/numbering/inventory'
-import { visibleEntries, registerOnlyLine, noBookLine, unbookedShown, NUMBERING_SCOPE_NOTE } from '@/lib/numbering-view'
+import { visibleEntries, registerOnlyLine, noBookLine, unbookedShown, numberingTotals, totalChecksLine, NUMBERING_SCOPE_NOTE } from '@/lib/numbering-view'
 
 /**
  * The numbering report as a workbook: SUMMARY, TO FIX IN ACUMATICA (spec §G3), then one sheet per cheque book with
@@ -115,6 +115,20 @@ export async function buildNumberingWorkbook(
     })
     if (i % 2 === 1) row.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL } } })
   })
+  // The TOTAL row (user request 2026-11-03): every count column summed over the books in the file.
+  if (accounts.length > 0) {
+    const t = numberingTotals(accounts)
+    const total = ws.getRow(7 + accounts.length)
+    const values: (string | number | null)[] = [
+      totalChecksLine(t), null, null, null, null, t.held, t.voided, t.cancelled, t.staged,
+      countCell(t.missingNumbers), t.missingRuns, countCell(t.ticked), t.notNumeric, t.outOfPattern, t.noBook,
+    ]
+    values.forEach((v, col) => {
+      total.getCell(col + 1).value = v
+      if (col >= 5) total.getCell(col + 1).numFmt = COUNT_FORMAT
+    })
+    total.font = { bold: true }
+  }
   ;[22, 10, 10, 14, 14, 10, 10, 12, 10, 18, 14, 10, 14, 16, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
   const fix = wb.addWorksheet(NUMBERING_TO_FIX_SHEET, { views: [{ state: 'frozen', ySplit: 1 }] })

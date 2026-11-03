@@ -26,11 +26,23 @@ const isBand = (r: KitRow): r is BandRow => 'band' in r
  * Client mode (spec 2026-10-13 §2): every row is in the browser; the header
  * menu sorts and filters them here. Filters are per visit, not remembered.
  */
+/**
+ * A frozen heading (NUMBERING, user request 2026-11-03): the frame scrolls in
+ * BOTH directions under a capped height, because a sticky element pins to its
+ * nearest SCROLLING ancestor and a frame that only scrolls sideways gives it
+ * nothing to stick to — the main list's own arrangement (`CheckTable`). The
+ * head is opaque so banded rows do not show through it, and its rule is an
+ * inset shadow because a border on a sticky header scrolls away in some
+ * browsers. The footer, if any, pins to the bottom the same way.
+ */
+export const STICKY_FRAME = 'max-h-[80vh] overflow-auto rounded-2xl bg-white ring-1 ring-hairline'
+export const STICKY_HEAD = 'sticky top-0 z-10 bg-white text-left text-[11px] font-semibold tracking-widest text-slate-400 shadow-[inset_0_-1px_0_#E5E7EB]'
+
 export function KitTable({
-  tableId, columns, rows, footer, capped = false, empty = 'NO ROWS MATCH.', bandsNote,
-  frameClassName = 'overflow-x-auto rounded-2xl bg-white ring-1 ring-hairline',
+  tableId, columns, rows, footer, capped = false, empty = 'NO ROWS MATCH.', bandsNote, stickyHead = false,
+  frameClassName = stickyHead ? STICKY_FRAME : 'overflow-x-auto rounded-2xl bg-white ring-1 ring-hairline',
   cellClassName = 'px-4 py-3',
-  headClassName = 'border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400',
+  headClassName = stickyHead ? STICKY_HEAD : 'border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400',
 }: {
   tableId: string
   columns: readonly KitColumn[]
@@ -42,6 +54,8 @@ export function KitTable({
   empty?: string
   /** Shown while bands are left out, e.g. "MISSING LINES HIDDEN WHILE FILTERED OR SORTED". */
   bandsNote?: string
+  /** Freeze the heading (and the footer) while the rows scroll: the frame takes STICKY_FRAME and the head STICKY_HEAD unless overridden. */
+  stickyHead?: boolean
   frameClassName?: string
   cellClassName?: string
   headClassName?: string
@@ -106,7 +120,7 @@ export function KitTable({
             ))}
           </tbody>
           {footer && (
-            <tfoot>
+            <tfoot className={stickyHead ? 'sticky bottom-0 z-10' : undefined}>
               <tr className="border-t border-hairline bg-navy-bg font-semibold">
                 {visible.map((c) => (
                   <td key={c.key} className={`${cellClassName} ${c.align === 'right' ? 'text-right' : ''}`}>{footer[c.key] ?? null}</td>

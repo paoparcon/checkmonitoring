@@ -56,6 +56,41 @@ export function unbookedShown(accounts: readonly { series: { entries: readonly S
   return ids.size
 }
 
+export type NumberingTotals = {
+  books: number; held: number; voided: number; cancelled: number; staged: number
+  /** Decimal strings: a MISSING run can be billions, and ticks count every number a ticked run spans. */
+  missingNumbers: string; missingRuns: number; ticked: string
+  notNumeric: number; outOfPattern: number; noBook: number
+}
+
+/**
+ * The SUMMARY's TOTAL row (user request 2026-11-03: "have a total number of
+ * checks"): every count column summed over the books shown. HELD is the total
+ * number of checks in the sequences — distinct numbers held, every status. Pure.
+ */
+export function numberingTotals(
+  accounts: readonly { series: { summary: Omit<NumberingTotals, 'books' | 'ticked'> & { first?: unknown } }; inventory: { ticked: string } }[],
+): NumberingTotals {
+  const t: NumberingTotals = { books: accounts.length, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, ticked: '0', notNumeric: 0, outOfPattern: 0, noBook: 0 }
+  let missing = BigInt(0)
+  let ticked = BigInt(0)
+  for (const a of accounts) {
+    const s = a.series.summary
+    t.held += s.held; t.voided += s.voided; t.cancelled += s.cancelled; t.staged += s.staged
+    t.missingRuns += s.missingRuns; t.notNumeric += s.notNumeric; t.outOfPattern += s.outOfPattern; t.noBook += s.noBook
+    missing += BigInt(s.missingNumbers)
+    ticked += BigInt(a.inventory.ticked)
+  }
+  t.missingNumbers = missing.toString()
+  t.ticked = ticked.toString()
+  return t
+}
+
+/** The page's headline over the books shown: "TOTAL CHECKS: 11,043 HELD IN 9 CHECK BOOKS". */
+export function totalChecksLine(t: Pick<NumberingTotals, 'books' | 'held'>): string {
+  return `TOTAL CHECKS: ${t.held.toLocaleString('en-PH')} HELD IN ${t.books.toLocaleString('en-PH')} CHECK BOOK${t.books === 1 ? '' : 'S'}`
+}
+
 /** The no-book checks (spec §I): how many there are and how many a series shows, stated on the page and on SUMMARY. */
 export function noBookLine(count: number, shown: number): string {
   const n = count.toLocaleString('en-PH')

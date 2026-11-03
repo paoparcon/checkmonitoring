@@ -705,3 +705,37 @@ the line. `numbering/query`: a no-book check inside one book's range is tagged t
 elsewhere, one spanning two books is in both, `countChequesWithoutCheckBook` unchanged.
 `numbering/inventory-notes`: a note on a no-book check's number carries its `checkId`.
 `export/numbering-workbook`: the NOTE text and the SUMMARY column. `numbering-view`: `unbookedShown`.
+
+## J. Addendum, 2026-11-03 — frozen heading, a TICKED filter, and a TOTAL row
+
+User request, the same afternoon: *"freeze the heading of the table, the ticked should have filter.
+Also in the summary, have a total number of checks."*
+
+### J1. The frozen heading
+
+`KitTable` takes `stickyHead`. With it the frame is `STICKY_FRAME` (`max-h-[80vh] overflow-auto`)
+and the head `STICKY_HEAD` (`sticky top-0`, opaque, an inset-shadow rule): a sticky element pins to
+its nearest SCROLLING ancestor, so a frame that only scrolls sideways gives the head nothing to stick
+to — the main list's own arrangement (`CheckTable`). A footer pins to the bottom the same way. Both
+NUMBERING tables opt in; every other kit table is unchanged.
+
+### J2. The TICKED filter
+
+INVENTORY was a text column whose "contains" needle matched UNTICKED on TICKED. It is now an enum
+column (`TICK_OPTIONS`: TICKED / UNTICKED, a dropdown in the header menu, exact match), so "what is
+left to count" is one pick. The remark text moved to its own hidden text column, REMARKS (SEARCH),
+offered under CUSTOMIZE COLUMNS; it filters with "contains" and does not sort.
+
+### J3. The TOTAL row
+
+`numberingTotals` (`lib/numbering-view.ts`, pure) sums every SUMMARY count over the books shown —
+HELD, VOIDED, CANCELLED, STAGED, MISSING numbers and runs, TICKED, NOT NUMERIC, OUT OF PATTERN,
+NO CHECK BOOK — in BigInt for the two that can exceed a number. The page states it as
+`TOTAL CHECKS: N HELD IN M CHECK BOOKS` (`totalChecksLine`) above the table, the table carries it as
+a footer, and the SUMMARY sheet writes a bold TOTAL row under the books with the same figures. HELD
+is the number of checks in the sequences: distinct numbers held, every status, the book's own.
+
+### J4. Tests
+
+`numbering-view`: `numberingTotals` over two books (BigInt sums), `totalChecksLine` singular and
+plural. `export/numbering-workbook`: the TOTAL row's cell values and its absence with no books.

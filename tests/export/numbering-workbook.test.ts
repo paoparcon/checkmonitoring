@@ -332,3 +332,29 @@ describe('NO CHECK BOOK (spec §I)', () => {
     expect(a4).toContain('3 CHECKS WITH NO CHECK BOOK (ACUMATICA POSTED THEM ON A CASH ACCOUNT SUCH AS PAYROLL): 1 SHOWN IN THE SERIES ITS NUMBER FALLS IN')
   })
 })
+
+describe('SUMMARY TOTAL row (user request 2026-11-03)', () => {
+  it('writes a bold TOTAL row after the books, summing every count column', async () => {
+    const wb = await load(await buildNumberingWorkbook({
+      accounts: [
+        account('BPI STK', [ch('101'), ch('102'), ch('105', 'VOIDED')], [note('103')]),
+        account('MBT A1', [ch('200'), ch('204')]),
+      ],
+      meta: META,
+    }))
+    const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
+    const total = summary.getRow(9)
+    expect(total.getCell(1).value).toBe('TOTAL CHECKS: 5 HELD IN 2 CHECK BOOKS')
+    expect(total.getCell(6).value).toBe(5)   // HELD
+    expect(total.getCell(7).value).toBe(1)   // VOIDED
+    expect(total.getCell(10).value).toBe(5)  // MISSING NUMBERS: 103, 104 + 201, 202, 203
+    expect(total.getCell(11).value).toBe(2)  // MISSING RUNS
+    expect(total.getCell(12).value).toBe(1)  // TICKED
+    expect(total.font?.bold).toBe(true)
+    expect(summary.getRow(10).getCell(1).value).toBeNull()
+  })
+  it('writes no TOTAL row for an empty file', async () => {
+    const wb = await load(await buildNumberingWorkbook({ accounts: [], meta: META }))
+    expect(wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!.getRow(7).getCell(1).value).toBeNull()
+  })
+})
