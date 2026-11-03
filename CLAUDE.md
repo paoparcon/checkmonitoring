@@ -169,6 +169,7 @@ npx tsx scripts/sync.ts GOLIVE --bill-refs            # snapshot AcumaticaBill, 
 npx tsx scripts/sync.ts GOLIVE --full               # snapshot, re-read every 2026 CHK payment, then the live checks that left that feed (--dry-run lists them)
 npx tsx scripts/reconcile-with-acumatica.ts "<file>.xlsx" [--apply --user <email>]   # AFTER --full: Closed-in-Acumatica checks to RELEASED, Finance verdicts (2026-10-06)
 npx tsx scripts/revert-recent-signed.ts 2026-10-19 [--apply --user <email>]   # SIGNED first read on/after that Manila day back to PENDING (signing manual, 2026-10-22)
+npx tsx scripts/push-checks-to-portal.ts [--full] [--dry-run]   # push every check (status, APVs, detached APVs, dates) to the portal's All Checks list; --full re-sends all
 ```
 
 **On Windows, use `npx.cmd` / `npm.cmd`.** PowerShell's execution policy is `Undefined` (i.e.
@@ -263,7 +264,8 @@ These are safety properties, not preferences. Each exists because of a specific 
     other actions with 8 s. Rollback is forward-fix only: Postgres cannot drop the `RECEIPT` enum
     value, so older code must not run while RECEIPT rows exist (review 2026-10-02).
 12. **The portal client sends only.** Nothing reads a status from the portal into a check;
-    `lib/integrations/portal/client.ts` has one method.
+    `lib/integrations/portal/client.ts` has two methods, both send-only: `deliver` (one outbox
+    event) and, since 2026-11-03, `pushChecks` (a batch of check rows for the portal's list).
 
 ## Things that will catch you out
 
@@ -479,6 +481,28 @@ plain `npx`); the `npx.cmd` note above is for the Windows machine. The Neon addr
 databases on one project: `check_monitoring` is NOT production and lacks recent columns —
 `check_monitoring_prod` is. The 2026-10-01 guard below is subsumed: a cancelled check never has an APV now.
 
+**Every check, cancelled and voided included, is mirrored into the portal's own check list**
+(user ruling 2026-11-03: *"make sure all the checks including cancelled, void from the system are
+in the portal"*, answered "Full check list"; spec `2026-11-03-check-list-in-portal-design.md`,
+identical in both repos). The per-bill release rows cannot show a void (a CANCELLED hits the
+replacement's row — the 2026-10-29 rule), so the portal has a second table, `cm_check`, keyed by
+this system's check id, fed by `PUT /api/integrations/check-monitoring/checks` (same bearer) and
+read on its **All Checks** page (admin tiers only; rule 2 holds — an INTERNAL check is in it,
+flagged, and no payee can read it). The feed is `lib/integrations/portal/check-feed.ts` (pure row;
+detached APVs come from the cancel/void audit rows, POs from `displayPoNumbers`) and
+`lib/sync/portal-checks.ts`: pages `Check` by `(updatedAt, id)` from a `SyncRun.mode =
+'PORTAL_CHECKS'` watermark (10-minute overlap, 500 a batch, the watermark held at the last batch
+sent on any error, a full push resumable from an epoch watermark). **Every portal kick pushes the
+list after the outbox** (`kickPortalDelivery`; skipped under 2 s of budget), so the cron and every
+action keep it current; `/admin/portal` shows CHECK LIST (last push, checks behind, total) and
+SEND EVERY CHECK (FINANCE_ADMIN, full, 50 s); `scripts/push-checks-to-portal.ts [--full] [--dry-run]`
+is the terminal form. The portal skips a row not newer than the one it holds, so a retry never rolls
+a check back; nothing is deleted there; nothing comes back (rule 12). **Go-live order: portal
+migration 096 and deploy first, then this deploy, then SEND EVERY CHECK once.** The 11 RELEASED
+checks the portal was never told about (`1791363573 1791379615 1791379616 1791405441 1791405471
+6000338817 6000349425 6000353624 6000353695 6000353743 6000353877`) arrive with the release date
+this system holds — none or a register day — and still need Finance's real day.
+
 **A void or cancel of a check with no APV queues nothing for the portal** (2026-10-01, spec
 `2026-10-01-cheque-numbering-and-cancel-guard-design.md`; subsumed by the 2026-10-29 rule above). The portal matches on APV and the client
 refuses an event with none, so such an event parked on its first attempt and RETRY parked it again —
@@ -654,7 +678,9 @@ category not on it.
 | `lib/sync/modes.ts` | `SyncRun` modes that are not the payment feed (`BILLS`, `BILL_REFS`); every payment-side reader excludes `NON_PAYMENT_MODES`. |
 | `lib/integrations/portal/` | Supplier Portal client: `client.ts` builds the event body from the check at delivery time (asserts rule 2 again, pre-checks the portal's validation) and POSTs it with the bearer and a timeout; `from-env.ts` reads `PORTAL_BASE_URL` / `PORTAL_TOKEN`. Sends only (rule 12). |
 | `lib/sync/portal-outbox.ts` | The outbox worker: latest event per check wins, stale kinds closed unsent (`kindMatchesStatus`), exclusive claims, backoff, `PARKED` for a human, a 401 stops the run. |
-| `lib/sync/portal-kick.ts` | Best-effort delivery within a time budget, from an action (`afterResponse`), the cron and `/admin/portal`; never throws, `{ skipped }` when the env is unset. |
+| `lib/sync/portal-kick.ts` | Best-effort delivery within a time budget, from an action (`afterResponse`), the cron and `/admin/portal`; never throws, `{ skipped }` when the env is unset. Since 2026-11-03 it also pushes the check list with the budget left (`checks` on the outcome). |
+| `lib/integrations/portal/check-feed.ts` | The portal's check-list row (`buildPortalCheckRow`, `PORTAL_CHECK_BATCH`). Pure. |
+| `lib/sync/portal-checks.ts` | The check-list push: `PORTAL_CHECKS` watermark over `Check.updatedAt`, 500 a batch, resumable full push; `pushChecksToPortal` never throws. |
 | `lib/admin/portal-backlog.ts` | Backlog dry run for `scripts/portal-backlog.ts` (winners, superseded, `stale`) and `queueCancelledForStale` (`--queue-cancelled [--apply]`). |
 | `lib/forecast/` | Cash outflow by check date: `buckets.ts` (the ageing buckets, pure), `query.ts` (the population — live, real, with an amount), `matrix.ts` (bucket × bank and bucket × stage, centavo-exact, pure). `/forecast` and `/api/export/forecast` sit on it. Since 2026-09-12 a check's typed `expectedOutflowDate` wins over its check date, and `PlannedOutflow` lines (`lib/planned-outflow/`, `/forecast/planned`) join the population as their own PLANNED column. |
 | `lib/aging/` | AGING: `buckets.ts` (the portal's buckets, pure), `query.ts` (SIGNED, aged). `lib/aging-picker.ts` (strip, selection, pure). `/aging` and `/api/export/aging` sit on it (`lib/export/aging-workbook.ts`). |

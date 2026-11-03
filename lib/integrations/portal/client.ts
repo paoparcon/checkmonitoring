@@ -14,6 +14,7 @@ import type { Check, PortalEventKind } from '@prisma/client'
 import { portalRoute, type Eligibility } from '@/lib/domain/eligibility'
 import { portalAcceptsReceiptType } from '@/lib/domain/receipt'
 import { portalApvs } from './apvs'
+import type { PortalCheckRow } from './check-feed'
 
 export type PortalFetch = (
   url: string,
@@ -75,6 +76,24 @@ export type PortalDeliveryResult = {
 
 export type PortalDeliverOptions = { timeoutMs?: number }
 export type PortalClient = { deliver(body: PortalEventBody, opts?: PortalDeliverOptions): Promise<PortalDeliveryResult> }
+
+/**
+ * The portal's answer to a check-list batch (`PUT /api/integrations/check-
+ * monitoring/checks`, spec 2026-11-03-check-list-in-portal-design): how many
+ * rows it received and how many it wrote (a row older than the one it holds
+ * is kept, not written). Non-200 carries the portal's `error` text when sent.
+ */
+export type PortalChecksPushResult = {
+  status: number
+  body: { received: number; upserted: number } | null
+  error?: string
+}
+/**
+ * The second send-only method (rule 12 still holds: nothing is read back into
+ * a cheque). Separate from PortalClient so every existing fake that implements
+ * `deliver` alone still type-checks; the live client implements both.
+ */
+export type PortalCheckListClient = { pushChecks(rows: PortalCheckRow[], opts?: PortalDeliverOptions): Promise<PortalChecksPushResult> }
 
 /** The portal refuses more APVs than this in one event (spec §1.2 validation). */
 export const MAX_APVS = 50
@@ -188,10 +207,31 @@ export function buildPortalEventBody(event: { id: string; kind: PortalEventKind 
   return body
 }
 
-export function createPortalClient(opts: { baseUrl: string; token: string; fetchImpl?: PortalFetch }): PortalClient {
+export function createPortalClient(opts: { baseUrl: string; token: string; fetchImpl?: PortalFetch }): PortalClient & PortalCheckListClient {
   const fetchImpl: PortalFetch = opts.fetchImpl ?? ((url, init) => fetch(url, init))
-  const url = `${opts.baseUrl.replace(/\/+$/, '')}/api/integrations/check-monitoring/events`
+  const base = opts.baseUrl.replace(/\/+$/, '')
+  const url = `${base}/api/integrations/check-monitoring/events`
+  const checksUrl = `${base}/api/integrations/check-monitoring/checks`
   return {
+    async pushChecks(rows, deliverOpts) {
+      const res = await fetchImpl(checksUrl, {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${opts.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ checks: rows }),
+        ...(deliverOpts?.timeoutMs ? { signal: AbortSignal.timeout(deliverOpts.timeoutMs) } : {}),
+      })
+      const text = await res.text()
+      let raw: unknown = null
+      try { raw = JSON.parse(text) } catch { raw = null }
+      const obj = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+      if (res.status === 200) {
+        const received = typeof obj?.received === 'number' ? obj.received : rows.length
+        const upserted = typeof obj?.upserted === 'number' ? obj.upserted : 0
+        return { status: 200, body: { received, upserted } }
+      }
+      const error = typeof obj?.error === 'string' ? obj.error : undefined
+      return { status: res.status, body: null, ...(error ? { error } : {}) }
+    },
     async deliver(body, deliverOpts) {
       // A request timeout (final review 2026-09-26): a portal that accepts the
       // connection and never answers must not hold the run past its budget.

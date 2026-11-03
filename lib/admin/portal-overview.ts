@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient, PortalEventStatus, PortalEventKind } from '@prisma/client'
+import { lastPortalChecksRun, lastPortalChecksWatermark, type PortalChecksLastRun } from '@/lib/sync/portal-checks'
 
 type Db = PrismaClient | Prisma.TransactionClient
 
@@ -17,7 +18,10 @@ export type PortalAttentionRow = {
  */
 export type PortalClosedCounts = { delivered: number; superseded: number; stale: number; unmatchable: number }
 
-export type PortalOverview = { counts: Record<PortalEventStatus, number>; closed: PortalClosedCounts; attention: PortalAttentionRow[] }
+/** The check list (spec 2026-11-03): the newest push, and how many cheques it has not yet sent. */
+export type PortalCheckList = { lastRun: PortalChecksLastRun | null; behind: number; total: number }
+
+export type PortalOverview = { counts: Record<PortalEventStatus, number>; closed: PortalClosedCounts; attention: PortalAttentionRow[]; checkList: PortalCheckList }
 
 const STATUSES: PortalEventStatus[] = ['PENDING', 'IN_FLIGHT', 'SYNCED', 'FAILED', 'PARKED']
 
@@ -36,9 +40,14 @@ export async function getPortalOverview(db: Db): Promise<PortalOverview> {
     take: 200,
     include: { check: { select: { checkNumber: true, payeeName: true } } },
   })
+  const lastRun = await lastPortalChecksRun(db)
+  const watermark = await lastPortalChecksWatermark(db)
+  const total = await db.check.count()
+  const behind = watermark ? await db.check.count({ where: { updatedAt: { gt: watermark } } }) : total
   return {
     counts,
     closed,
+    checkList: { lastRun, behind, total },
     attention: rows.map((r) => ({
       id: r.id, checkId: r.checkId, checkNumber: r.check.checkNumber, payeeName: r.check.payeeName,
       kind: r.kind, status: r.status, attempts: r.attempts, lastError: r.lastError,

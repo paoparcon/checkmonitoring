@@ -215,3 +215,27 @@ describe('createPortalClient', () => {
     expect(buildPortalEventBody({ id: 'e', kind: 'REVERT' }, check({ releasedBy: { name: 'Ana Cruz' } }))).not.toHaveProperty('releasedBy')
   })
 })
+
+describe('createPortalClient().pushChecks', () => {
+  const row = { id: 'chk1', checkNumber: '6000353106', status: 'SIGNED' } as never
+  it('PUTs the batch to the checks route with the bearer and reads the counts', async () => {
+    const calls: { url: string; init: { method: string; headers: Record<string, string>; body: string } }[] = []
+    const client = createPortalClient({
+      baseUrl: 'https://portal.example/', token: 'tok',
+      fetchImpl: async (url, init) => { calls.push({ url, init }); return { ok: true, status: 200, text: async () => JSON.stringify({ received: 1, upserted: 1 }) } },
+    })
+    expect(await client.pushChecks([row])).toEqual({ status: 200, body: { received: 1, upserted: 1 } })
+    expect(calls[0].url).toBe('https://portal.example/api/integrations/check-monitoring/checks')
+    expect(calls[0].init.method).toBe('PUT')
+    expect(calls[0].init.headers.authorization).toBe('Bearer tok')
+    expect(JSON.parse(calls[0].init.body)).toEqual({ checks: [row] })
+  })
+
+  it('a refusal carries the status and the portal\'s error text, with no body', async () => {
+    const client = createPortalClient({
+      baseUrl: 'https://portal.example', token: 'tok',
+      fetchImpl: async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ error: 'checks must be an array of at most 500' }) }),
+    })
+    expect(await client.pushChecks([row])).toEqual({ status: 400, body: null, error: 'checks must be an array of at most 500' })
+  })
+})

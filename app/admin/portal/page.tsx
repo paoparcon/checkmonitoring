@@ -5,7 +5,10 @@ import { PortalActionButton } from '@/components/PortalRetryButton'
 import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
 import type { KitColumn } from '@/lib/table-kit/types'
 import { instantValue } from '@/lib/table-kit/match'
-import { deliverPortalNowAction, retryPortalEventAction } from './actions'
+import { deliverPortalNowAction, pushEveryCheckAction, retryPortalEventAction } from './actions'
+
+// SEND EVERY CHECK pushes inside a 50 s budget (spec 2026-11-03).
+export const maxDuration = 60
 
 const fmt = (d: Date) => d.toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
@@ -55,6 +58,21 @@ export default async function AdminPortalPage() {
         </div>
         <p className="mt-2 text-sm text-slate-700">
           {o.counts.PENDING} pending · {o.counts.IN_FLIGHT} in flight · {o.counts.FAILED} retrying · {o.counts.PARKED} parked · {o.closed.delivered} delivered · {o.closed.superseded} superseded · {o.closed.stale} closed as stale · {o.closed.unmatchable} closed as unmatchable
+        </p>
+      </section>
+      <section className="rounded-2xl bg-white p-6 ring-1 ring-hairline">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">SUPPLIER PORTAL · CHECK LIST</h2>
+          <PortalActionButton label="SEND EVERY CHECK" pending="SENDING…" action={pushEveryCheckAction} />
+        </div>
+        <p className="mt-2 text-sm text-slate-700">
+          Every check, cancelled and voided included, is mirrored to the portal's check list; DELIVER NOW and every Finance action send the changes.{' '}
+          {o.checkList.lastRun ? (
+            <>Last push {fmt(o.checkList.lastRun.startedAt)} ({o.checkList.lastRun.trigger.toLowerCase()}): {o.checkList.lastRun.pushed} sent{o.checkList.lastRun.errors ? `, ${o.checkList.lastRun.errors} error` : ''}{o.checkList.lastRun.message ? ` — ${o.checkList.lastRun.message}` : ''}.</>
+          ) : (
+            <>Nothing has been pushed yet.</>
+          )}{' '}
+          {o.checkList.behind} of {o.checkList.total} checks changed since the last push.
         </p>
       </section>
       <section className="rounded-2xl bg-white p-6 ring-1 ring-hairline">

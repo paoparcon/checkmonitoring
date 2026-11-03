@@ -52,6 +52,26 @@ describe('kickPortalDelivery: released checks the portal was never told', () => 
   })
 })
 
+// User ruling 2026-11-03: every cheque is mirrored to the portal's check list,
+// and the kick that delivers the outbox pushes the changed cheques after it.
+describe('kickPortalDelivery: the check list', () => {
+  it('pushes the changed cheques after the outbox, with the budget that is left', async () => {
+    await makeCheck({ status: 'SIGNED' })
+    const pushed: unknown[][] = []
+    const out = await kickPortalDelivery(testDb, {
+      budgetMs: 5000,
+      client: { deliver: async () => { throw new Error('unused') }, pushChecks: async (rows: unknown[]) => { pushed.push(rows); return { status: 200, body: { received: rows.length, upserted: rows.length } } } } as never,
+    })
+    expect(out).toMatchObject({ delivered: 0, checks: { pushed: 1, errors: 0 } })
+    expect(pushed).toHaveLength(1)
+  })
+
+  it('a client that implements only deliver skips the list and says so', async () => {
+    const out = await kickPortalDelivery(testDb, { budgetMs: 5000, client: { deliver: async () => { throw new Error('unused') } } })
+    expect(out).toMatchObject({ checks: { skipped: 'the portal client cannot push the check list' } })
+  })
+})
+
 describe('afterResponse', () => {
   it('forwards fn to afterImpl - inside a "request" the scheduled fn runs and delivers', async () => {
     let captured: (() => Promise<unknown>) | undefined

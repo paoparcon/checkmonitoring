@@ -4,6 +4,9 @@ import { createPortalClientFromEnv } from '@/lib/integrations/portal/from-env'
 import type { PortalClient } from '@/lib/integrations/portal/client'
 import { deliverPortalEvents, emptyOutcome, type PortalOutboxOutcome } from './portal-outbox'
 import { queueReleasedForStale } from '@/lib/admin/portal-backlog'
+import { pushChecksToPortal, type PortalChecksPushResult } from './portal-checks'
+import type { PortalCheckListClient } from '@/lib/integrations/portal/client'
+import type { SyncTrigger } from './run'
 
 type Db = PrismaClient | Prisma.TransactionClient
 
@@ -14,9 +17,17 @@ type Db = PrismaClient | Prisma.TransactionClient
  * unconfigured portal is a skip that says which setting is missing (the
  * message names the setting, never a value).
  */
+/** The check-list push's share of a kick (spec 2026-11-03): skipped when less than this is left. */
+const CHECK_LIST_MIN_MS = 2_000
+
+export type PortalKickOutcome = PortalOutboxOutcome & {
+  /** The check list push that followed the outbox (spec 2026-11-03-check-list-in-portal-design). */
+  checks?: PortalChecksPushResult | { skipped: string }
+}
+
 export async function kickPortalDelivery(
-  db: Db, args: { budgetMs: number; client?: PortalClient; now?: Date },
-): Promise<PortalOutboxOutcome | { skipped: string }> {
+  db: Db, args: { budgetMs: number; client?: PortalClient & Partial<PortalCheckListClient>; now?: Date; trigger?: SyncTrigger },
+): Promise<PortalKickOutcome | { skipped: string }> {
   const now = args.now ?? new Date()
   // User demand 2026-10-06 ("this should be always the trigger", "make sure
   // it will always work"): a cheque released by any path that queues nothing
@@ -36,12 +47,23 @@ export async function kickPortalDelivery(
     try { client = createPortalClientFromEnv() }
     catch (e) { return { skipped: (e instanceof Error ? e.message : String(e)).split(',')[0] } }
   }
+  const deadline = new Date(now.getTime() + args.budgetMs)
+  let outcome: PortalOutboxOutcome
   try {
-    return await deliverPortalEvents(db, { now, deadline: new Date(now.getTime() + args.budgetMs), client })
+    outcome = await deliverPortalEvents(db, { now, deadline, client })
   } catch (e) {
     console.error('portal delivery failed:', e instanceof Error ? e.message : e)
-    return { ...emptyOutcome(), error: e instanceof Error ? e.message : String(e) }
+    outcome = { ...emptyOutcome(), error: e instanceof Error ? e.message : String(e) }
   }
+  // Then the check list (user ruling 2026-11-03: every cheque, cancelled and
+  // voided included, is in the portal): whatever the budget has left, so a
+  // Finance action's cheque reaches the portal's list on the same kick. A run
+  // cut short leaves its watermark for the next kick; never a failure of the
+  // delivery.
+  const left = deadline.getTime() - Date.now()
+  if (left < CHECK_LIST_MIN_MS) return { ...outcome, checks: { skipped: 'no time left in this kick; the next one continues' } }
+  const checks = await pushChecksToPortal(db, { budgetMs: left, client, trigger: args.trigger ?? 'MANUAL' })
+  return { ...outcome, checks }
 }
 
 /**

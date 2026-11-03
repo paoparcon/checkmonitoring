@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { writeAudit } from '@/lib/audit'
 import { kickPortalDelivery } from '@/lib/sync/portal-kick'
+import { pushChecksToPortal } from '@/lib/sync/portal-checks'
 import type { AdminActionResult } from '@/app/admin/actions'
 
 // Refuse a FINANCE_USER by RETURNING, never by redirecting - the same rule as
@@ -39,5 +40,22 @@ export async function deliverPortalNowAction(): Promise<AdminActionResult> {
   // A refused token stops the run after parking one event (final review
   // 2026-09-26): the button must say so rather than report success.
   if (out.stoppedOnAuth) return { ok: false, message: 'The portal refused the token (401) — check PORTAL_TOKEN.' }
+  return { ok: true }
+}
+
+/**
+ * SEND EVERY CHECK (spec 2026-11-03-check-list-in-portal-design): a full push
+ * of the check list, oldest change first, inside this action's budget; what it
+ * does not reach is sent by the kicks and crons that follow, because a full
+ * push records the epoch as its watermark and each batch moves it. Admin only:
+ * it re-sends thousands of rows. DELIVER NOW already sends the changes.
+ */
+export async function pushEveryCheckAction(): Promise<AdminActionResult> {
+  const user = await requireUser()
+  if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY }
+  const out = await pushChecksToPortal(prisma, { budgetMs: 50_000, full: true, trigger: 'MANUAL' })
+  revalidatePath('/admin/portal')
+  if ('skipped' in out) return { ok: false, message: out.skipped }
+  if (out.errors) return { ok: false, message: out.message ?? 'The push failed.' }
   return { ok: true }
 }

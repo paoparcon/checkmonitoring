@@ -7,8 +7,10 @@
  * each is a different feed with its own watermark:
  *   BILLS      lib/sync/bills.ts      AP-PAYMENTS-WITH-BILLS -> Check.apvNumbers
  *   BILL_REFS  lib/sync/bill-refs.ts  AP-Bills and Adjustments -> AcumaticaBill
+ *   PORTAL_CHECKS  lib/sync/portal-checks.ts  every Check -> the Supplier Portal's check list (a push, not a read; tenant null)
  * A new read adds its mode HERE, once, not in three where clauses. Leaf module.
  */
 export const BILLS_MODE = 'BILLS'
 export const BILL_REFS_MODE = 'BILL_REFS'
-export const NON_PAYMENT_MODES = [BILLS_MODE, BILL_REFS_MODE] as const
+export const PORTAL_CHECKS_MODE = 'PORTAL_CHECKS'
+export const NON_PAYMENT_MODES = [BILLS_MODE, BILL_REFS_MODE, PORTAL_CHECKS_MODE] as const
