@@ -627,8 +627,11 @@ not a server one; MISSING opens `?missing=1`, NOT NUMERIC and OUT OF PATTERN anc
 book lookup and in `planCheckBookBackfill`, so the sync keeps new payments on MBT-A-9048):
 `scripts/merge-check-book.ts MBT-S-9048 MBT-A-9048 [--apply]` moves its checks once (snapshot first,
 one `check_book_merged` row each, status untouched, the emptied book deleted with one
-`check_book_retired` row). Only a pair in `CHECK_BOOK_ALIASES` can be merged. 13 checks measured
-2026-11-03.
+`check_book_retired` row). Only a pair in `CHECK_BOOK_ALIASES` can be merged. **Run 2026-11-03 17:59
+Manila by Claude on the user's instruction: 13 of 13 moved (7 RELEASED, 4 SIGNED, 2 pending; A1+, A1PP,
+STK, HAMFI), 0 notes, MBT-S-9048 deleted; after it MBT-A-9048 holds 1,272 checks; snapshot
+`snapshots/merge-check-book-MBT-S-9048-2026-11-03T09-59-19-492Z.json`.** `17913404695` (11 digits) now
+sits in MBT-A-9048's OUT OF PATTERN list, as it did in the alias book's.
 
 **NUMBERING's heading is frozen, INVENTORY filters on TICKED / UNTICKED, and SUMMARY has a TOTAL row (2026-11-03, spec §J, user request).** `KitTable` takes `stickyHead` — the frame becomes `max-h-[80vh] overflow-auto` (`STICKY_FRAME`) and the head `sticky top-0` (`STICKY_HEAD`), because a sticky element pins to its nearest SCROLLING ancestor; a side-scroll-only frame gives it nothing to stick to; the footer pins to the bottom the same way. Only the two NUMBERING tables opt in. INVENTORY is an enum column (TICKED / UNTICKED, exact match) — as a text column "contains TICKED" also matched UNTICKED — and the remark text is its own hidden REMARKS (SEARCH) column under CUSTOMIZE COLUMNS. `numberingTotals` (`lib/numbering-view.ts`, pure, BigInt for MISSING and TICKED) sums every SUMMARY count over the books shown; the page says `TOTAL CHECKS: N HELD IN M CHECK BOOKS`, the table has it as a footer, and the SUMMARY sheet a bold TOTAL row.
 
