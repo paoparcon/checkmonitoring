@@ -651,3 +651,57 @@ are unchanged by the merge. New `tableId`s, because a saved layout lists only th
 
 A bulk "tick all"; a note on a range Finance types by hand; reading the inventory back into
 Acumatica.
+
+## I. Addendum, 2026-11-03 — a check with no check book is shown where its number falls
+
+### I1. The defect
+
+Finance's inventory count on NUMBERING (§H) found `1791405927` as a MISSING line reading "NO CHECK
+IN THIS SYSTEM", and the user showed it on the dashboard: CV-A1013436, A1+ Multinational Packaging,
+81,732.08, SIGNED since 6 October, AP-A1035065, in the portal's feed too. It is in this system. Acumatica
+posted the payment on the cash account `PAYROLL` (Payroll Clearing Account), which is a cash account
+here and not a check book (§D, user ruling 2026-10-16), so the check carries no `checkBookId`; the
+series query (§D3) reads only checks WITH a book, and the booklet the leaf came from shows a hole where
+the check sits. Measured 2026-11-03 on production: **1,027 Acumatica checks carry no check book, 1,026
+of them on PAYROLL** (915 RELEASED, 74 SIGNED, 18 SIGNATURE_PENDING, 20 VOIDED; 164 dated October
+2026 onward), and every one of their numbers falls inside some book's range — every one of them is a
+false MISSING line somewhere, and a false "no check" to whoever is counting leaves.
+
+### I2. The rule (pure, in `lib/numbering/series.ts`)
+
+`buildSeries(cheques, staged, unbooked)` takes a third list: the Acumatica checks that carry no
+check book. For each book, an unbooked check whose number is all digits, matches the book's pattern
+(§F; every number matches a book below `PATTERN_MIN_CHEQUES`), and lies STRICTLY INSIDE the book's own
+sequence — above the book's first in-pattern number and below its last — is placed in the sequence as a
+`CHECK` entry flagged `noBook: true`, so the number is no longer MISSING. It is a lookup by number,
+not a heuristic: the check exists and bears that number, and the line says that its check book is not
+stated (`SeriesCheque.cashAccount` names Acumatica's cash account, PAYROLL). It never bounds the
+series (`first` / `last` are the book's own), never votes on the pattern, and does not count as `held`,
+`voided` or `cancelled` — those remain the book's own checks — but it does count for DUPLICATE NUMBER
+when the book's own check holds the same number (two Acumatica payments on one leaf number) and is
+counted in `summary.noBook`. Where more than one book's sequence spans a number, the check is shown in
+each: NUMBERING follows Acumatica's data (§G) and does not guess which booklet a PAYROLL leaf was
+torn from, so it is honest in every book that could hold it, and the page says so. An unbooked check
+outside every book's range stays "not in any series", as before.
+
+### I3. Screen and file
+
+The line is a data row like any held check (§H8): the check's number (linked), date, payee, amount and
+status, a `NO CHECK BOOK · PAYROLL` tag beside the status, a light blue tint, and its own inventory tick
+and remarks — keyed `(book, number)` like every line, and `recordInventoryNote` now finds the check by
+number among the no-book checks too, so the audit row carries its `checkId`. The SUMMARY table and sheet
+gain a NO CHECK BOOK column (the count placed in each series); the page's NOT IN ANY SERIES line and
+SUMMARY's A4 say how many no-book checks there are and how many are shown where their number falls.
+The file's NOTE column reads `NO CHECK BOOK — Acumatica cash account PAYROLL`. The scope note gains a
+sentence. MISSING ONLY still shows only gaps. TO FIX IN ACUMATICA is unchanged: Finance posts through
+PAYROLL on purpose, so a no-book check is not a correction to make there.
+
+### I4. Tests
+
+`numbering/series`: placed inside, left out below the first or above the last, left out when the shape
+breaks the pattern, no vote on the pattern, not `held` or `first`/`last`, MISSING count drops by the
+numbers placed, DUPLICATE on a shared number, `noBook` counted. `numbering/inventory`: the flag reaches
+the line. `numbering/query`: a no-book check inside one book's range is tagged there and absent
+elsewhere, one spanning two books is in both, `countChequesWithoutCheckBook` unchanged.
+`numbering/inventory-notes`: a note on a no-book check's number carries its `checkId`.
+`export/numbering-workbook`: the NOTE text and the SUMMARY column. `numbering-view`: `unbookedShown`.

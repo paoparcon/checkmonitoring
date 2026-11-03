@@ -602,6 +602,23 @@ Excel book sheets write one row per listed MISSING number plus TICKED, REMARKS, 
 RECORDED AT. **Migrations `20261103000000_check_inventory_note` and `20261103000100` must reach
 production BEFORE the deploy that carries them** — the page reads the table on every request (both
 applied 2026-11-03).
+**A check with no check book is shown where its number falls (2026-11-03, spec §I).** Finance's
+count found `1791405927` (CV-A1013436, A1+, SIGNED since 6 Oct, in the portal feed) as a MISSING line
+reading "NO CHECK IN THIS SYSTEM": Acumatica posted it on the cash account `PAYROLL`, which is a cash
+account here and not a check book, so it had no `checkBookId` and the series read only checks with a
+book. **1,027 Acumatica checks carry no book, 1,026 on PAYROLL** (915 RELEASED, 74 SIGNED, 18 pending,
+20 VOIDED), every one a false MISSING somewhere. `buildSeries(cheques, staged, unbooked)` now places a
+no-book check whose number matches the book's pattern and lies STRICTLY INSIDE the book's own sequence
+as a CHECK entry flagged `noBook` — a lookup by number, not a guess: it never bounds the series, never
+votes on the pattern, is not `held`/`voided`/`cancelled`, is a DUPLICATE when the book's own check
+shares its number, and is counted in `summary.noBook` (NO CHECK BOOK column on the summary and the
+SUMMARY sheet). Where several books' sequences span it, it is in each (the page says so); outside
+every book it is still "not in any series". The line is blue-tinted, tagged `NO CHECK BOOK · PAYROLL`
+(`SeriesCheque.cashAccount`), inventoried like any number (its audit row carries the check's id —
+`recordInventoryNote` looks among no-book Acumatica checks too), and the file's NOTE names the cash
+account. Finance posts through PAYROLL on purpose, so this is NOT on TO FIX IN ACUMATICA. Verified
+2026-11-03 against the TEST database: the line, the tag, a saved tick and remark with the check's
+`checkId`, the summary column and line, and the export answering 200.
 
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`
 mis-tokenises the pipe; `node node_modules/vitest/vitest.mjs run file -t "a|b"` is the same
@@ -938,7 +955,10 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on
+**2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+`numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
+`numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
+in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on
 `feature/portal-check-list`: 2,309 passed and 7 failed — 3 hook timeouts in `admin/users` that passed
 alone, and 4 real failures that were on master since the 2026-10-29 detach rule and are fixed in the
 same branch: `actions/actions` and `import/upsert` still expected a void to queue a CANCELLED event,

@@ -96,7 +96,7 @@ describe('buildNumberingWorkbook', () => {
     const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
     const text = summary.getSheetValues().flat().filter((v) => typeof v === 'string').join(' ')
     expect(text).toContain('BPI STK')
-    expect(text).toContain('3 checks with no check book')
+    expect(text).toContain('3 CHECKS WITH NO CHECK BOOK')
   })
 
   it('prints no "Not in any series" sentence when noAccountCount is null', async () => {
@@ -113,7 +113,7 @@ describe('buildNumberingWorkbook', () => {
     const wb = await load(await buildNumberingWorkbook({ accounts: [account('BPI STK', [ch('101')])], meta: META }))
     const a4 = String(wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!.getCell('A4').value)
     expect(a4).toContain('5 REGISTER-ONLY CHECKS (NOT IN ACUMATICA) ARE NOT SHOWN.')
-    expect(a4.indexOf('3 checks with no check book')).toBeLessThan(a4.indexOf('5 REGISTER-ONLY'))
+    expect(a4.indexOf('3 CHECKS WITH NO CHECK BOOK')).toBeLessThan(a4.indexOf('5 REGISTER-ONLY'))
     const one = await load(await buildNumberingWorkbook({ accounts: [account('BPI STK', [ch('101')])], meta: { ...META, registerOnlyCount: 1 } }))
     expect(String(one.getWorksheet(NUMBERING_SUMMARY_SHEET)!.getCell('A4').value)).toContain('1 REGISTER-ONLY CHECK (NOT IN ACUMATICA) IS NOT SHOWN.')
   })
@@ -310,5 +310,25 @@ describe('TO FIX IN ACUMATICA (spec §G3)', () => {
     const wb = await load(await buildNumberingWorkbook({ accounts: [account('TO FIX IN ACUMATICA', [ch('1'), ch('2')])], meta: META }))
     expect(wb.worksheets.map((w) => w.name)).toEqual([NUMBERING_SUMMARY_SHEET, NUMBERING_TO_FIX_SHEET, 'TO FIX IN ACUMATICA (2)'])
     expect(wb.getWorksheet(NUMBERING_TO_FIX_SHEET)!.rowCount).toBe(1)
+  })
+})
+
+describe('NO CHECK BOOK (spec §I)', () => {
+  it('writes the placed check as a row with its NOTE, counts it on SUMMARY, and A4 says how many are shown', async () => {
+    const unbooked: SeriesCheque = { ...ch('102', 'SIGNED'), cashAccount: 'PAYROLL' }
+    const acc = withLines({ accountId: 'acc-1', account: 'MBT-A-9048', bank: 'MBTC', company: 'A1+', series: buildSeries([ch('101'), ch('104')], [], [unbooked]) })
+    const wb = await load(await buildNumberingWorkbook({ accounts: [acc], meta: META }))
+    const ws = wb.getWorksheet('MBT-A-9048')!
+    expect(ws.getRow(3).getCell(1).value).toBe('102')
+    expect(ws.getRow(3).getCell(4).value).toBe('SIGNED')
+    expect(ws.getRow(3).getCell(10).value).toBe('NO CHECK BOOK — Acumatica cash account PAYROLL; shown where its number falls')
+    expect(ws.getRow(4).getCell(4).value).toBe('MISSING')
+    const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
+    const labels = Array.from({ length: 15 }, (_, i) => summary.getRow(6).getCell(i + 1).value)
+    expect(labels[14]).toBe('NO CHECK BOOK')
+    expect(summary.getRow(7).getCell(15).value).toBe(1)
+    expect(summary.getRow(7).getCell(10).value).toBe(1) // MISSING NUMBERS: 103 only
+    const a4 = String(summary.getCell('A4').value)
+    expect(a4).toContain('3 CHECKS WITH NO CHECK BOOK (ACUMATICA POSTED THEM ON A CASH ACCOUNT SUCH AS PAYROLL): 1 SHOWN IN THE SERIES ITS NUMBER FALLS IN')
   })
 })

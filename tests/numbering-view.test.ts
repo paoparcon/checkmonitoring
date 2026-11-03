@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, missingLabel, numberingFilename,
-  registerOnlyLine, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
+  registerOnlyLine, noBookLine, unbookedShown, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
 } from '@/lib/numbering-view'
 import type { SeriesEntry } from '@/lib/numbering/series'
 
@@ -38,7 +38,7 @@ describe('isMissingOnly', () => {
 })
 
 describe('visibleEntries', () => {
-  const cheque: SeriesEntry = { kind: 'CHECK', duplicate: false, cheque: { id: 'x', checkNumber: '1', checkDate: null, payeeName: null, amount: null, currency: 'PHP', status: 'VOIDED', cv: null } }
+  const cheque: SeriesEntry = { kind: 'CHECK', duplicate: false, noBook: false, cheque: { id: 'x', checkNumber: '1', checkDate: null, payeeName: null, amount: null, currency: 'PHP', status: 'VOIDED', cv: null } }
   const gap: SeriesEntry = { kind: 'MISSING', from: '2', to: '3', count: '2' }
   it('keeps everything, or only the MISSING lines', () => {
     expect(visibleEntries([cheque, gap], false)).toEqual([cheque, gap])
@@ -62,5 +62,25 @@ describe('labels', () => {
   })
   it('names the file by the Manila day', () => {
     expect(numberingFilename('2026-10-01')).toBe('check-numbering-2026-10-01.xlsx')
+  })
+})
+
+describe('NO CHECK BOOK (spec §I)', () => {
+  const entry = (id: string, noBook: boolean): SeriesEntry =>
+    ({ kind: 'CHECK', duplicate: false, noBook, cheque: { id, checkNumber: '1', checkDate: null, payeeName: null, amount: null, currency: 'PHP', status: 'SIGNED', cv: null } })
+  it('unbookedShown counts distinct no-book checks across the series — one in two books counts once', () => {
+    const a = { series: { entries: [entry('own', false), entry('p1', true), entry('p2', true)] } }
+    const b = { series: { entries: [entry('p1', true), { kind: 'MISSING', from: '2', to: '3', count: '2' } as SeriesEntry] } }
+    expect(unbookedShown([a, b])).toBe(2)
+    expect(unbookedShown([])).toBe(0)
+  })
+  it('noBookLine states the count and how many are shown, singular and plural', () => {
+    expect(noBookLine(1027, 1026)).toBe(
+      '1,027 CHECKS WITH NO CHECK BOOK (ACUMATICA POSTED THEM ON A CASH ACCOUNT SUCH AS PAYROLL): 1,026 SHOWN IN THE SERIES THEIR NUMBER FALLS IN, TAGGED NO CHECK BOOK; THE REST ARE OUTSIDE EVERY BOOK\'S RANGE AND IN NO SERIES.')
+    expect(noBookLine(1, 1)).toContain('1 CHECK WITH NO CHECK BOOK')
+    expect(noBookLine(1, 1)).toContain('1 SHOWN IN THE SERIES ITS NUMBER FALLS IN')
+  })
+  it('the scope note says a no-book check is shown where its number falls', () => {
+    expect(NUMBERING_SCOPE_NOTE).toContain('tagged NO CHECK BOOK, in every series whose numbers span it')
   })
 })

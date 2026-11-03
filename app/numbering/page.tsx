@@ -7,7 +7,7 @@ import { getFilterOptions } from '@/lib/queries'
 import { listNumberingAccounts, countChequesWithoutCheckBook, countRegisterOnlyCheques, listCheckBookOptions } from '@/lib/numbering/query'
 import {
   NUMBERING_PATH, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
-  numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, registerOnlyLine,
+  numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, registerOnlyLine, noBookLine, unbookedShown,
 } from '@/lib/numbering-view'
 import { AppHeader } from '@/components/AppHeader'
 import { EmptyState } from '@/components/EmptyState'
@@ -87,13 +87,15 @@ export default async function NumberingPage({
           {one && (
             <p className="text-xs font-medium tracking-wide text-slate-500">
               INVENTORY: {one.series.summary.held.toLocaleString('en-PH')} HELD · {fmtBig(one.series.summary.missingNumbers)} MISSING NUMBER{one.series.summary.missingNumbers === '1' ? '' : 'S'} ON {one.inventory.lines.toLocaleString('en-PH')} LINE{one.inventory.lines === 1 ? '' : 'S'}
-              {' · '}{fmtBig(one.inventory.ticked)} TICKED · {one.inventory.remarked.toLocaleString('en-PH')} WITH REMARKS. Every number, held or missing, has a tick box; press SAVE INVENTORY to record your changes.
+              {' · '}{fmtBig(one.inventory.ticked)} TICKED · {one.inventory.remarked.toLocaleString('en-PH')} WITH REMARKS
+              {one.series.summary.noBook > 0 && (
+                <> · {one.series.summary.noBook.toLocaleString('en-PH')} CHECK{one.series.summary.noBook === 1 ? '' : 'S'} WITH NO CHECK BOOK SHOWN WHERE {one.series.summary.noBook === 1 ? 'ITS' : 'THEIR'} NUMBER FALLS (ACUMATICA POSTED THEM ON A CASH ACCOUNT SUCH AS PAYROLL)</>
+              )}
+              . Every number, held or missing, has a tick box; press SAVE INVENTORY to record your changes.
             </p>
           )}
           {!account && noAccountCount > 0 && (
-            <p className="text-xs font-medium tracking-wide text-slate-500">
-              NOT IN ANY SERIES: {noAccountCount.toLocaleString('en-PH')} CHECK{noAccountCount === 1 ? '' : 'S'} WITH NO CHECK BOOK.
-            </p>
+            <p className="text-xs font-medium tracking-wide text-slate-500">{noBookLine(noAccountCount, unbookedShown(accounts))}</p>
           )}
           {!account && registerOnlyCount > 0 && (
             <p className="text-xs font-medium tracking-wide text-slate-500">{registerOnlyLine(registerOnlyCount)}</p>

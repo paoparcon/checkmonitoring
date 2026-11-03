@@ -26,19 +26,34 @@ import { canonicalCheckNumber, isBareCheckNumber } from '@/lib/import/normalise'
  * no MISSING run and is not in `first` / `last`, `held`, `duplicates` or
  * `staged`. An out-of-pattern cheque is still a cheque in the book, so it still
  * counts in `voided` / `cancelled`. Nothing in the data changes.
+ *
+ * NO CHECK BOOK (spec §I, 2026-11-03): an Acumatica check posted on a cash
+ * account that is not a check book (PAYROLL, the clearing account — 1,026 of
+ * them measured that day) carries no book, so the booklet its leaf came from
+ * showed a hole where it sits, labelled "no check in this system" for a check
+ * that is in it. `unbooked` is every such check; one whose number matches the
+ * pattern and lies STRICTLY INSIDE the book's own sequence is placed as a CHECK
+ * entry flagged `noBook`, so the number is no longer MISSING. A lookup by
+ * number, not a guess: it never bounds the series, never votes on the pattern,
+ * and is not `held`, `voided` or `cancelled` (the book's own), but it is a
+ * DUPLICATE when the book's own check shares its number, and it is counted in
+ * `noBook`. Where several books' sequences span the number, it is shown in each.
  */
 export type SeriesCheque = {
   id: string; checkNumber: string; checkDate: Date | null; payeeName: string | null
   amount: string | null; currency: string; status: CheckStatus
   /** Acumatica's payment reference (`Check.acumaticaPaymentId`) — the CV Finance corrects there (spec §G3). */
   cv: string | null
+  /** The cash account the check is on (`CashAccount.code`, e.g. PAYROLL) — what a NO CHECK BOOK line names (spec §I). */
+  cashAccount?: string | null
 }
 export type SeriesStaged = {
   acumaticaTenant: string; acumaticaRef: string; statedCheckRef: string; checkDate: Date | null; payeeName: string | null
   amount: string | null; currency: string | null
 }
 export type SeriesEntry =
-  | { kind: 'CHECK'; cheque: SeriesCheque; duplicate: boolean }
+  /** `noBook`: the check carries no check book and is shown here because its number falls inside this book's sequence (spec §I). */
+  | { kind: 'CHECK'; cheque: SeriesCheque; duplicate: boolean; noBook: boolean }
   | { kind: 'STAGED'; staged: SeriesStaged; number: string }
   | { kind: 'MISSING'; from: string; to: string; count: string }
 export type SeriesSummary = {
@@ -54,6 +69,8 @@ export type SeriesSummary = {
   duplicates: number
   /** Numeric cheques and staged lines whose shape breaks the book's pattern (spec §F). */
   outOfPattern: number
+  /** Checks with no check book shown in this sequence because their number falls inside it (spec §I). */
+  noBook: number
 }
 export type NumberShape = { digits: number; lead: string }
 export type AccountSeries = {
@@ -117,10 +134,12 @@ export function stagedSeriesNumber(statedCheckRef: string | null | undefined): s
 }
 
 type Item =
-  | { n: bigint; text: string; order: string; cheque: SeriesCheque; staged?: undefined }
-  | { n: bigint; text: string; order: string; staged: SeriesStaged; cheque?: undefined }
+  | { n: bigint; text: string; order: string; cheque: SeriesCheque; staged?: undefined; noBook?: boolean }
+  | { n: bigint; text: string; order: string; staged: SeriesStaged; cheque?: undefined; noBook?: undefined }
 
-export function buildSeries(cheques: readonly SeriesCheque[], staged: readonly SeriesStaged[] = []): AccountSeries {
+export function buildSeries(
+  cheques: readonly SeriesCheque[], staged: readonly SeriesStaged[] = [], unbooked: readonly SeriesCheque[] = [],
+): AccountSeries {
   const all: Item[] = []
   const notNumeric: SeriesCheque[] = []
   for (const cheque of cheques) {
@@ -128,6 +147,13 @@ export function buildSeries(cheques: readonly SeriesCheque[], staged: readonly S
     // '0' sorts a cheque before any staged line on the same number.
     if (NUMERIC.test(text)) all.push({ n: BigInt(text), text, order: `0${cheque.id}`, cheque })
     else notNumeric.push(cheque)
+  }
+  // A check with no book is a candidate only; whether it is placed is decided
+  // below, against the book's own pattern and bounds (spec §I).
+  const candidates: Item[] = []
+  for (const cheque of unbooked) {
+    const text = cheque.checkNumber.trim()
+    if (NUMERIC.test(text)) candidates.push({ n: BigInt(text), text, order: `0${cheque.id}`, cheque, noBook: true })
   }
   for (const s of staged) {
     const number = stagedSeriesNumber(s.statedCheckRef)
@@ -139,16 +165,22 @@ export function buildSeries(cheques: readonly SeriesCheque[], staged: readonly S
   // Only cheques vote; a staged line of another shape is judged, never counted.
   const pattern = patternOf(all.filter((x) => x.cheque).map((x) => x.text))
   const fits = (x: Item) => pattern === null || sameShape(numberShape(x.text), pattern)
-  const items = all.filter(fits)
+  const own = all.filter(fits)
   const misfits = all.filter((x) => !fits(x))
 
-  // Over every numeric cheque: two cheques on one number (7 and 007 alike) share
-  // a shape, so a duplicate always sits on one side of the pattern.
+  // A no-book check is placed only strictly inside the book's own sequence and
+  // in its pattern: the book's first and last stay the book's own (spec §I2).
+  const placed: Item[] = own.length < 2 ? [] : candidates.filter((x) => fits(x) && x.n > own[0].n && x.n < own[own.length - 1].n)
+  const items = placed.length ? [...own, ...placed].sort((a, b) => (a.n < b.n ? -1 : a.n > b.n ? 1 : a.order < b.order ? -1 : a.order > b.order ? 1 : 0)) : own
+
+  // Over every numeric cheque, placed no-book checks included: two cheques on
+  // one number (7 and 007 alike) share a shape, so a duplicate always sits on
+  // one side of the pattern.
   const perNumber = new Map<bigint, number>()
-  for (const x of all) if (x.cheque) perNumber.set(x.n, (perNumber.get(x.n) ?? 0) + 1)
+  for (const x of [...all, ...placed]) if (x.cheque) perNumber.set(x.n, (perNumber.get(x.n) ?? 0) + 1)
   const isDuplicate = (n: bigint) => (perNumber.get(n) ?? 0) > 1
   const toEntry = (x: Item): SeriesEntry => (x.cheque
-    ? { kind: 'CHECK', cheque: x.cheque, duplicate: isDuplicate(x.n) }
+    ? { kind: 'CHECK', cheque: x.cheque, duplicate: isDuplicate(x.n), noBook: x.noBook === true }
     : { kind: 'STAGED', staged: x.staged, number: x.text })
 
   const entries: SeriesEntry[] = []
@@ -174,7 +206,9 @@ export function buildSeries(cheques: readonly SeriesCheque[], staged: readonly S
     prev = { n: x.n, text: x.text }
   }
 
-  const chequeItems = items.filter((x) => x.cheque)
+  // The book's own cheques in the sequence: `held`, `staged` and `first` / `last`
+  // are the book's; a placed no-book check is counted in `noBook` only.
+  const chequeItems = own.filter((x) => x.cheque)
   // Out-of-pattern cheques are still cheques in the book: they count as voided / cancelled.
   const every = [...all.filter((x) => x.cheque).map((x) => x.cheque!), ...notNumeric]
   return {
@@ -183,17 +217,18 @@ export function buildSeries(cheques: readonly SeriesCheque[], staged: readonly S
     outOfPattern: misfits.map(toEntry),
     pattern,
     summary: {
-      first: items.length ? items[0].text : null,
-      last: items.length ? items[items.length - 1].text : null,
+      first: own.length ? own[0].text : null,
+      last: own.length ? own[own.length - 1].text : null,
       held: new Set(chequeItems.map((x) => x.n)).size,
       voided: every.filter((x) => x.status === 'VOIDED').length,
       cancelled: every.filter((x) => x.status === 'CANCELLED').length,
-      staged: items.length - chequeItems.length,
+      staged: own.length - chequeItems.length,
       missingNumbers: missing.toString(),
       missingRuns: runs,
       notNumeric: notNumeric.length,
-      duplicates: chequeItems.filter((x) => isDuplicate(x.n)).length,
+      duplicates: [...chequeItems, ...placed].filter((x) => isDuplicate(x.n)).length,
       outOfPattern: misfits.length,
+      noBook: placed.length,
     },
   }
 }

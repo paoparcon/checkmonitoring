@@ -87,11 +87,17 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
     const book = await tx.checkBook.findUnique({ where: { id: args.checkBookId }, select: { id: true, code: true } })
     if (!book) throw new DomainError('INVENTORY_NO_SUCH_BOOK', 'That check book is not on record.')
     // The check holding this number, if one does (both spellings the series
-    // could hold: as typed on the screen, and canonical) — for the audit row only.
-    const held = runKey === '' ? await tx.check.findFirst({
-      where: { checkBookId: book.id, checkNumber: { in: [...new Set([args.checkNumber.trim(), key])] } },
-      select: { id: true },
-    }) : null
+    // could hold: as typed on the screen, and canonical) — for the audit row
+    // only. The book's own check first; else an Acumatica check with no book,
+    // which the series shows on that number when it falls inside (spec §I).
+    const numbers = [...new Set([args.checkNumber.trim(), key])]
+    const held = runKey === '' ? (
+      await tx.check.findFirst({ where: { checkBookId: book.id, checkNumber: { in: numbers } }, select: { id: true } })
+      ?? await tx.check.findFirst({
+        where: { checkBookId: null, isCheque: true, acumaticaPaymentId: { not: null }, checkNumber: { in: numbers } },
+        orderBy: { id: 'asc' }, select: { id: true },
+      })
+    ) : null
     const before = await tx.checkInventoryNote.findUnique({
       where: { checkBookId_checkNumber_runTo: { checkBookId: book.id, checkNumber: key, runTo: runKey } },
       select: { ticked: true, remarks: true },

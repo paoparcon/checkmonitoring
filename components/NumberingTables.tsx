@@ -37,19 +37,31 @@ export const toView = (n: InventoryNote): InventoryNoteView =>
 
 const inventoryValue = (n: InventoryNote | null) => [n?.ticked ? 'TICKED' : 'UNTICKED', n?.remarks ?? ''].join(' ').trim()
 
-function checkRow(c: SeriesCheque, note?: string): KitRow {
+/** The tag on a check with no check book shown where its number falls (spec §I): names Acumatica's cash account. */
+const noBookTag = (c: SeriesCheque) => `NO CHECK BOOK · ${c.cashAccount ?? 'NO CASH ACCOUNT'}`
+
+function checkRow(c: SeriesCheque, note?: string, noBook = false): KitRow {
+  const tag = noBook ? noBookTag(c) : null
   return {
     key: c.id,
+    className: noBook ? 'border-b border-sky-100 bg-sky-50/70' : undefined,
     values: {
       checkNumber: c.checkNumber, checkDate: dateValue(c.checkDate), payee: c.payeeName,
-      amount: c.amount === null ? null : String(c.amount), status: `${c.status.replace(/_/g, ' ')}${note ? ` ${note}` : ''}`,
+      amount: c.amount === null ? null : String(c.amount),
+      status: [c.status.replace(/_/g, ' '), note, tag].filter((s) => s).join(' '),
     },
     cells: {
       checkNumber: <Link prefetch={false} href={`/checks/${c.id}`} className="underline underline-offset-2">{c.checkNumber}</Link>,
       checkDate: fmtDay(c.checkDate),
       payee: c.payeeName ?? '—',
       amount: formatMoney(c.amount, c.currency),
-      status: <><StatusPill status={c.status} />{note && <span className="ml-2 text-xs font-semibold text-amber-700">{note}</span>}</>,
+      status: (
+        <>
+          <StatusPill status={c.status} />
+          {note && <span className="ml-2 text-xs font-semibold text-amber-700">{note}</span>}
+          {tag && <span className="ml-2 inline-block whitespace-nowrap rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold tracking-wide text-sky-800">{tag}</span>}
+        </>
+      ),
     },
   }
 }
@@ -110,7 +122,7 @@ function entryRows(entries: readonly SeriesEntry[]): KitRow[] {
         key: `m-${e.from}`, className: 'border-b border-amber-200 bg-amber-50',
         band: <div className="px-4 py-3 font-semibold tabular-nums text-amber-800">{missingLabel(e)}</div>,
       }
-    : e.kind === 'STAGED' ? stagedRow(e.staged) : checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined))
+    : e.kind === 'STAGED' ? stagedRow(e.staged) : checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook))
 }
 
 /** One row per check book. The check book links to its own series. TICKED is the inventory's count, held and missing ticks alike. */
@@ -125,6 +137,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
     { key: 'last', label: 'LAST', kind: 'text', className: 'tabular-nums' },
     count('held', 'HELD'), count('voided', 'VOIDED'), count('cancelled', 'CANCELLED'), count('staged', 'STAGED'),
     count('missing', 'MISSING'), count('ticked', 'TICKED'), count('notNumeric', 'NOT NUMERIC'), count('outOfPattern', 'OUT OF PATTERN'),
+    count('noBook', 'NO CHECK BOOK'),
   ]
   const rows: KitRow[] = accounts.map((a) => {
     const s = a.series.summary
@@ -134,6 +147,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
         account: a.account, bank: a.bank, company: a.company, first: s.first ?? null, last: s.last ?? null,
         held: String(s.held), voided: String(s.voided), cancelled: String(s.cancelled), staged: String(s.staged),
         missing: s.missingNumbers, ticked: a.inventory.ticked, notNumeric: String(s.notNumeric), outOfPattern: String(s.outOfPattern),
+        noBook: String(s.noBook),
       },
       cells: {
         account: <Link prefetch={false} href={numberingHref({ company, account: a.accountId })} className="underline underline-offset-2">{a.account}</Link>,
@@ -147,6 +161,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
         ),
         ticked: <span className={a.inventory.ticked !== '0' ? 'font-semibold text-success-ink' : ''}>{fmtCount(a.inventory.ticked)}</span>,
         notNumeric: s.notNumeric.toLocaleString('en-PH'), outOfPattern: s.outOfPattern.toLocaleString('en-PH'),
+        noBook: <span className={s.noBook ? 'font-semibold text-sky-800' : ''}>{s.noBook.toLocaleString('en-PH')}</span>,
       },
     }
   })
@@ -160,7 +175,9 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
  * sorted; a run too long to list is a band — one line with one tick and remark
  * for the whole run, which opens on a click — and bands hide while a filter or
  * sort is in force, as the kit's bands do. A number Acumatica re-used with a
- * trailing dot is a grey STAGED line. The page wraps this in `InventoryForm`,
+ * trailing dot is a grey STAGED line; a check with no check book whose number
+ * falls inside the sequence is a blue-tinted line tagged NO CHECK BOOK with its
+ * cash account (spec §I). The page wraps this in `InventoryForm`,
  * whose SAVE INVENTORY records every change at once.
  */
 export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly InventoryLine[]; checkBookId: string }) {
@@ -185,7 +202,7 @@ export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly 
       case 'STAGED':
         return withInventory(stagedRow(e.staged), checkBookId, e.number, null)
       case 'CHECK':
-        return withInventory(checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined), checkBookId, e.cheque.checkNumber, e.note)
+        return withInventory(checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook), checkBookId, e.cheque.checkNumber, e.note)
     }
   })
   return (

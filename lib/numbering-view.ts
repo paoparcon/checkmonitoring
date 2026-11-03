@@ -1,4 +1,5 @@
 import { slugify } from './export/report'
+import type { SeriesEntry } from './numbering/series'
 
 /** The numbering screen's arithmetic — parameters, hrefs, labels, the filename. Pure. */
 export const NUMBERING_PATH = '/numbering'
@@ -45,6 +46,24 @@ export function numberingFilename(day: string): string {
   return `${slugify('check numbering')}-${day}.xlsx`
 }
 
+/**
+ * Distinct checks with no check book shown somewhere in the given series
+ * (spec §I) — one spanning two books' sequences is in both and counts once.
+ */
+export function unbookedShown(accounts: readonly { series: { entries: readonly SeriesEntry[] } }[]): number {
+  const ids = new Set<string>()
+  for (const a of accounts) for (const e of a.series.entries) if (e.kind === 'CHECK' && e.noBook) ids.add(e.cheque.id)
+  return ids.size
+}
+
+/** The no-book checks (spec §I): how many there are and how many a series shows, stated on the page and on SUMMARY. */
+export function noBookLine(count: number, shown: number): string {
+  const n = count.toLocaleString('en-PH')
+  const s = shown.toLocaleString('en-PH')
+  return `${n} CHECK${count === 1 ? '' : 'S'} WITH NO CHECK BOOK (ACUMATICA POSTED THEM ON A CASH ACCOUNT SUCH AS PAYROLL): ` +
+    `${s} SHOWN IN THE SERIES ${shown === 1 ? 'ITS' : 'THEIR'} NUMBER FALLS IN, TAGGED NO CHECK BOOK; THE REST ARE OUTSIDE EVERY BOOK'S RANGE AND IN NO SERIES.`
+}
+
 /** The register-only cheques NUMBERING leaves out (spec §G2), stated on the page and on SUMMARY. */
 export function registerOnlyLine(count: number): string {
   return count === 1
@@ -62,7 +81,9 @@ export const NUMBERING_SCOPE_NOTE =
   'used and is listed as STAGED. A check Acumatica holds with a memo in place of its number is on /admin/staged, ' +
   'not here — its number may still be one of the MISSING. A number that does not match its book\'s usual length ' +
   'and first digits is listed as OUT OF PATTERN — usually a mistyped or misfiled check number in Acumatica — and ' +
-  'left out of the gap count. ' +
+  'left out of the gap count. A check Acumatica posted on a cash account that is not a check book (PAYROLL, the ' +
+  'clearing account) carries no check book; it is shown, tagged NO CHECK BOOK, in every series whose numbers span ' +
+  'it, so its leaf is not reported MISSING. ' +
   'INVENTORY: every number, held by a check or MISSING, has a tick box and a remarks field, so the physical ' +
   'count is recorded here; a run of more than 100 missing numbers is one line with one tick and one remark for ' +
   'the whole run, and opens on a click. SAVE INVENTORY records the changes; every tick and remark is on the audit trail.'

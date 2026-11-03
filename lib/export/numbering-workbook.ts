@@ -5,7 +5,7 @@ import { BAND_FILL, COUNT_FORMAT, DATE_FORMAT, styleHeaderCell } from './sheet-s
 import type { NumberingAccount } from '@/lib/numbering/query'
 import { strayEnds, type SeriesCheque, type SeriesStaged, type StrayEnd } from '@/lib/numbering/series'
 import type { InventoryNote } from '@/lib/numbering/inventory'
-import { visibleEntries, registerOnlyLine, NUMBERING_SCOPE_NOTE } from '@/lib/numbering-view'
+import { visibleEntries, registerOnlyLine, noBookLine, unbookedShown, NUMBERING_SCOPE_NOTE } from '@/lib/numbering-view'
 
 /**
  * The numbering report as a workbook: SUMMARY, TO FIX IN ACUMATICA (spec §G3), then one sheet per cheque book with
@@ -31,7 +31,9 @@ export const NUMBERING_ACCOUNT_HEADERS = [
  */
 export const NUMBERING_TO_FIX_SHEET = 'TO FIX IN ACUMATICA'
 export const NUMBERING_TO_FIX_HEADERS = ['CHECK BOOK', 'CHECK NUMBER', 'CV', 'CHECK DATE', 'PAYEE', 'STATUS', 'REASON'] as const
-const SUMMARY_HEADERS =['CHECK BOOK', 'BANK', 'COMPANY', 'FIRST', 'LAST', 'HELD', 'VOIDED', 'CANCELLED', 'STAGED', 'MISSING NUMBERS', 'MISSING RUNS', 'TICKED', 'NOT NUMERIC', 'OUT OF PATTERN'] as const
+const SUMMARY_HEADERS = ['CHECK BOOK', 'BANK', 'COMPANY', 'FIRST', 'LAST', 'HELD', 'VOIDED', 'CANCELLED', 'STAGED', 'MISSING NUMBERS', 'MISSING RUNS', 'TICKED', 'NOT NUMERIC', 'OUT OF PATTERN', 'NO CHECK BOOK'] as const
+/** The NOTE on a check with no check book shown where its number falls (spec §I). */
+export const noBookNote = (c: SeriesCheque) => `NO CHECK BOOK — Acumatica cash account ${c.cashAccount ?? 'not stated'}; shown where its number falls`
 
 export type NumberingMeta = {
   generatedAt: Date; generatedBy: string; filterDescription: string
@@ -93,8 +95,7 @@ export async function buildNumberingWorkbook(
   ws.getCell('A3').font = { size: 10, color: { argb: MUTED_INK } }
   ws.getCell('A4').value = [
     NUMBERING_SCOPE_NOTE,
-    meta.noAccountCount === null ? null
-      : `Not in any series: ${fmt(meta.noAccountCount)} check${meta.noAccountCount === 1 ? '' : 's'} with no check book.`,
+    meta.noAccountCount === null ? null : noBookLine(meta.noAccountCount, unbookedShown(accounts)),
     meta.registerOnlyCount === null ? null : registerOnlyLine(meta.registerOnlyCount),
   ].filter((s) => s !== null).join(' ')
   ws.getCell('A4').font = { size: 10, color: { argb: MUTED_INK } }
@@ -106,7 +107,7 @@ export async function buildNumberingWorkbook(
     const row = ws.getRow(7 + i)
     const values: (string | number | null)[] = [
       a.account, a.bank, a.company, s.first, s.last, s.held, s.voided, s.cancelled, s.staged,
-      countCell(s.missingNumbers), s.missingRuns, countCell(a.inventory.ticked), s.notNumeric, s.outOfPattern,
+      countCell(s.missingNumbers), s.missingRuns, countCell(a.inventory.ticked), s.notNumeric, s.outOfPattern, s.noBook,
     ]
     values.forEach((v, col) => {
       row.getCell(col + 1).value = v
@@ -114,7 +115,7 @@ export async function buildNumberingWorkbook(
     })
     if (i % 2 === 1) row.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL } } })
   })
-  ;[22, 10, 10, 14, 14, 10, 10, 12, 10, 18, 14, 10, 14, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w })
+  ;[22, 10, 10, 14, 14, 10, 10, 12, 10, 18, 14, 10, 14, 16, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w })
 
   const fix = wb.addWorksheet(NUMBERING_TO_FIX_SHEET, { views: [{ state: 'frozen', ySplit: 1 }] })
   NUMBERING_TO_FIX_HEADERS.forEach((label, i) => styleHeaderCell(fix.getRow(1).getCell(i + 1), label, 'left'))
@@ -211,7 +212,11 @@ export async function buildNumberingWorkbook(
         continue
       }
       const e = item.e
-      if (e.kind === 'CHECK') { chequeRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : null, e.note); continue }
+      if (e.kind === 'CHECK') {
+        const notes = [e.duplicate ? 'DUPLICATE NUMBER' : null, e.noBook ? noBookNote(e.cheque) : null].filter((s) => s !== null)
+        chequeRow(e.cheque, notes.length ? notes.join('; ') : null, e.note)
+        continue
+      }
       if (e.kind === 'STAGED') { stagedRow(e.staged); continue }
       const row = sheet.getRow(r++)
       const from = e.kind === 'MISSING_NUMBER' ? e.number : e.from

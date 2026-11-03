@@ -68,14 +68,33 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
     bookIds = used.map((r) => r.checkBookId!)
   }
 
-  const rows = await db.check.findMany({
-    where: { isCheque: true, acumaticaPaymentId: { not: null }, checkBookId: bookIds ? { in: bookIds } : { not: null } },
-    select: {
-      id: true, checkNumber: true, checkDate: true, payeeName: true, amount: true, currency: true, status: true, acumaticaPaymentId: true,
-      company: { select: { code: true } },
-      checkBook: { select: { id: true, code: true, bank: { select: { code: true } } } },
-    },
+  const chequeSelect = {
+    id: true, checkNumber: true, checkDate: true, payeeName: true, amount: true, currency: true, status: true, acumaticaPaymentId: true,
+    cashAccount: { select: { code: true } },
+  } as const
+  const toSeriesCheque = (r: Prisma.CheckGetPayload<{ select: typeof chequeSelect }>): SeriesCheque => ({
+    id: r.id, checkNumber: r.checkNumber, checkDate: r.checkDate, payeeName: r.payeeName,
+    amount: r.amount?.toFixed(2) ?? null, currency: r.currency, status: r.status, cv: r.acumaticaPaymentId,
+    cashAccount: r.cashAccount?.code ?? null,
   })
+  const [rows, unbooked] = await Promise.all([
+    db.check.findMany({
+      where: { isCheque: true, acumaticaPaymentId: { not: null }, checkBookId: bookIds ? { in: bookIds } : { not: null } },
+      select: {
+        ...chequeSelect,
+        company: { select: { code: true } },
+        checkBook: { select: { id: true, code: true, bank: { select: { code: true } } } },
+      },
+    }),
+    // Every Acumatica check with no check book (spec §I): each book's series
+    // places the ones whose number falls inside it. Not narrowed by company —
+    // a book is shown whole, and the leaf was used whichever company used it.
+    db.check.findMany({
+      where: { isCheque: true, acumaticaPaymentId: { not: null }, checkBookId: null },
+      select: chequeSelect,
+    }),
+  ])
+  const unbookedCheques = unbooked.map(toSeriesCheque)
 
   const byBook = new Map<string, Group>()
   const groupFor = (b: BookRef): Group => {
@@ -90,10 +109,7 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
     if (!r.checkBook) continue
     const g = groupFor(r.checkBook)
     g.companies.set(r.company.code, (g.companies.get(r.company.code) ?? 0) + 1)
-    g.cheques.push({
-      id: r.id, checkNumber: r.checkNumber, checkDate: r.checkDate, payeeName: r.payeeName,
-      amount: r.amount?.toFixed(2) ?? null, currency: r.currency, status: r.status, cv: r.acumaticaPaymentId,
-    })
+    g.cheques.push(toSeriesCheque(r))
   }
 
   const stagedRows = await db.stagedCheck.findMany({
@@ -124,14 +140,18 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
 
   return [...byBook.entries()]
     .map(([accountId, g]) => {
-      const series = buildSeries(g.cheques, g.staged)
+      const series = buildSeries(g.cheques, g.staged, unbookedCheques)
       const lines = toInventoryLines(series.entries, notes.get(accountId) ?? [])
       return { accountId, account: g.account, bank: g.bank, company: companyLabel(g.companies), series, lines, inventory: inventoryCounts(lines) }
     })
     .sort((a, b) => a.account.localeCompare(b.account) || a.accountId.localeCompare(b.accountId))
 }
 
-/** Acumatica cheques in no series because they carry no cheque book — stated on the page, not listed. */
+/**
+ * Acumatica cheques that carry no cheque book — stated on the page. Since spec
+ * §I each is shown in the series its number falls inside, tagged NO CHECK BOOK
+ * (`unbookedShown` counts those); the rest are in no series.
+ */
 export async function countChequesWithoutCheckBook(db: Db, f: { companyId?: string }): Promise<number> {
   return db.check.count({
     where: { isCheque: true, acumaticaPaymentId: { not: null }, checkBookId: null, ...(f.companyId ? { companyId: f.companyId } : {}) },

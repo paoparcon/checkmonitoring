@@ -98,7 +98,7 @@ describe('toInventoryLines (spec §H)', () => {
 describe('inventoryCounts', () => {
   it('counts ticked numbers, a ticked run as every number it spans, remarked lines, and lines', () => {
     const lines: InventoryLine[] = [
-      { kind: 'CHECK', cheque: c('1'), duplicate: false, note: note('1') }, // a held number's tick counts too (third pass)
+      { kind: 'CHECK', cheque: c('1'), duplicate: false, noBook: false, note: note('1') }, // a held number's tick counts too (third pass)
       { kind: 'MISSING_NUMBER', number: '2', note: note('2', { remarks: 'x' }) },
       { kind: 'MISSING_NUMBER', number: '3', note: note('3', { ticked: false, remarks: 'y' }) },
       { kind: 'MISSING_NUMBER', number: '4', note: null },
@@ -130,5 +130,16 @@ describe('listRun', () => {
     expect(listRun('7', '9', 10, 3)).toEqual(['007', '008', '009'])
     expect(listRun('5', '4')).toEqual([])
     expect(INVENTORY_EXPAND_PAGE).toBe(200)
+  })
+})
+
+describe('NO CHECK BOOK (spec §I)', () => {
+  it('the flag reaches the line, with its note', () => {
+    const unbooked = { ...c('102'), cashAccount: 'PAYROLL' }
+    const lines = toInventoryLines(buildSeries([c('100'), c('104')], [], [unbooked]).entries, notes(note('102', { remarks: 'leaf in the payroll file' })))
+    expect(shape(lines)).toEqual(['100', 'N 101', '102', 'N 103', '104'])
+    expect(lines[2]).toMatchObject({ kind: 'CHECK', noBook: true, cheque: { id: unbooked.id, cashAccount: 'PAYROLL' }, note: { remarks: 'leaf in the payroll file' } })
+    expect(lines[0]).toMatchObject({ kind: 'CHECK', noBook: false })
+    expect(inventoryCounts(lines)).toEqual({ ticked: '1', remarked: 1, lines: 2 })
   })
 })

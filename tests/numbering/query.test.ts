@@ -327,3 +327,52 @@ describe('listCheckBookOptions', () => {
     expect(out[1]).toEqual({ id: bookA.id, code: 'ZZZ-BOOK', bankCode: bankA.code })
   })
 })
+
+describe('NO CHECK BOOK (spec §I): an Acumatica check with no book is shown where its number falls', () => {
+  it('is placed in the book whose sequence spans its number, tagged with its cash account, and still counted as having no book', async () => {
+    const first = await acuCheck({ checkNumber: '100' })
+    const book = await bookFor(first)
+    await inBook(book, { checkNumber: '104' })
+    const payroll = await acuCheck({ checkNumber: '102', status: 'SIGNED' }) // a cash account, no book
+    const code = (await testDb.cashAccount.findUniqueOrThrow({ where: { id: payroll.cashAccountId! } })).code
+    const [acc, ...rest] = await listNumberingAccounts(testDb, {})
+    expect(rest).toHaveLength(0)
+    const shape = acc.series.entries.map((e) => (e.kind === 'CHECK' ? `${e.cheque.checkNumber}${e.noBook ? '*' : ''}` : e.kind === 'MISSING' ? `M${e.from}` : 'S'))
+    expect(shape).toEqual(['100', 'M101', '102*', 'M103', '104'])
+    expect(acc.series.entries[2]).toMatchObject({ kind: 'CHECK', noBook: true, cheque: { id: payroll.id, cashAccount: code, status: 'SIGNED' } })
+    expect(acc.series.summary).toMatchObject({ held: 2, noBook: 1, missingNumbers: '2' })
+    expect(acc.lines[2]).toMatchObject({ kind: 'CHECK', noBook: true })
+    expect(await countChequesWithoutCheckBook(testDb, {})).toBe(1)
+  })
+
+  it('outside every book\'s sequence it is in no series; in two books\' sequences it is in both', async () => {
+    const a = await acuCheck({ checkNumber: '100' })
+    const bookA = await bookFor(a, 'AAA-A')
+    await inBook(bookA, { checkNumber: '104' })
+    const b = await acuCheck({ checkNumber: '101' })
+    const bookB = await bookFor(b, 'BBB-B')
+    await inBook(bookB, { checkNumber: '105' })
+    const inside = await acuCheck({ checkNumber: '102' })
+    await acuCheck({ checkNumber: '500' }) // outside both
+    const out = await listNumberingAccounts(testDb, {})
+    expect(out.map((x) => x.account)).toEqual(['AAA-A', 'BBB-B'])
+    for (const acc of out) {
+      const placed = acc.series.entries.filter((e) => e.kind === 'CHECK' && e.noBook)
+      expect(placed.map((e) => e.kind === 'CHECK' && e.cheque.id)).toEqual([inside.id])
+    }
+    expect(await countChequesWithoutCheckBook(testDb, {})).toBe(2)
+  })
+
+  it('is placed whatever its company: the company filter selects books, and a book is shown whole', async () => {
+    const a = await acuCheck({ checkNumber: '100' })
+    const book = await bookFor(a)
+    await inBook(book, { checkNumber: '104' })
+    const otherCompany = await acuCheck({ checkNumber: '102' }) // its own company, no book
+    const out = await listNumberingAccounts(testDb, { companyId: a.companyId })
+    expect(out.map((x) => x.accountId)).toEqual([book.id])
+    expect(out[0].series.entries.filter((e) => e.kind === 'CHECK' && e.noBook).map((e) => e.kind === 'CHECK' && e.cheque.id)).toEqual([otherCompany.id])
+    // A register-only check with no book is never placed (spec §G2).
+    await makeCheck({ checkNumber: '103' })
+    expect((await listNumberingAccounts(testDb, {}))[0].series.summary).toMatchObject({ noBook: 1, missingNumbers: '2' })
+  })
+})

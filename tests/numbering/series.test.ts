@@ -82,7 +82,7 @@ describe('buildSeries', () => {
     expect(buildSeries([c('42')]).summary).toMatchObject({ first: '42', last: '42', held: 1, missingRuns: 0 })
     expect(buildSeries([])).toEqual({
       entries: [], notNumeric: [], outOfPattern: [], pattern: null,
-      summary: { first: null, last: null, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, notNumeric: 0, duplicates: 0, outOfPattern: 0 },
+      summary: { first: null, last: null, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, notNumeric: 0, duplicates: 0, outOfPattern: 0, noBook: 0 },
     })
   })
 })
@@ -255,5 +255,66 @@ describe('strayEnds (spec §G3)', () => {
       '1 | STRAY FIRST NUMBER — next is 99999 higher',
       '100000 | STRAY LAST NUMBER — previous is 99999 lower',
     ])
+  })
+})
+
+describe('NO CHECK BOOK (spec §I): a check with no book is shown where its number falls', () => {
+  const nb = (checkNumber: string, cashAccount: string | null = 'PAYROLL'): SeriesCheque => ({ ...c(checkNumber, 'SIGNED'), cashAccount })
+  const run = (from: number, count: number) => Array.from({ length: count }, (_, i) => c(String(from + i)))
+
+  it('fills a MISSING number inside the sequence, flagged, and the gap count drops', () => {
+    const s = buildSeries([c('100'), c('104')], [], [nb('102')])
+    expect(shape(s.entries)).toEqual(['100', 'MISSING 101-101 (1)', '102', 'MISSING 103-103 (1)', '104'])
+    expect(s.entries[2]).toMatchObject({ kind: 'CHECK', noBook: true, duplicate: false, cheque: { checkNumber: '102', cashAccount: 'PAYROLL' } })
+    expect(s.entries[0]).toMatchObject({ kind: 'CHECK', noBook: false })
+    expect(s.summary).toMatchObject({ first: '100', last: '104', held: 2, noBook: 1, missingNumbers: '2', missingRuns: 2 })
+  })
+
+  it('never bounds the series: below the first or above the last it is left out, and so is one on the bound itself', () => {
+    const s = buildSeries([c('100'), c('104')], [], [nb('99'), nb('105'), nb('100'), nb('104')])
+    expect(shape(s.entries)).toEqual(['100', 'MISSING 101-103 (3)', '104'])
+    expect(s.summary).toMatchObject({ first: '100', last: '104', held: 2, noBook: 0, duplicates: 0 })
+  })
+
+  it('a book with fewer than two numbers in its sequence places nothing', () => {
+    expect(buildSeries([c('100')], [], [nb('101')]).summary).toMatchObject({ held: 1, noBook: 0 })
+    expect(buildSeries([], [], [nb('101')]).entries).toEqual([])
+  })
+
+  it('is left out when its shape breaks the pattern, and never votes on it', () => {
+    const sixty = run(6000100000, 25)
+    const s = buildSeries([...sixty, c('6000100030')], [], [nb('1791405927'), nb('6000100027')])
+    expect(s.pattern).toEqual({ digits: 10, lead: '60' })
+    expect(shape(s.entries)).toEqual([...sixty.map((x) => x.checkNumber), 'MISSING 6000100025-6000100026 (2)', '6000100027', 'MISSING 6000100028-6000100029 (2)', '6000100030'])
+    expect(s.summary).toMatchObject({ noBook: 1, outOfPattern: 0, held: 26 })
+    // Twenty-five PAYROLL numbers of another shape do not turn the pattern.
+    const many = Array.from({ length: 25 }, (_, i) => nb(String(1791400000 + i)))
+    expect(buildSeries([...sixty, c('6000100030')], [], many).pattern).toEqual({ digits: 10, lead: '60' })
+  })
+
+  it('is a DUPLICATE when the book\'s own check holds the same number', () => {
+    const s = buildSeries([c('100'), c('102'), c('104')], [], [nb('102')])
+    expect(shape(s.entries)).toEqual(['100', 'MISSING 101-101 (1)', '102', '102', 'MISSING 103-103 (1)', '104'])
+    expect(s.entries.filter((e) => e.kind === 'CHECK' && e.duplicate)).toHaveLength(2)
+    expect(s.summary).toMatchObject({ held: 3, noBook: 1, duplicates: 2 })
+  })
+
+  it('is not held, voided or cancelled — those stay the book\'s own', () => {
+    const s = buildSeries([c('100'), c('104', 'VOIDED')], [], [nb('101'), { ...nb('102'), status: 'VOIDED' }, { ...nb('103'), status: 'CANCELLED' }])
+    expect(shape(s.entries)).toEqual(['100', '101', '102', '103', '104'])
+    expect(s.summary).toMatchObject({ held: 2, voided: 1, cancelled: 0, noBook: 3, missingNumbers: '0' })
+  })
+
+  it('sits beside a staged re-use of its number and keeps a non-numeric unbooked check out', () => {
+    const s = buildSeries([c('100'), c('104')], [st('102.')], [nb('102'), nb('PCF26-00001')])
+    expect(shape(s.entries)).toEqual(['100', 'MISSING 101-101 (1)', '102', 'STAGED 102', 'MISSING 103-103 (1)', '104'])
+    expect(s.notNumeric).toEqual([])
+    expect(s.summary).toMatchObject({ staged: 1, noBook: 1, notNumeric: 0 })
+  })
+
+  it('strayEnds reads the placed check like any entry: a no-book check inside a stray gap closes it', () => {
+    const far = STRAY_GAP + BigInt(2)
+    const s = buildSeries([c('100'), c((BigInt(100) + far).toString())], [], [nb('5000')])
+    expect(strayEnds(s)).toEqual([])
   })
 })

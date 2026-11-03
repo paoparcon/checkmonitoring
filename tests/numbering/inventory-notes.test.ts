@@ -129,3 +129,24 @@ describe('loadInventoryNotes', () => {
     expect(await loadInventoryNotes(testDb, [])).toEqual(new Map())
   })
 })
+
+describe('NO CHECK BOOK (spec §I)', () => {
+  it('a note on the number of a check with no book carries that check\'s id; the book\'s own check wins when both hold it', async () => {
+    const user = await makeUser()
+    const b = await book('100')
+    const payroll = await makeCheck({ checkNumber: '102' })
+    await testDb.check.update({ where: { id: payroll.id }, data: { acumaticaPaymentId: 'CV-PAYROLL-102', acumaticaTenant: 'GOLIVE' } })
+    await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '102', ticked: true, remarks: 'payroll leaf', userId: user.id })
+    expect((await trail())[0].checkId).toBe(payroll.id)
+    // A register-only check with no book is not what the series shows, so it is not named.
+    await makeCheck({ checkNumber: '103' })
+    await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '103', ticked: true, remarks: '', userId: user.id })
+    expect((await trail())[1].checkId).toBeNull()
+    // The book's own check on a shared number is the one named.
+    const own = await testDb.check.findFirstOrThrow({ where: { checkBookId: b.id, checkNumber: '100' } })
+    const twin = await makeCheck({ checkNumber: '100' })
+    await testDb.check.update({ where: { id: twin.id }, data: { acumaticaPaymentId: 'CV-PAYROLL-100', acumaticaTenant: 'GOLIVE' } })
+    await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '100', ticked: true, remarks: '', userId: user.id })
+    expect((await trail())[2].checkId).toBe(own.id)
+  })
+})
