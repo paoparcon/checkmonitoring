@@ -739,3 +739,61 @@ is the number of checks in the sequences: distinct numbers held, every status, t
 
 `numbering-view`: `numberingTotals` over two books (BigInt sums), `totalChecksLine` singular and
 plural. `export/numbering-workbook`: the TOTAL row's cell values and its absence with no books.
+
+## K. Addendum, 2026-11-03 — clickable summary counts, and MBT-S-9048 is MBT-A-9048
+
+User request, same day: *"those numbers should be clickable and will bring you the summary once
+clicked. Also this account MBT-S-9048 should be MBT-A-9048. Should be transferred to the right
+account."*
+
+### K1. Clickable counts
+
+Every non-zero count on the SUMMARY table is a link into that book's lines, pre-filtered to the
+checks it counted (`countLink` in `components/NumberingTables.tsx`; a zero stays plain text):
+
+| Column | Opens |
+| --- | --- |
+| HELD, CHECK BOOK | the book, no filter |
+| VOIDED, CANCELLED, STAGED | `?show=voided` / `cancelled` / `staged` → STATUS contains that word |
+| MISSING | `?missing=1` — MISSING ONLY, as before |
+| TICKED | `?show=ticked` → INVENTORY = TICKED |
+| NO CHECK BOOK | `?show=noBook` → STATUS contains NO CHECK BOOK |
+| NOT NUMERIC, OUT OF PATTERN | the book, anchored at `#not-numeric` / `#out-of-pattern` |
+
+`show` is a NUMBERING parameter (`NUMBERING_SHOWS`, `parseShow`, `showFilters` in
+`lib/numbering-view.ts`): five values, anything else opens the book plain, and it is described on the
+heading as `SHOWING: VOIDED`. It is carried into the kit as `KitTable`'s new `initialFilters` — the
+initial state of the kit's own filter map — so the chip, CLEAR FILTERS and every header menu work on
+it exactly as on a filter the user set. It is not a server filter: the page draws the same lines,
+and the export ignores it (the file has one sheet per book, every line).
+
+### K2. MBT-S-9048 is an alias of MBT-A-9048
+
+Acumatica names the same Metrobank account `MBT-S-9048` on some payments and `MBT-A-9048` on the
+rest (13 checks on the first, measured 2026-11-03; every one of their numbers lies inside the
+`MBT-A-9048` sequence). Two books meant two series, and a count of the physical book was split.
+
+`lib/check-book-alias.ts` holds `CHECK_BOOK_ALIASES` (`MBT-S-9048 → MBT-A-9048`) and
+`canonicalCheckBookCode`. It is applied where a code becomes a `checkBookId`: `upsertCheck`'s book
+lookup (so the next sync keeps new MBT-S-9048 payments on MBT-A-9048 — `checkBookId` is
+`IMPORT_WRITABLE`, and without the alias the sync would move them back) and
+`planCheckBookBackfill` (a cheque on the canonical book is never realigned onto the alias).
+`add-clearing-accounts.ts` no longer creates MBT-S-9048.
+
+The 13 checks already on the alias book move once, by `scripts/merge-check-book.ts MBT-S-9048
+MBT-A-9048 [--apply]` (`lib/admin/merge-check-book.ts`): only a pair in the alias table can be
+merged; dry run prints the plan; `--apply` snapshots to `snapshots/merge-check-book-<FROM>-<ts>.json`
+first, then one transaction per check — a conditional `updateMany` on `checkBookId` and one
+`check_book_merged` audit row (SYSTEM, from, to, payment reference, status; status itself untouched)
+— moves each inventory note to the canonical book unless it already holds a note on that number and
+run (then the note stays, counted, never deleted), and deletes the alias book only when nothing
+refers to it any more, with one `check_book_retired` row and no checkId. A plan applied twice, or
+after the book is gone, moves nothing and throws nothing.
+
+### K3. Tests
+
+`check-book-alias` (3), `admin/merge-check-book` (5: plan incl. clash, refusals, apply with audit
+rows, clash keeps the book, idempotent), `admin/check-books` +1 (alias lands on the canonical book,
+nothing realigned), `import/upsert` +1 (an Acumatica row on MBT-S-9048 gets MBT-A-9048's id),
+`numbering-view` +3 (`show` on the href and in the description, parsing, the kit filters).
+

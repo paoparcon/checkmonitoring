@@ -52,6 +52,20 @@ describe('planCheckBookBackfill', () => {
     void b; void d
   })
 
+  it('an alias code lands on the canonical book, and a cheque already there is not realigned (lib/check-book-alias.ts, 2026-11-03)', async () => {
+    const a = await acumaticaCheque('CV-1', '1791404689')
+    const b = await acumaticaCheque('CV-2', '1791405000')
+    const canonical = await bookFor(a, 'MBT-A-9048')
+    await testDb.check.update({ where: { id: b.id }, data: { checkBookId: canonical.id } })
+    const plan = await planCheckBookBackfill(testDb, fake([pay('CV-1', 'MBT-S-9048'), pay('CV-2', 'MBT-S-9048')]), 'GOLIVE')
+    expect(plan.candidates).toEqual([
+      { checkId: a.id, checkNumber: '1791404689', acumaticaPaymentId: 'CV-1', checkBookId: canonical.id, checkBookCode: 'MBT-A-9048' },
+    ])
+    expect(plan.notABook).toEqual({})
+    expect(plan.realign).toEqual([])
+    expect(plan.clear).toEqual([])
+  })
+
   it('applies a book on record under another company: the former mismatch gets its book (spec §E)', async () => {
     const c = await acumaticaCheque('CV-3', '6000000003')
     const other = await makeCheck({ checkNumber: '1' })

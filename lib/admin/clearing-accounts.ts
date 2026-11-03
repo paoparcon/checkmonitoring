@@ -14,8 +14,11 @@ import { paymentsInScopeFilter } from '@/lib/sync/run'
  * book: it is shared by every company and is not one numbered series, so
  * NUMBERING must not read it as one. Its `companyId` decides nothing (a
  * reference row must name one; cash accounts, like books, are read by code).
- * MBT-S-9048 is an MBTC check book, separate from MBT-A-9048, and takes that
- * book's company for the same reason.
+ * MBT-S-9048 was created here as an MBTC check book of its own on 2026-10-16
+ * and RETIRED on 2026-11-03 (user ruling: "this account MBT-S-9048 should be
+ * MBT-A-9048"): it is Starkson's Acumatica ledger over the same Metrobank
+ * account, so `lib/check-book-alias.ts` resolves it to MBT-A-9048 and
+ * `scripts/merge-check-book.ts` moved its checks. Nothing creates it now.
  */
 export const CLEARING_CASH_ACCOUNT = { code: 'PAYROLL', bankCode: 'BPI', companyCode: 'STK' } as const
 export const EXTRA_CHECK_BOOK = { code: 'MBT-S-9048', bankCode: 'MBTC', sameCompanyAs: 'MBT-A-9048' } as const
@@ -26,7 +29,7 @@ export type CashAccountLink = { checkId: string; checkNumber: string; acumaticaP
 
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim())
 
-/** Creates the two reference rows if absent. Idempotent; returns the codes it created. */
+/** Creates the PAYROLL cash account if absent (the MBT-S-9048 book is retired — see above). Idempotent; returns the codes it created. */
 export async function ensureClearingReferenceRows(db: PrismaClient): Promise<string[]> {
   const created: string[] = []
   if (!(await db.cashAccount.findUnique({ where: { code: CLEARING_CASH_ACCOUNT.code } }))) {
@@ -34,12 +37,6 @@ export async function ensureClearingReferenceRows(db: PrismaClient): Promise<str
     const company = await db.company.findUniqueOrThrow({ where: { code: CLEARING_CASH_ACCOUNT.companyCode } })
     await db.cashAccount.create({ data: { code: CLEARING_CASH_ACCOUNT.code, bankId: bank.id, companyId: company.id } })
     created.push(CLEARING_CASH_ACCOUNT.code)
-  }
-  if (!(await db.checkBook.findUnique({ where: { code: EXTRA_CHECK_BOOK.code } }))) {
-    const bank = await db.bank.findUniqueOrThrow({ where: { code: EXTRA_CHECK_BOOK.bankCode } })
-    const sibling = await db.checkBook.findUniqueOrThrow({ where: { code: EXTRA_CHECK_BOOK.sameCompanyAs } })
-    await db.checkBook.create({ data: { code: EXTRA_CHECK_BOOK.code, bankId: bank.id, companyId: sibling.companyId } })
-    created.push(EXTRA_CHECK_BOOK.code)
   }
   return created
 }

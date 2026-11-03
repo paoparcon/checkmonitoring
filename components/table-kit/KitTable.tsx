@@ -39,7 +39,7 @@ export const STICKY_FRAME = 'max-h-[80vh] overflow-auto rounded-2xl bg-white rin
 export const STICKY_HEAD = 'sticky top-0 z-10 bg-white text-left text-[11px] font-semibold tracking-widest text-slate-400 shadow-[inset_0_-1px_0_#E5E7EB]'
 
 export function KitTable({
-  tableId, columns, rows, footer, capped = false, empty = 'NO ROWS MATCH.', bandsNote, stickyHead = false,
+  tableId, columns, rows, footer, capped = false, empty = 'NO ROWS MATCH.', bandsNote, stickyHead = false, initialFilters,
   frameClassName = stickyHead ? STICKY_FRAME : 'overflow-x-auto rounded-2xl bg-white ring-1 ring-hairline',
   cellClassName = 'px-4 py-3',
   headClassName = stickyHead ? STICKY_HEAD : 'border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400',
@@ -56,12 +56,14 @@ export function KitTable({
   bandsNote?: string
   /** Freeze the heading (and the footer) while the rows scroll: the frame takes STICKY_FRAME and the head STICKY_HEAD unless overridden. */
   stickyHead?: boolean
+  /** Filters in force when the page opens (a link into the table, e.g. NUMBERING's summary counts); the chips show them and the user can clear them. */
+  initialFilters?: Readonly<Record<string, string>>
   frameClassName?: string
   cellClassName?: string
   headClassName?: string
 }) {
   const { layout, preview, save, reset } = useTableLayout(tableId, columns)
-  const [filters, setFilters] = useState<Record<string, string>>({})
+  const [filters, setFilters] = useState<Record<string, string>>({ ...initialFilters })
   const [sort, setSort] = useState<KitSort>(null)
 
   const activeKeys = Object.keys(filters).filter((k) => filters[k].trim() !== '')

@@ -8,6 +8,7 @@ import { isCheckIncomplete } from '@/lib/domain/incomplete'
 import type { NormalisedRow } from '@/lib/normalised-row'
 import { classifyImportOutcome } from './classify'
 import { resolveImpliedStatus } from './implied-status'
+import { canonicalCheckBookCode } from '@/lib/check-book-alias'
 
 type Db = PrismaClient | Prisma.TransactionClient
 
@@ -260,8 +261,10 @@ export async function upsertCheck(db: Db, args: UpsertArgs): Promise<UpsertResul
   const cashAccount = row.cashAccountCode
     ? await db.cashAccount.findUnique({ where: { code: row.cashAccountCode } })
     : null
+  // Through the alias table: Acumatica's MBT-S-9048 is the MBT-A-9048 book
+  // (`lib/check-book-alias.ts`, user ruling 2026-11-03).
   const foundBook = row.checkBookCode
-    ? await db.checkBook.findUnique({ where: { code: row.checkBookCode } })
+    ? await db.checkBook.findUnique({ where: { code: canonicalCheckBookCode(row.checkBookCode) } })
     : null
   // NO COMPANY CHECK (spec §E, measured 2026-10-05; user ruling the same day).
   // A cheque book is a bank account shared across companies — the register

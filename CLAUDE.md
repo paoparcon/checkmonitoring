@@ -619,6 +619,16 @@ every book it is still "not in any series". The line is blue-tinted, tagged `NO 
 account. Finance posts through PAYROLL on purpose, so this is NOT on TO FIX IN ACUMATICA. Verified
 2026-11-03 against the TEST database: the line, the tag, a saved tick and remark with the check's
 `checkId`, the summary column and line, and the export answering 200.
+**Every non-zero count on the NUMBERING summary opens the book pre-filtered (2026-11-03, spec §K).**
+`?show=voided|cancelled|staged|ticked|noBook` (`parseShow` / `showFilters`, `lib/numbering-view.ts`)
+rides into `KitTable`'s `initialFilters`, so it is a kit filter — chip, CLEAR FILTERS, header menus —
+not a server one; MISSING opens `?missing=1`, NOT NUMERIC and OUT OF PATTERN anchor to their tables.
+**`MBT-S-9048` is an alias of `MBT-A-9048`** (`lib/check-book-alias.ts`, applied in `upsertCheck`'s
+book lookup and in `planCheckBookBackfill`, so the sync keeps new payments on MBT-A-9048):
+`scripts/merge-check-book.ts MBT-S-9048 MBT-A-9048 [--apply]` moves its checks once (snapshot first,
+one `check_book_merged` row each, status untouched, the emptied book deleted with one
+`check_book_retired` row). Only a pair in `CHECK_BOOK_ALIASES` can be merged. 13 checks measured
+2026-11-03.
 
 **NUMBERING's heading is frozen, INVENTORY filters on TICKED / UNTICKED, and SUMMARY has a TOTAL row (2026-11-03, spec §J, user request).** `KitTable` takes `stickyHead` — the frame becomes `max-h-[80vh] overflow-auto` (`STICKY_FRAME`) and the head `sticky top-0` (`STICKY_HEAD`), because a sticky element pins to its nearest SCROLLING ancestor; a side-scroll-only frame gives it nothing to stick to; the footer pins to the bottom the same way. Only the two NUMBERING tables opt in. INVENTORY is an enum column (TICKED / UNTICKED, exact match) — as a text column "contains TICKED" also matched UNTICKED — and the remark text is its own hidden REMARKS (SEARCH) column under CUSTOMIZE COLUMNS. `numberingTotals` (`lib/numbering-view.ts`, pure, BigInt for MISSING and TICKED) sums every SUMMARY count over the books shown; the page says `TOTAL CHECKS: N HELD IN M CHECK BOOKS`, the table has it as a footer, and the SUMMARY sheet a bold TOTAL row.
 
@@ -884,7 +894,7 @@ The register (`CHECK MONITORING 9.1.2026.xlsx`) has 15 sheets and 12,227 data ro
   **blocked READY FOR RELEASE on 930 of the 1,370 SIGNED/pending checks**. Where a check has both,
   the book wins (follow Acumatica). The forecast's bank split, `/vouchers`' BANK column and portal
   event bodies still read the label first and fall back to the book.
-  `PCF-SITIO`, `PAYROLL`, `PCF-SILANG`, `RSB-S-0869`, `MBTC-S-988` are no check book. **`PAYROLL` is the clearing account, a BPI CASH ACCOUNT since 2026-10-16** (user ruling; companyId STK decides nothing), and `MBT-S-9048` an MBTC check book: `scripts/add-clearing-accounts.ts <TENANT> [--apply]` (`lib/admin/clearing-accounts.ts`) created both and, run that day by Claude on the user's "do it", linked 818 PAYROLL checks (GOLIVE 784, MANUFACTURING 34; one `cash_account_linked_from_acumatica` row each) and set 10 on MBT-S-9048, snapshots `snapshots/clearing-accounts-<TENANT>-2026-10-16T03-*.json`. Before it those checks had no account, so READY FOR RELEASE and MARK RELEASED refused them.
+  `PCF-SITIO`, `PAYROLL`, `PCF-SILANG`, `RSB-S-0869`, `MBTC-S-988` are no check book. **`PAYROLL` is the clearing account, a BPI CASH ACCOUNT since 2026-10-16** (user ruling; companyId STK decides nothing), and `MBT-S-9048` an MBTC check book (**retired 2026-11-03: it is an alias of `MBT-A-9048`, see spec §K**): `scripts/add-clearing-accounts.ts <TENANT> [--apply]` (`lib/admin/clearing-accounts.ts`) created both and, run that day by Claude on the user's "do it", linked 818 PAYROLL checks (GOLIVE 784, MANUFACTURING 34; one `cash_account_linked_from_acumatica` row each) and set 10 on MBT-S-9048, snapshots `snapshots/clearing-accounts-<TENANT>-2026-10-16T03-*.json`. Before it those checks had no account, so READY FOR RELEASE and MARK RELEASED refused them.
 - A voided check is **two feed rows** under one reference; the original's positive amount survives.
   **`collapseVoidPairs` pairs on company + payment reference + check number** (2026-10-06). Keyed on
   the number alone it treated a RE-ISSUE on the same number as the void's other half and flagged the
@@ -959,7 +969,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+**2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
 `numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
 `numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
 in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on

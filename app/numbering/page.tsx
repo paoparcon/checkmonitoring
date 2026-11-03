@@ -8,7 +8,7 @@ import { listNumberingAccounts, countChequesWithoutCheckBook, countRegisterOnlyC
 import {
   NUMBERING_PATH, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
   numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, registerOnlyLine, noBookLine, unbookedShown,
-  numberingTotals, totalChecksLine,
+  numberingTotals, totalChecksLine, parseShow, showFilters,
 } from '@/lib/numbering-view'
 import { AppHeader } from '@/components/AppHeader'
 import { EmptyState } from '@/components/EmptyState'
@@ -28,7 +28,7 @@ import { InventoryForm } from '@/components/InventoryForm'
 export default async function NumberingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ company?: string; account?: string; missing?: string }>
+  searchParams: Promise<{ company?: string; account?: string; missing?: string; show?: string }>
 }) {
   const user = await requireUser()
   const params = await searchParams
@@ -37,6 +37,7 @@ export default async function NumberingPage({
   const accountParam = params.account?.trim() || undefined
   const account = books.find((b) => b.id === accountParam)
   const missingOnly = isMissingOnly(params.missing)
+  const show = account ? parseShow(params.show) : undefined
   const fmtBig = (s: string) => (s.length <= 15 ? Number(s).toLocaleString('en-PH') : s)
   const field = 'h-10 rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy'
 
@@ -83,7 +84,7 @@ export default async function NumberingPage({
         <div className="space-y-1">
           <p className="text-xs font-medium tracking-wide text-slate-600">
             {account ? account.code : `${accounts.length.toLocaleString('en-PH')} CHECK BOOK${accounts.length === 1 ? '' : 'S'}`}
-            {' · '}{describeNumberingFilters({ company: scopedCompany?.code, account: account?.code, missingOnly })}
+            {' · '}{describeNumberingFilters({ company: scopedCompany?.code, account: account?.code, missingOnly, show })}
           </p>
           {!account && accounts.length > 0 && (
             <p className="text-xs font-semibold tracking-wide text-slate-700">{totalChecksLine(numberingTotals(accounts))}</p>
@@ -132,16 +133,16 @@ export default async function NumberingPage({
               ? <EmptyState title="NO NUMERIC CHECKS">Every check in this check book carries a number that is not all digits; they are listed below.</EmptyState>
               : entries.length === 0
               ? <EmptyState title="NOTHING MISSING" tone="good">Every number from {one.series.summary.first ?? '—'} to {one.series.summary.last ?? '—'} is used here — held as a check or staged as a re-use.</EmptyState>
-              : <InventoryForm checkBookId={one.accountId}><NumberingEntriesTable lines={entries} checkBookId={one.accountId} /></InventoryForm>}
+              : <InventoryForm checkBookId={one.accountId}><NumberingEntriesTable lines={entries} checkBookId={one.accountId} initialFilters={showFilters(show)} /></InventoryForm>}
             {!missingOnly && one.series.notNumeric.length > 0 && (
               <>
-                <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">NOT NUMERIC — NOT IN THE SEQUENCE</h2>
+                <h2 id="not-numeric" className="text-[11px] font-semibold tracking-widest text-slate-400">NOT NUMERIC — NOT IN THE SEQUENCE</h2>
                 <NotNumericTable cheques={one.series.notNumeric} />
               </>
             )}
             {!missingOnly && one.series.outOfPattern.length > 0 && (
               <>
-                <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">OUT OF PATTERN — NOT IN THE SEQUENCE</h2>
+                <h2 id="out-of-pattern" className="text-[11px] font-semibold tracking-widest text-slate-400">OUT OF PATTERN — NOT IN THE SEQUENCE</h2>
                 {one.series.pattern && (
                   <p className="text-sm text-slate-600">
                     This check book&apos;s numbers are {one.series.pattern.digits} digits starting {one.series.pattern.lead}; these are not. Usually a mistyped or misfiled number in Acumatica.

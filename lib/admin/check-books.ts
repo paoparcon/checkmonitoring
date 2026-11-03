@@ -4,6 +4,7 @@ import { writeAudit } from '@/lib/audit'
 import { PAYMENTS_FEED, type AcumaticaClient } from '@/lib/integrations/acumatica/client'
 import type { AcumaticaTenant } from '@/lib/integrations/acumatica/companies'
 import { paymentsInScopeFilter } from '@/lib/sync/run'
+import { canonicalCheckBookCode } from '@/lib/check-book-alias'
 
 /**
  * The cheque book of every Acumatica cheque that has none (spec
@@ -74,8 +75,9 @@ export async function planCheckBookBackfill(db: PrismaClient, client: AcumaticaC
 
   const plan: CheckBookPlan = { scanned: cheques.length, candidates: [], notInFeed: 0, notABook: {}, realign: [], clear: [] }
   for (const c of cheques) {
-    const code = codeByRef.get(c.acumaticaPaymentId!)
-    if (!code) { plan.notInFeed++; continue }
+    const raw = codeByRef.get(c.acumaticaPaymentId!)
+    if (!raw) { plan.notInFeed++; continue }
+    const code = canonicalCheckBookCode(raw)
     const book = bookByCode.get(code)
     if (!book) { plan.notABook[code] = (plan.notABook[code] ?? 0) + 1; continue }
     plan.candidates.push({ checkId: c.id, checkNumber: c.checkNumber, acumaticaPaymentId: c.acumaticaPaymentId!, checkBookId: book.id, checkBookCode: code })
@@ -89,7 +91,10 @@ export async function planCheckBookBackfill(db: PrismaClient, client: AcumaticaC
     orderBy: [{ checkNumber: 'asc' }, { id: 'asc' }],
   })
   for (const c of booked) {
-    const code = codeByRef.get(c.acumaticaPaymentId!)
+    // The alias is applied before the comparison, so a cheque held on the
+    // canonical book is never realigned onto the alias Acumatica names.
+    const raw = codeByRef.get(c.acumaticaPaymentId!)
+    const code = raw ? canonicalCheckBookCode(raw) : undefined
     if (!code || !c.checkBook || c.checkBook.code === code) continue
     const book = bookByCode.get(code)
     const row: CheckBookRealign = {

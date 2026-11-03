@@ -5,7 +5,38 @@ import type { SeriesEntry } from './numbering/series'
 export const NUMBERING_PATH = '/numbering'
 export const NUMBERING_EXPORT_PATH = '/api/export/numbering'
 
-export type NumberingParams = { company?: string; account?: string; missing?: boolean }
+export type NumberingParams = { company?: string; account?: string; missing?: boolean; show?: NumberingShow }
+
+/**
+ * What a count on the SUMMARY opens when clicked (user request 2026-11-03:
+ * "those numbers should be clickable"): the book's lines with the matching kit
+ * filter already in force. MISSING uses `missing=1` (the server's MISSING
+ * ONLY view) and HELD opens the book plain; NOT NUMERIC and OUT OF PATTERN are
+ * their own tables, reached by anchor.
+ */
+export const NUMBERING_SHOWS = ['voided', 'cancelled', 'staged', 'ticked', 'noBook'] as const
+export type NumberingShow = (typeof NUMBERING_SHOWS)[number]
+
+export function parseShow(value: string | null | undefined): NumberingShow | undefined {
+  const v = (value ?? '').trim()
+  return (NUMBERING_SHOWS as readonly string[]).includes(v) ? (v as NumberingShow) : undefined
+}
+
+/** The kit filters a `show` opens with: STATUS is a text column ("contains"), INVENTORY an enum (`=` exact). */
+export function showFilters(show: NumberingShow | undefined): Record<string, string> {
+  switch (show) {
+    case 'voided': return { status: 'VOIDED' }
+    case 'cancelled': return { status: 'CANCELLED' }
+    case 'staged': return { status: 'STAGED' }
+    case 'ticked': return { inventory: '=TICKED' }
+    case 'noBook': return { status: 'NO CHECK BOOK' }
+    default: return {}
+  }
+}
+
+export const SHOW_LABELS: Readonly<Record<NumberingShow, string>> = {
+  voided: 'VOIDED', cancelled: 'CANCELLED', staged: 'STAGED', ticked: 'TICKED', noBook: 'NO CHECK BOOK',
+}
 
 export function numberingHref(p: NumberingParams, path: string = NUMBERING_PATH): string {
   const qs = new URLSearchParams()
@@ -14,6 +45,7 @@ export function numberingHref(p: NumberingParams, path: string = NUMBERING_PATH)
   if (company) qs.set('company', company)
   if (account) qs.set('account', account)
   if (p.missing) qs.set('missing', '1')
+  if (p.show) qs.set('show', p.show)
   const s = qs.toString()
   return s ? `${path}?${s}` : path
 }
@@ -28,12 +60,13 @@ export function visibleEntries<T extends { kind: string }>(entries: readonly T[]
 }
 
 export function describeNumberingFilters(
-  f: { company?: string | null; account?: string | null; missingOnly?: boolean },
+  f: { company?: string | null; account?: string | null; missingOnly?: boolean; show?: NumberingShow },
 ): string {
   const parts: string[] = []
   if (f.company) parts.push(`COMPANY: ${f.company}`)
   if (f.account) parts.push(`CHECK BOOK: ${f.account}`)
   if (f.missingOnly) parts.push('MISSING ONLY')
+  if (f.show) parts.push(`SHOWING: ${SHOW_LABELS[f.show]}`)
   return parts.length ? parts.join('  ·  ') : 'No filters applied'
 }
 

@@ -1,5 +1,6 @@
 // components/NumberingTables.tsx
 import Link from 'next/link'
+import type { ReactNode } from 'react'
 import { formatMoney } from '@/lib/money'
 import { StatusPill } from '@/components/StatusPill'
 import { missingLabel, numberingHref, numberingTotals } from '@/lib/numbering-view'
@@ -139,10 +140,18 @@ function entryRows(entries: readonly SeriesEntry[]): KitRow[] {
     : e.kind === 'STAGED' ? stagedRow(e.staged) : checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook))
 }
 
+/** A non-zero count is a link into the book's lines with that set in force (user request 2026-11-03: "those numbers should be clickable"). */
+const countLink = (href: string, node: ReactNode, nonZero: boolean) =>
+  nonZero ? <Link prefetch={false} href={href} className="underline underline-offset-2">{node}</Link> : node
+
 /**
  * One row per check book, and a TOTAL row over the books shown (user request
- * 2026-11-03). The check book links to its own series. TICKED is the inventory's
- * count, held and missing ticks alike.
+ * 2026-11-03). The check book links to its own series, and every non-zero
+ * count links to the lines it counts: HELD opens the book, MISSING its MISSING
+ * ONLY view, VOIDED / CANCELLED / STAGED / NO CHECK BOOK the lines with that
+ * STATUS filter in force, TICKED the inventory filter, NOT NUMERIC and OUT OF
+ * PATTERN their own tables below. TICKED is the inventory's count, held and
+ * missing ticks alike.
  */
 export function NumberingSummaryTable({ accounts, company }: { accounts: readonly NumberingAccount[]; company?: string }) {
   const t = numberingTotals(accounts)
@@ -160,6 +169,8 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
   ]
   const rows: KitRow[] = accounts.map((a) => {
     const s = a.series.summary
+    const base = numberingHref({ company, account: a.accountId })
+    const show = (show: 'voided' | 'cancelled' | 'staged' | 'ticked' | 'noBook') => numberingHref({ company, account: a.accountId, show })
     return {
       key: a.accountId,
       values: {
@@ -169,18 +180,21 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
         noBook: String(s.noBook),
       },
       cells: {
-        account: <Link prefetch={false} href={numberingHref({ company, account: a.accountId })} className="underline underline-offset-2">{a.account}</Link>,
+        account: <Link prefetch={false} href={base} className="underline underline-offset-2">{a.account}</Link>,
         bank: a.bank, company: a.company, first: s.first ?? '—', last: s.last ?? '—',
-        held: s.held.toLocaleString('en-PH'), voided: s.voided.toLocaleString('en-PH'),
-        cancelled: s.cancelled.toLocaleString('en-PH'), staged: s.staged.toLocaleString('en-PH'),
-        missing: (
+        held: countLink(base, s.held.toLocaleString('en-PH'), s.held > 0),
+        voided: countLink(show('voided'), s.voided.toLocaleString('en-PH'), s.voided > 0),
+        cancelled: countLink(show('cancelled'), s.cancelled.toLocaleString('en-PH'), s.cancelled > 0),
+        staged: countLink(show('staged'), s.staged.toLocaleString('en-PH'), s.staged > 0),
+        missing: countLink(numberingHref({ company, account: a.accountId, missing: true }), (
           <span className={s.missingRuns ? 'font-semibold text-amber-700' : ''}>
             {fmtCount(s.missingNumbers)}{s.missingRuns ? ` (${s.missingRuns.toLocaleString('en-PH')})` : ''}
           </span>
-        ),
-        ticked: <span className={a.inventory.ticked !== '0' ? 'font-semibold text-success-ink' : ''}>{fmtCount(a.inventory.ticked)}</span>,
-        notNumeric: s.notNumeric.toLocaleString('en-PH'), outOfPattern: s.outOfPattern.toLocaleString('en-PH'),
-        noBook: <span className={s.noBook ? 'font-semibold text-sky-800' : ''}>{s.noBook.toLocaleString('en-PH')}</span>,
+        ), s.missingNumbers !== '0'),
+        ticked: countLink(show('ticked'), <span className={a.inventory.ticked !== '0' ? 'font-semibold text-success-ink' : ''}>{fmtCount(a.inventory.ticked)}</span>, a.inventory.ticked !== '0'),
+        notNumeric: countLink(`${base}#not-numeric`, s.notNumeric.toLocaleString('en-PH'), s.notNumeric > 0),
+        outOfPattern: countLink(`${base}#out-of-pattern`, s.outOfPattern.toLocaleString('en-PH'), s.outOfPattern > 0),
+        noBook: countLink(show('noBook'), <span className={s.noBook ? 'font-semibold text-sky-800' : ''}>{s.noBook.toLocaleString('en-PH')}</span>, s.noBook > 0),
       },
     }
   })
@@ -207,7 +221,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
  * cash account (spec §I). The page wraps this in `InventoryForm`,
  * whose SAVE INVENTORY records every change at once.
  */
-export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly InventoryLine[]; checkBookId: string }) {
+export function NumberingEntriesTable({ lines, checkBookId, initialFilters }: { lines: readonly InventoryLine[]; checkBookId: string; initialFilters?: Readonly<Record<string, string>> }) {
   const rows = lines.map((e): KitRow => {
     switch (e.kind) {
       case 'MISSING_NUMBER':
@@ -233,7 +247,7 @@ export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly 
     }
   })
   return (
-    <KitTable tableId="numbering-inventory" columns={[...CHECK_COLUMNS, INVENTORY_COLUMN, REMARKS_COLUMN]} rows={rows} stickyHead
+    <KitTable tableId="numbering-inventory" columns={[...CHECK_COLUMNS, INVENTORY_COLUMN, REMARKS_COLUMN]} rows={rows} stickyHead initialFilters={initialFilters}
       bandsNote="LONG MISSING RUNS ARE HIDDEN WHILE A FILTER OR SORT IS IN FORCE; EVERY LISTED NUMBER STAYS." />
   )
 }

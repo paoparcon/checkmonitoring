@@ -162,6 +162,14 @@ describe('upsertCheck — creating', () => {
     for (const audit of audits) expect(audit.details).not.toHaveProperty('checkBookRefused')
   })
 
+  it('an Acumatica row on the alias MBT-S-9048 lands on MBT-A-9048 (lib/check-book-alias.ts, 2026-11-03)', async () => {
+    const { company, cashAccount } = await seedCompany()
+    const canonical = await testDb.checkBook.create({ data: { code: 'MBT-A-9048', bankId: cashAccount.bankId, companyId: company.id } })
+    await upsert(acumaticaRow({ ReferenceNbr: 'CV-A1-1', PaymentRef: '1791404689', CashAccount: 'MBT-S-9048' }))
+    const a = await testDb.check.findFirstOrThrow({ where: { checkNumber: '1791404689' } })
+    expect(a.checkBookId).toBe(canonical.id)
+  })
+
   it('sets a check book filed under another company on create: books are shared (spec §E)', async () => {
     await seedCompany()
     const a1 = await seedCompany('A1+', 'A1+ Multinational Packaging Inc.')

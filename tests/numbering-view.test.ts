@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, missingLabel, numberingFilename,
+  parseShow, showFilters,
   registerOnlyLine, noBookLine, unbookedShown, numberingTotals, totalChecksLine, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
 } from '@/lib/numbering-view'
 import type { SeriesEntry } from '@/lib/numbering/series'
@@ -104,5 +105,29 @@ describe('TOTAL over the books (user request 2026-11-03)', () => {
   it('totalChecksLine reads the held total and the book count, singular and plural', () => {
     expect(totalChecksLine({ books: 9, held: 11043 })).toBe('TOTAL CHECKS: 11,043 HELD IN 9 CHECK BOOKS')
     expect(totalChecksLine({ books: 1, held: 1 })).toBe('TOTAL CHECKS: 1 HELD IN 1 CHECK BOOK')
+  })
+})
+
+describe('show — a SUMMARY count clicked (user request 2026-11-03)', () => {
+  it('rides on the href and is described', () => {
+    expect(numberingHref({ account: 'a1', show: 'ticked' })).toBe('/numbering?account=a1&show=ticked')
+    expect(describeNumberingFilters({ account: 'B', show: 'noBook' })).toBe('CHECK BOOK: B  ·  SHOWING: NO CHECK BOOK')
+  })
+
+  it('parses only the five sets; anything else opens the book plain', () => {
+    expect(parseShow('voided')).toBe('voided')
+    expect(parseShow(' ticked ')).toBe('ticked')
+    expect(parseShow('missing')).toBeUndefined()
+    expect(parseShow('')).toBeUndefined()
+    expect(parseShow(undefined)).toBeUndefined()
+  })
+
+  it('opens the kit with the matching filter: STATUS contains, INVENTORY exact', () => {
+    expect(showFilters('voided')).toEqual({ status: 'VOIDED' })
+    expect(showFilters('cancelled')).toEqual({ status: 'CANCELLED' })
+    expect(showFilters('staged')).toEqual({ status: 'STAGED' })
+    expect(showFilters('noBook')).toEqual({ status: 'NO CHECK BOOK' })
+    expect(showFilters('ticked')).toEqual({ inventory: '=TICKED' })
+    expect(showFilters(undefined)).toEqual({})
   })
 })
