@@ -282,3 +282,28 @@ certificate rather than the team wildcard, after which Chrome cannot coalesce. B
 requests, made on the ticket. Nothing in this repository can prevent it.
 
 Vercel Hobby crons run at most once per day per job; the 12:00 and 18:00 Manila runs are two entries in vercel.json on the same path. A third run means a third entry.
+
+**Vercel's position, 2026-10-03 (Nick, case 010fc6txWb6faq46):** no denials after 27 Sep 17:10 PDT
+(00:10 UTC 28 Sep — the cutoff measured here); the same fingerprint was served on 1 and 2 October;
+"not currently recurring"; report a new 403 with time and request ID so they can tell "whether the
+same connection-coalescing condition has returned". **Nothing was changed on their side.**
+Re-measured 2026-10-05: both hosts still present the identical certificate (same serial,
+`*.rclcompanies.com`) and resolved to the same IP, so Chrome can still coalesce. The condition
+stands; only the mitigation that punished it has gone quiet. Treat a recurrence as expected.
+
+**2026-10-08:** after the reply above (same certificate serial, same IP, so coalescing still
+possible), Nick escalated the case to Vercel's engineering team for review. Awaiting their answer
+on the two fixes asked for: a 421 instead of a deny on coalesced connections, or a per-host
+certificate for `checkmonitoring.rclcompanies.com`. No recurrence reported since 28 September.
+
+**RESOLVED by Vercel, 2026-10-17 (case 010fc6txWb6faq46):** "We have updated how these HTTP/2
+connection-coalescing requests are handled. Instead of being denied with a 403 by the rule, the
+connection should now receive a 421 response, allowing Chrome to retry the request using the correct
+connection." **Verified 2026-10-19 from the office:** an HTTP/2 request with `:authority`
+checkmonitoring sent over a TLS connection opened for supplier-portal (Node `http2`, the exact
+coalesced case) is now served — 200 on `/welcome`, 307 on `/` — with no `x-vercel-mitigated`; and in
+Chrome, signed in with a Supplier Portal tab open, three credentialed requests in a row were 200 and
+the dashboard rendered. The certificate is still the shared wildcard (same serial), so coalescing
+still happens; it is simply no longer punished. The 25 September System Bypass rule for the office IP
+can stay — it is harmless and was never the lever. If the block page ever returns, the first check
+is the same: credentialed vs credential-less fetch, then Firewall → Traffic.
