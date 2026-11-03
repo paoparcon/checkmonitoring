@@ -57,17 +57,19 @@ async function inTx<T>(db: Db, fn: (tx: Prisma.TransactionClient) => Promise<T>)
 }
 
 /**
- * Record Finance's tick and remark against a MISSING number, or a MISSING run,
- * of a check book (spec §H). Every Finance user. One row per (book, number,
- * run end) — a run's note and its first number's note are two rows — written
- * in place; one `inventory_note_recorded` audit row per write, carrying what
- * it replaced.
+ * Record Finance's tick and remark against a number of a check book — MISSING
+ * or held by a check (user, 2026-11-03: "why the released and other checks
+ * doesnt have check box?" — an inventory ticks every number) — or against a
+ * MISSING run (spec §H). Every Finance user. One row per (book, number, run
+ * end) — a run's note and its first number's note are two rows — written in
+ * place; one `inventory_note_recorded` audit row per write, carrying what it
+ * replaced, and carrying the check's id when a check holds the number so the
+ * tick shows on that check's own trail. The tick never touches the check: its
+ * status and FINANCE NOTES stay the check's own.
  *
- * Refused for a number a check in that book already holds: the number is not
- * missing, and a check's status is recorded on the check. Refused for a
- * number that is not all digits, which no series lists. The run bound is
- * stored as given (canonical) so the screen can say when the run it described
- * has since changed shape; it decides nothing.
+ * Refused for a number that is not all digits, which no series lists. The run
+ * bound is stored as given (canonical) so the screen can say when the run it
+ * described has since changed shape; it decides nothing.
  */
 export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs): Promise<InventoryNote> {
   const key = inventoryKey(args.checkNumber)
@@ -84,15 +86,12 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
   return inTx(db, async (tx) => {
     const book = await tx.checkBook.findUnique({ where: { id: args.checkBookId }, select: { id: true, code: true } })
     if (!book) throw new DomainError('INVENTORY_NO_SUCH_BOOK', 'That check book is not on record.')
-    // Both spellings the series could hold: as typed on the screen, and canonical.
-    const held = await tx.check.findFirst({
+    // The check holding this number, if one does (both spellings the series
+    // could hold: as typed on the screen, and canonical) — for the audit row only.
+    const held = runKey === '' ? await tx.check.findFirst({
       where: { checkBookId: book.id, checkNumber: { in: [...new Set([args.checkNumber.trim(), key])] } },
-      select: { checkNumber: true, status: true },
-    })
-    if (held) {
-      throw new DomainError('INVENTORY_NUMBER_HELD',
-        `Check ${held.checkNumber} is on record in ${book.code} (${held.status.replace(/_/g, ' ')}); its status is recorded on the check, not here.`)
-    }
+      select: { id: true },
+    }) : null
     const before = await tx.checkInventoryNote.findUnique({
       where: { checkBookId_checkNumber_runTo: { checkBookId: book.id, checkNumber: key, runTo: runKey } },
       select: { ticked: true, remarks: true },
@@ -104,7 +103,7 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
       select: noteSelect,
     })
     await writeAudit(tx, {
-      actorType: 'USER', userId: args.userId, action: INVENTORY_NOTE_ACTION,
+      checkId: held?.id, actorType: 'USER', userId: args.userId, action: INVENTORY_NOTE_ACTION,
       details: {
         checkBook: book.code, checkBookId: book.id, checkNumber: key, runTo,
         ticked: args.ticked, remarks: remarks || null,

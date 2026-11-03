@@ -180,7 +180,7 @@ export async function buildNumberingWorkbook(
       row.getCell(5).value = c.currency
       row.getCell(6).value = c.amount === null ? null : Number(c.amount)
       row.getCell(6).numFmt = currencyNumberFormat(c.currency)
-      row.getCell(10).value = inventory ? [note, 'INVENTORY NOTE RECORDED WHILE MISSING'].filter(Boolean).join('; ') : note
+      row.getCell(10).value = note
       noteCells(row, inventory)
     }
     const stagedRow = (s: SeriesStaged, note?: string) => {

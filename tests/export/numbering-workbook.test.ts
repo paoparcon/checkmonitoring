@@ -194,19 +194,20 @@ describe('the inventory columns (spec §H)', () => {
     expect(run.getCell(12).value).toBe('booklet in vault')
   })
 
-  it('a check holding a noted number shows the note with a word in NOTE, and SUMMARY carries TICKED', async () => {
+  it('a check holding a noted number shows its remark, NOTE untouched, and SUMMARY counts its tick', async () => {
     const wb = await load(await buildNumberingWorkbook({
       accounts: [account('BPI STK', [ch('101'), ch('102'), ch('105')], [note('101', { remarks: 'was missing' }), note('103'), note('104')])],
       meta: META,
     }))
     const ws = wb.getWorksheet('BPI STK')!
-    expect(ws.getRow(2).getCell(10).value).toBe('INVENTORY NOTE RECORDED WHILE MISSING')
+    expect(ws.getRow(2).getCell(10).value).toBeNull()
+    expect(ws.getRow(2).getCell(11).value).toBe('YES')
     expect(ws.getRow(2).getCell(12).value).toBe('was missing')
     const summary = wb.getWorksheet(NUMBERING_SUMMARY_SHEET)!
     const labels = Array.from({ length: 14 }, (_, i) => summary.getRow(6).getCell(i + 1).value)
     const col = labels.indexOf('TICKED') + 1
     expect(col).toBe(labels.indexOf('MISSING RUNS') + 2)
-    expect(summary.getRow(7).getCell(col).value).toBe(2) // 103 and 104; the held 101 does not count
+    expect(summary.getRow(7).getCell(col).value).toBe(3) // 101 (held), 103 and 104
   })
 })
 

@@ -11,6 +11,7 @@ import {
 import { AppHeader } from '@/components/AppHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { NumberingSummaryTable, NumberingEntriesTable, NotNumericTable, OutOfPatternTable } from '@/components/NumberingTables'
+import { InventoryForm } from '@/components/InventoryForm'
 
 /**
  * CHEQUE NUMBERING — consecutives per cheque book (spec
@@ -84,8 +85,8 @@ export default async function NumberingPage({
           </p>
           {one && (
             <p className="text-xs font-medium tracking-wide text-slate-500">
-              INVENTORY: {fmtBig(one.series.summary.missingNumbers)} MISSING NUMBER{one.series.summary.missingNumbers === '1' ? '' : 'S'} ON {one.inventory.lines.toLocaleString('en-PH')} LINE{one.inventory.lines === 1 ? '' : 'S'}
-              {' · '}{fmtBig(one.inventory.ticked)} TICKED · {one.inventory.remarked.toLocaleString('en-PH')} WITH REMARKS. A tick or a remark is saved as you change it.
+              INVENTORY: {one.series.summary.held.toLocaleString('en-PH')} HELD · {fmtBig(one.series.summary.missingNumbers)} MISSING NUMBER{one.series.summary.missingNumbers === '1' ? '' : 'S'} ON {one.inventory.lines.toLocaleString('en-PH')} LINE{one.inventory.lines === 1 ? '' : 'S'}
+              {' · '}{fmtBig(one.inventory.ticked)} TICKED · {one.inventory.remarked.toLocaleString('en-PH')} WITH REMARKS. Every number, held or missing, has a tick box; press SAVE INVENTORY to record your changes.
             </p>
           )}
           {!account && noAccountCount > 0 && (
@@ -124,7 +125,7 @@ export default async function NumberingPage({
               ? <EmptyState title="NO NUMERIC CHECKS">Every check in this check book carries a number that is not all digits; they are listed below.</EmptyState>
               : entries.length === 0
               ? <EmptyState title="NOTHING MISSING" tone="good">Every number from {one.series.summary.first ?? '—'} to {one.series.summary.last ?? '—'} is used here — held as a check or staged as a re-use.</EmptyState>
-              : <NumberingEntriesTable lines={entries} checkBookId={one.accountId} />}
+              : <InventoryForm checkBookId={one.accountId}><NumberingEntriesTable lines={entries} checkBookId={one.accountId} /></InventoryForm>}
             {!missingOnly && one.series.notNumeric.length > 0 && (
               <>
                 <h2 className="text-[11px] font-semibold tracking-widest text-slate-400">NOT NUMERIC — NOT IN THE SEQUENCE</h2>

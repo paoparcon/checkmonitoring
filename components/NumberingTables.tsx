@@ -6,7 +6,7 @@ import { missingLabel, numberingHref } from '@/lib/numbering-view'
 import type { NumberingAccount } from '@/lib/numbering/query'
 import type { SeriesCheque, SeriesEntry, SeriesStaged } from '@/lib/numbering/series'
 import { runNoteStale, type InventoryLine, type InventoryNote } from '@/lib/numbering/inventory'
-import type { InventoryNoteView } from '@/components/InventoryNoteCell'
+import { InventoryNoteCell, type InventoryNoteView } from '@/components/InventoryNoteCell'
 import { MissingNumberRow } from '@/components/MissingNumberRow'
 import { MissingRunRows } from '@/components/MissingRunRows'
 
@@ -62,19 +62,13 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
 const toView = (n: InventoryNote): InventoryNoteView =>
   ({ ticked: n.ticked, remarks: n.remarks, updatedBy: n.updatedBy, updatedAt: n.updatedAt.toISOString() })
 
-/** A note recorded while the number was MISSING, shown read-only once a check holds the number. */
-function HeldNote({ note }: { note: InventoryNote | null }) {
-  if (!note) return null
-  return (
-    <div className="text-xs text-slate-500">
-      <span className={`font-semibold ${note.ticked ? 'text-success-ink' : 'text-slate-400'}`}>{note.ticked ? 'TICKED' : 'NOT TICKED'}</span>
-      {note.remarks && <span> · {note.remarks}</span>}
-      <span className="block text-[11px] text-slate-400">RECORDED WHILE MISSING · {note.updatedBy}</span>
-    </div>
-  )
-}
-
-function ChequeRow({ c, note, inventory }: { c: SeriesCheque; note?: string; inventory?: InventoryNote | null }) {
+/**
+ * A held check's row. With `inventory` given (the series table) it carries the
+ * same tick box and remarks as a MISSING number — an inventory ticks every
+ * number (user, 2026-11-03) — keyed to the number in the check's book, never
+ * written onto the check.
+ */
+function ChequeRow({ c, note, inventory }: { c: SeriesCheque; note?: string; inventory?: { checkBookId: string; note: InventoryNote | null } }) {
   return (
     <tr className="border-b border-slate-100 odd:bg-white even:bg-ground">
       <td className={`${th} tabular-nums`}><Link prefetch={false} href={`/checks/${c.id}`} className="underline underline-offset-2">{c.checkNumber}</Link></td>
@@ -82,7 +76,11 @@ function ChequeRow({ c, note, inventory }: { c: SeriesCheque; note?: string; inv
       <td className={th}>{c.payeeName ?? '—'}</td>
       <td className={`${th} text-right tabular-nums`}>{formatMoney(c.amount, c.currency)}</td>
       <td className={th}><StatusPill status={c.status} />{note && <span className="ml-2 text-xs font-semibold text-amber-700">{note}</span>}</td>
-      {inventory !== undefined && <td className={th}><HeldNote note={inventory} /></td>}
+      {inventory !== undefined && (
+        <td className={`${th} py-2`}>
+          <InventoryNoteCell checkBookId={inventory.checkBookId} checkNumber={c.checkNumber} note={inventory.note ? toView(inventory.note) : null} label={c.checkNumber} />
+        </td>
+      )}
     </tr>
   )
 }
@@ -108,8 +106,8 @@ function StagedRow({ s, inventory }: { s: SeriesStaged; inventory?: boolean }) {
  * MISSING number on its own highlighted line with Finance's tick box and
  * remarks, a run too long to list as one line with one tick and remark for
  * the whole run, and each number Acumatica re-used with a trailing dot as a
- * grey STAGED line. A check that now holds a number noted while it was
- * missing shows that note read-only.
+ * grey STAGED line. A held check carries the same tick and remarks: the
+ * inventory ticks every number, whatever holds it.
  */
 export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly InventoryLine[]; checkBookId: string }) {
   return (
@@ -137,7 +135,7 @@ export function NumberingEntriesTable({ lines, checkBookId }: { lines: readonly 
               )
             }
             if (e.kind === 'STAGED') return <StagedRow key={`s-${e.staged.acumaticaTenant}-${e.staged.acumaticaRef}`} s={e.staged} inventory />
-            return <ChequeRow key={e.cheque.id} c={e.cheque} note={e.duplicate ? 'DUPLICATE NUMBER' : undefined} inventory={e.note} />
+            return <ChequeRow key={e.cheque.id} c={e.cheque} note={e.duplicate ? 'DUPLICATE NUMBER' : undefined} inventory={{ checkBookId, note: e.note }} />
           })}
         </tbody>
       </table>

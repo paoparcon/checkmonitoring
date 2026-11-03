@@ -414,25 +414,31 @@ the page says so. Since 2026-10-05 (spec §G) only Acumatica checks are shown (r
 and other types* (Next's file tracer) on `1n`-style literal arithmetic in `lib/numbering/series.ts`;
 it uses `BigInt(0)` / `BigInt(1)` constants instead — keep it that way.
 
-**NUMBERING is also the CHECK INVENTORY (2026-11-03, spec §H).** On a book's page every MISSING
-number is its own amber line with a tick box and a remarks field (`components/InventoryNoteCell.tsx`,
-saved on change through `recordInventoryNoteAction` → `recordInventoryNote` in
-`lib/numbering/inventory-notes.ts`, every Finance user), so the status of a check Acumatica does not
-hold is recorded here and not in a spreadsheet. A run of more than `INVENTORY_LIST_MAX` (100) numbers
-is one line with one tick and remark for the whole run, keyed to its first number with `runTo`
-stored, and **opens on a click into one row per number, 200 at a time** (`components/MissingRunRows.tsx`,
-user request the same day); the line says so when the run has since changed shape. **A note is on one
-number OR on a run — the key is (book, number, runTo), `runTo = ''` for a single number** (migration
-`20261103000100`), so the run's tick and its first number's tick are two rows. Measured 2026-11-03: 687 runs in 9
-books, 579 listed number by number at 100 (5,014 lines, at most 1,915 on BPI-S-4636). Notes live in
-`CheckInventoryNote` (book + canonical number, never deleted), each write one `inventory_note_recorded`
-audit row with NO checkId — the audit screen's check-number filter cannot find them; filter by action.
-A note is refused for a number a check in the book holds; a note whose number later arrives from
-Acumatica is shown read-only beside the check, never written onto it. `buildSeries` and every count
-are unchanged; `NumberingAccount.lines` (`lib/numbering/inventory.ts`, pure) is the series as the
-inventory shows it, and the Excel book sheets write one row per listed MISSING number plus TICKED,
-REMARKS, RECORDED BY, RECORDED AT. **Migration `20261103000000_check_inventory_note` must reach
-production BEFORE the deploy that carries it** — the page reads the table on every request.
+**NUMBERING is also the CHECK INVENTORY (2026-11-03, spec §H).** On a book's page EVERY line — a
+held check of any status and every MISSING number — has a tick box and a remarks field
+(`components/InventoryNoteCell.tsx`), so the physical count is recorded here and not in a
+spreadsheet. **Nothing is saved as it changes**: each change is a draft in
+`components/InventoryForm.tsx`, the sticky bar counts UNSAVED CHANGES, and SAVE INVENTORY
+(`saveInventoryAction` → `recordInventoryNote` in `lib/numbering/inventory-notes.ts`, every Finance
+user, one row and one audit entry per change, answered per row, 25 s budget then "press again")
+records them (user ruling, same day: "there should be save button"). A run of more than
+`INVENTORY_LIST_MAX` (100) numbers is one line with one tick and remark for the whole run, keyed to
+its first number with `runTo` stored, and **opens on a click into one row per number, 200 at a time**
+(`components/MissingRunRows.tsx`); the line says so when the run has since changed shape. **A note is
+on one number OR on a run — the key is (book, number, runTo), `runTo = ''` for a single number**
+(migration `20261103000100`), so the run's tick and its first number's tick are two rows. Measured
+2026-11-03: 687 runs in 9 books, 579 listed number by number at 100 (5,014 lines, at most 1,915 on
+BPI-S-4636). Notes live in `CheckInventoryNote` (book + canonical number, never deleted), each write
+one `inventory_note_recorded` audit row — with the check's `checkId` on a held number, NONE on a
+MISSING one (the audit screen's check-number filter finds the former only; filter by action for the
+rest). A held check's note is never written onto the check; the first pass refused held numbers and
+the user reversed that the same day ("why the released and other checks doesnt have check box?").
+`buildSeries` and every count are unchanged; `NumberingAccount.lines` (`lib/numbering/inventory.ts`,
+pure) is the series as the inventory shows it, TICKED counts held and missing ticks alike, and the
+Excel book sheets write one row per listed MISSING number plus TICKED, REMARKS, RECORDED BY,
+RECORDED AT. **Migrations `20261103000000_check_inventory_note` and `20261103000100` must reach
+production BEFORE the deploy that carries them** — the page reads the table on every request (both
+applied 2026-11-03).
 
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`
 mis-tokenises the pipe; `node node_modules/vitest/vitest.mjs run file -t "a|b"` is the same

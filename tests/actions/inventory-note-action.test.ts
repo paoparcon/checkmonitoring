@@ -20,9 +20,11 @@ beforeEach(async () => {
   revalidatePath.mockClear()
 })
 
-function fd(entries: Record<string, string>) {
+type Change = { key: string; checkNumber: string; runTo?: string; ticked: boolean; remarks: string }
+function fd(checkBookId: string, changes: Change[] | string) {
   const f = new FormData()
-  for (const [k, v] of Object.entries(entries)) f.append(k, v)
+  f.append('checkBookId', checkBookId)
+  f.append('changes', typeof changes === 'string' ? changes : JSON.stringify(changes))
   return f
 }
 async function book() {
@@ -33,34 +35,54 @@ async function book() {
   return b
 }
 
-describe('recordInventoryNoteAction (spec §H)', () => {
-  it('records a tick and remark as any Finance user and answers with who and when, revalidating /numbering', async () => {
-    const { recordInventoryNoteAction } = await import('@/app/numbering/actions')
+describe('saveInventoryAction (spec §H, SAVE INVENTORY)', () => {
+  it('records every change as any Finance user — a held check, a missing number and a run — answering per row, and revalidates /numbering', async () => {
+    const { saveInventoryAction } = await import('@/app/numbering/actions')
     const b = await book()
-    const r = await recordInventoryNoteAction(fd({ checkBookId: b.id, checkNumber: '102', ticked: '1', remarks: ' unused, in vault ' }))
+    const r = await saveInventoryAction(fd(b.id, [
+      { key: '100|', checkNumber: '100', ticked: true, remarks: ' in vault ' },
+      { key: '102|', checkNumber: '102', ticked: true, remarks: '' },
+      { key: '200|500', checkNumber: '200', runTo: '500', ticked: false, remarks: 'booklet unopened' },
+    ]))
     expect(r.ok).toBe(true)
     if (!r.ok) return
-    expect(r.note).toMatchObject({ ticked: true, remarks: 'unused, in vault', updatedBy: 'Finance User' })
-    expect(new Date(r.note.updatedAt).getTime()).toBeGreaterThan(0)
+    expect(r.failed).toEqual([])
+    expect(r.unreached).toBe(0)
+    expect(r.saved.map((s) => s.key)).toEqual(['100|', '102|', '200|500'])
+    expect(r.saved[0].note).toMatchObject({ ticked: true, remarks: 'in vault', updatedBy: 'Finance User' })
+    expect(new Date(r.saved[0].note.updatedAt).getTime()).toBeGreaterThan(0)
+    expect(r.saved[2].note).toMatchObject({ ticked: false, remarks: 'booklet unopened' })
     expect(revalidatePath).toHaveBeenCalledWith('/numbering')
-    expect(await testDb.checkInventoryNote.count({ where: { checkBookId: b.id, checkNumber: '102', ticked: true } })).toBe(1)
+    expect(await testDb.checkInventoryNote.count({ where: { checkBookId: b.id } })).toBe(3)
+    expect(await testDb.checkInventoryNote.findFirst({ where: { checkBookId: b.id, checkNumber: '200' } })).toMatchObject({ runTo: '500', ticked: false })
   })
 
-  it('passes a run end through, and an unticked save with empty remarks records exactly that', async () => {
-    const { recordInventoryNoteAction } = await import('@/app/numbering/actions')
+  it('a refused row fails in the domain\'s own words while the rest are saved', async () => {
+    const { saveInventoryAction } = await import('@/app/numbering/actions')
     const b = await book()
-    const r = await recordInventoryNoteAction(fd({ checkBookId: b.id, checkNumber: '200', runTo: '500', ticked: '0', remarks: '' }))
-    expect(r).toMatchObject({ ok: true, note: { ticked: false, remarks: null } })
-    expect(await testDb.checkInventoryNote.findFirst({ where: { checkBookId: b.id } })).toMatchObject({ checkNumber: '200', runTo: '500', ticked: false, remarks: null })
+    const r = await saveInventoryAction(fd(b.id, [
+      { key: '600|599', checkNumber: '600', runTo: '599', ticked: true, remarks: '' },
+      { key: '103|', checkNumber: '103', ticked: true, remarks: '' },
+    ]))
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.saved.map((s) => s.key)).toEqual(['103|'])
+    expect(r.failed).toHaveLength(1)
+    expect(r.failed[0].key).toBe('600|599')
+    expect(r.failed[0].message).toMatch(/run/i)
+    expect(await testDb.checkInventoryNote.count()).toBe(1)
   })
 
-  it('returns the domain refusal, in its own words, for a number a check holds', async () => {
-    const { recordInventoryNoteAction } = await import('@/app/numbering/actions')
+  it('refuses unreadable changes and a missing book outright, writing nothing', async () => {
+    const { saveInventoryAction } = await import('@/app/numbering/actions')
     const b = await book()
-    const r = await recordInventoryNoteAction(fd({ checkBookId: b.id, checkNumber: '100', ticked: '1', remarks: '' }))
-    expect(r.ok).toBe(false)
-    if (r.ok) return
-    expect(r.message).toContain('Check 100 is on record in BPI-S-TEST')
+    const bad = await saveInventoryAction(fd(b.id, 'not json'))
+    expect(bad.ok).toBe(false)
+    const shape = await saveInventoryAction(fd(b.id, JSON.stringify([{ key: 'x' }])))
+    expect(shape.ok).toBe(false)
+    const noBook = await saveInventoryAction(fd('', [{ key: '102|', checkNumber: '102', ticked: true, remarks: '' }]))
+    expect(noBook.ok).toBe(false)
+    expect(await testDb.checkInventoryNote.count()).toBe(0)
     expect(revalidatePath).not.toHaveBeenCalled()
   })
 })

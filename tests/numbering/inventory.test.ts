@@ -98,14 +98,14 @@ describe('toInventoryLines (spec §H)', () => {
 describe('inventoryCounts', () => {
   it('counts ticked numbers, a ticked run as every number it spans, remarked lines, and lines', () => {
     const lines: InventoryLine[] = [
-      { kind: 'CHECK', cheque: c('1'), duplicate: false, note: note('1') }, // a held number's note does not count
+      { kind: 'CHECK', cheque: c('1'), duplicate: false, note: note('1') }, // a held number's tick counts too (third pass)
       { kind: 'MISSING_NUMBER', number: '2', note: note('2', { remarks: 'x' }) },
       { kind: 'MISSING_NUMBER', number: '3', note: note('3', { ticked: false, remarks: 'y' }) },
       { kind: 'MISSING_NUMBER', number: '4', note: null },
       { kind: 'MISSING', from: '5', to: '204', count: '200', note: note('5', { runTo: '204' }), notes: [note('7')] }, // the run is ticked: 200, not 201
       { kind: 'MISSING', from: '300', to: '600', count: '301', note: null, notes: [note('301'), note('302', { ticked: false, remarks: 'z' })] },
     ]
-    expect(inventoryCounts(lines)).toEqual({ ticked: '202', remarked: 3, lines: 5 })
+    expect(inventoryCounts(lines)).toEqual({ ticked: '203', remarked: 3, lines: 5 })
   })
   it('is zero on an empty or all-held series', () => {
     expect(inventoryCounts([])).toEqual({ ticked: '0', remarked: 0, lines: 0 })

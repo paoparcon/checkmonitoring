@@ -3,7 +3,6 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { testDb, resetDb } from '../helpers/db'
 import { makeCheck, makeUser } from '../helpers/factory'
 import { recordInventoryNote, loadInventoryNotes, INVENTORY_NOTE_ACTION, INVENTORY_REMARKS_MAX } from '@/lib/numbering/inventory-notes'
-import { DomainError } from '@/lib/domain/errors'
 
 beforeEach(resetDb)
 
@@ -67,18 +66,19 @@ describe('recordInventoryNote (spec §H)', () => {
       .rejects.toMatchObject({ code: 'INVENTORY_NOT_NUMERIC' })
   })
 
-  it('refuses a number a check in that book holds, naming the check, but allows it in another book', async () => {
+  it('ticks a number a check in that book holds, and its audit row names that check (third pass: held checks are inventoried too)', async () => {
     const user = await makeUser()
     const b = await book('100')
-    const other = await book('7')
-    const err = await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '100', ticked: true, remarks: '', userId: user.id }).catch((e) => e)
-    expect(err).toBeInstanceOf(DomainError)
-    expect(err.code).toBe('INVENTORY_NUMBER_HELD')
-    expect(err.message).toContain('Check 100 is on record in')
-    expect(err.message).toContain(b.code)
-    expect(await testDb.checkInventoryNote.count()).toBe(0)
-    expect(await trail()).toHaveLength(0)
-    await expect(recordInventoryNote(testDb, { checkBookId: other.id, checkNumber: '100', ticked: true, remarks: '', userId: user.id })).resolves.toMatchObject({ checkNumber: '100' })
+    const held = await testDb.check.findFirstOrThrow({ where: { checkBookId: b.id, checkNumber: '100' } })
+    await expect(recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '100', ticked: true, remarks: 'in the vault', userId: user.id }))
+      .resolves.toMatchObject({ checkNumber: '100', ticked: true })
+    expect(await testDb.checkInventoryNote.count({ where: { checkBookId: b.id, checkNumber: '100', ticked: true } })).toBe(1)
+    const audit = await trail()
+    expect(audit).toHaveLength(1)
+    expect(audit[0].checkId).toBe(held.id)
+    const missing = await recordInventoryNote(testDb, { checkBookId: b.id, checkNumber: '102', ticked: true, remarks: '', userId: user.id })
+    expect(missing.checkNumber).toBe('102')
+    expect((await trail())[1].checkId).toBeNull()
   })
 
   it('refuses a number that is not all digits, an unknown book, and an over-long remark — writing nothing', async () => {

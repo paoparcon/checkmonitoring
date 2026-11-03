@@ -537,8 +537,8 @@ page and on SUMMARY is the same as before.
 - **A note on a number that later arrives from Acumatica is kept** and shown read-only beside the
   check (RECORDED WHILE MISSING), on screen and in the file. It is never written onto the check:
   a check's status and remarks are the check's own.
-- **A note is refused for a number a check in that book holds** (the number is not missing; the
-  refusal names the check and its status), for a number that is not all digits, for a run end
+- ~~**A note is refused for a number a check in that book holds**~~ (reversed in H7: a held check
+  is inventoried too). A note is refused for a number that is not all digits, for a run end
   that is not a number or precedes its start, and for a remark over 500 characters.
 - **Every Finance user** may tick and remark, as with FINANCE NOTES on a check. Each save is one
   `inventory_note_recorded` audit row — `actorType USER`, **no `checkId`** (there is no check) —
@@ -603,7 +603,33 @@ the run line. Consequences:
   `components/MissingNumberRow.tsx` is one MISSING number, used by both the server table and an
   opened run. The file is unchanged: a run is still one row there.
 
-### H7. Out of scope
+### H7. Third pass, same day — every number is inventoried, and SAVE INVENTORY
 
-Ticking a HELD check (its status is its record); a bulk "tick all"; a note on a range Finance
-types by hand; reading the inventory back into Acumatica.
+User, on seeing RELEASED rows with an empty inventory column: *"why the released and other checks
+doesnt have check box?"* — and then: *"there should be save button so the inventory will be save."*
+Both reverse decisions above.
+
+- **A HELD check has the same tick box and remarks as a MISSING number.** The inventory is a
+  physical count of every number in the series, and a check Acumatica holds is still a piece of
+  paper to count. The H1 refusal of a note on a held number is gone; its audit row now carries the
+  check's `checkId` (a MISSING number's still has none), so the audit screen's check-number filter
+  finds a held check's ticks. The note is still never written onto the check, and RECORDED WHILE
+  MISSING is gone — a note on a held number is just its note. `inventoryCounts` counts a held
+  check's tick and remark like any other.
+- **Nothing is saved as it changes.** Every tick box and remarks field files a draft with the
+  page's `components/InventoryForm.tsx` (a React context around the table); the sticky bar above
+  the table shows N UNSAVED CHANGES and a SAVE INVENTORY button, and leaving the page with a draft
+  open asks first. SAVE INVENTORY sends every draft in one server action
+  (`saveInventoryAction`, `changes` as JSON, at most `INVENTORY_SAVE_MAX = 5,000` rows), which
+  writes them one by one through `recordInventoryNote` — each its own row, transaction and audit
+  entry — and answers per row: saved rows show who recorded them and when, a refused row keeps its
+  draft and shows the domain's words, and rows not reached inside `INVENTORY_SAVE_BUDGET_MS`
+  (25 s) are counted and saved by pressing the button again. `recordInventoryNoteAction` is gone.
+- Verified 2026-11-03 against the TEST database: a held SIGNED check's tick, a MISSING number's
+  remark and a whole-run tick filed as 3 UNSAVED CHANGES, saved in one press ("Saved 3."), survived
+  a reload, and wrote three `inventory_note_recorded` rows, the held one with its `checkId`.
+
+### H8. Out of scope
+
+A bulk "tick all"; a note on a range Finance types by hand; reading the inventory back into
+Acumatica.

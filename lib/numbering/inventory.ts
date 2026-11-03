@@ -29,6 +29,10 @@ import type { SeriesEntry } from './series'
 export const INVENTORY_LIST_MAX = 100
 /** Numbers an opened run shows per click of SHOW MORE. */
 export const INVENTORY_EXPAND_PAGE = 200
+/** The SAVE INVENTORY loop stops here and reports what it did not reach; pressing it again finishes the rest. */
+export const INVENTORY_SAVE_BUDGET_MS = 25_000
+/** More rows than this in one save is refused outright: the page never sends them, and a time budget is not a size limit. */
+export const INVENTORY_SAVE_MAX = 5_000
 
 export type InventoryNote = {
   /** The stored key — canonical, no leading zeros. */
@@ -91,9 +95,8 @@ function runNoteFor(runs: readonly InventoryNote[], from: string, to: string): I
  * The series as inventory lines: a run of at most `max` numbers becomes one
  * MISSING_NUMBER line each, a longer run stays one MISSING line carrying its
  * run note and the single-number notes inside it, and every line that can
- * carry a note gets the one recorded on its number — a CHECK too, so a note
- * made while the number was missing is not lost when Acumatica later sends
- * the check.
+ * carry a note gets the one recorded on its number — a CHECK too: the
+ * inventory ticks every number, held or missing.
  */
 export function toInventoryLines(
   entries: readonly SeriesEntry[], notes: readonly InventoryNote[], max: number = INVENTORY_LIST_MAX,
@@ -124,21 +127,24 @@ export function toInventoryLines(
 }
 
 export type InventoryCounts = {
-  /** MISSING numbers covered by a ticked note — a ticked run counts every number it still spans, else its ticked numbers. */
+  /** Numbers covered by a ticked note, held or MISSING — a ticked run counts every number it still spans, else its ticked numbers. */
   ticked: string
-  /** MISSING lines (numbers and runs) carrying a remark. */
+  /** Lines (held checks, MISSING numbers and runs) carrying a remark. */
   remarked: number
   /** MISSING lines (numbers and runs) on the page. */
   lines: number
 }
 
-/** What the inventory has recorded against the MISSING part of a series. Decimal strings, never a JS number for a count that can be large. */
+/** What the inventory has recorded against a series. Decimal strings, never a JS number for a count that can be large. */
 export function inventoryCounts(lines: readonly InventoryLine[]): InventoryCounts {
   let ticked = ZERO
   let remarked = 0
   let count = 0
   for (const l of lines) {
-    if (l.kind === 'MISSING_NUMBER') {
+    if (l.kind === 'CHECK') {
+      if (l.note?.ticked) ticked += ONE
+      if (l.note?.remarks) remarked += 1
+    } else if (l.kind === 'MISSING_NUMBER') {
       count += 1
       if (l.note?.ticked) ticked += ONE
       if (l.note?.remarks) remarked += 1

@@ -63,6 +63,6 @@ export const NUMBERING_SCOPE_NOTE =
   'not here — its number may still be one of the MISSING. A number that does not match its book\'s usual length ' +
   'and first digits is listed as OUT OF PATTERN — usually a mistyped or misfiled check number in Acumatica — and ' +
   'left out of the gap count. ' +
-  'INVENTORY: each MISSING number is listed on its own line with a tick box and a remarks field, so the status ' +
-  'of a check Acumatica does not hold is recorded here; a run of more than 100 missing numbers is one line with ' +
-  'one tick and one remark for the whole run. Every tick and remark is on the audit trail.'
+  'INVENTORY: every number, held by a check or MISSING, has a tick box and a remarks field, so the physical ' +
+  'count is recorded here; a run of more than 100 missing numbers is one line with one tick and one remark for ' +
+  'the whole run, and opens on a click. SAVE INVENTORY records the changes; every tick and remark is on the audit trail.'
