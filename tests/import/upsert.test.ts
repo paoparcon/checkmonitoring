@@ -848,9 +848,11 @@ describe('upsertCheck — voiding', () => {
     const audit = await testDb.auditLog.findFirstOrThrow({ where: { action: 'voided_after_release' } })
     expect(audit.remarks).toContain(VOID_AFTER_RELEASE_WARNING)
 
-    // A cheque already published as AVAILABLE and then voided still needs the
-    // supplier told — the portal event is queued here too, warning or not.
-    expect(await testDb.portalEvent.count({ where: { checkId: id, kind: 'CANCELLED' } })).toBe(1)
+    // Since 2026-10-29 a void detaches the cheque from its AP bills and tells
+    // the portal nothing (`detachFromBills`); the void after release is
+    // conspicuous on the trail, not in the outbox.
+    expect(await testDb.portalEvent.count({ where: { checkId: id, kind: 'CANCELLED' } })).toBe(0)
+    expect(check.apvNumbers).toEqual([])
   })
 })
 

@@ -938,7 +938,14 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,065 tests across 137 files** (measured, full run 2026-10-10, 53.9 minutes, on `feature/self-registration-wt` before its merge: 2,063 passed and 2 failed on a Neon connection drop in `sync/portal-kick`, which passed 7/7 when re-run alone; self-registration added `auth/registration-throttle` and `actions/signup`, and extended `admin/users`, `admin/user-actions`, `settings/registry`, `public-paths`)  **1,918 tests across 130 files** (measured, full run 2026-10-05, 52.0 minutes, 0 failures, on
+**2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on
+`feature/portal-check-list`: 2,309 passed and 7 failed — 3 hook timeouts in `admin/users` that passed
+alone, and 4 real failures that were on master since the 2026-10-29 detach rule and are fixed in the
+same branch: `actions/actions` and `import/upsert` still expected a void to queue a CANCELLED event,
+and `actions/portal-cancel` / `admin/detach-cancelled-apvs` expected the detached bill's amount as
+`1.50` where `detachFromBills` wrote Decimal's `1.5` — the code now writes `toFixed(2)`, rule 8. The
+check list added `integrations/portal-check-feed` and `sync/portal-checks`, and extended
+`integrations/portal-client`, `sync/portal-kick`, `sync/modes`). **2,065 tests across 137 files** (measured, full run 2026-10-10, 53.9 minutes, on `feature/self-registration-wt` before its merge: 2,063 passed and 2 failed on a Neon connection drop in `sync/portal-kick`, which passed 7/7 when re-run alone; self-registration added `auth/registration-throttle` and `actions/signup`, and extended `admin/users`, `admin/user-actions`, `settings/registry`, `public-paths`)  **1,918 tests across 130 files** (measured, full run 2026-10-05, 52.0 minutes, 0 failures, on
 `feature/shared-books` after merging master 7591c6d — shared check books on top of the PO work; the
 meta-tags commit 3b341f7 merged after it touches no tested module and passed tsc and the pure tests)
 — 1,913 across 130 (measured 2026-10-05 on `feature/po-from-acumatica` after merging

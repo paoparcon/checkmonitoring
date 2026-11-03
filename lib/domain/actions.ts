@@ -234,7 +234,9 @@ export async function detachFromBills(
   return {
     apvNumbersDetached: [...check.apvNumbers],
     billsDetached: bills.map((b) => ({
-      ...b, dueDate: b.dueDate?.toISOString() ?? null, amount: b.amount.toString(),
+      // toFixed, not toString: Decimal.toString() drops the trailing zero ("1.50" -> "1.5"),
+      // and the trail keeps amounts as 2-decimal strings like every other row (rule 8).
+      ...b, dueDate: b.dueDate?.toISOString() ?? null, amount: b.amount.toFixed(2),
     })),
   }
 }

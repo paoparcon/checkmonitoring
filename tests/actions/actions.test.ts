@@ -463,20 +463,24 @@ describe('voidCheck', () => {
       .rejects.toMatchObject({ code: 'REASON_REQUIRED' })
   })
 
-  // Superseded 2026-09-26 (plan `portal-outbox-delivery`, task 2): a void now
-  // queues the same CANCELLED event `cancelCheck` does for a portal-routed
-  // cheque, so the supplier portal stops showing a cheque the ERP says no
-  // longer exists.
-  it('queues a CANCELLED portal event for a portal-routed check', async () => {
+  // Superseded twice. 2026-09-26 (plan `portal-outbox-delivery`, task 2): a
+  // void queued the same CANCELLED event `cancelCheck` did. 2026-10-29 (user
+  // ruling, spec `2026-10-29-cancelled-check-detaches-from-ap-design`): a void
+  // detaches the cheque from its AP bills and queues NOTHING - the portal keeps
+  // one row per bill, and a CANCELLED matched on the APV cancelled the
+  // replacement cheque's row. `tests/actions/portal-cancel.test.ts` pins the
+  // detachment in full; this pins that the void path takes it.
+  it('queues no portal event for a portal-routed check: it is detached from its bills instead', async () => {
     const check = await makeCheck({ status: 'SIGNATURE_PENDING', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000003'] })
     await voidCheck(testDb, { checkId: check.id, reason: 'Voided in Acumatica.', now: NOW })
-    const event = await testDb.portalEvent.findFirstOrThrow({ where: { checkId: check.id } })
-    expect(event.kind).toBe('CANCELLED')
-    expect(event.status).toBe('PENDING')
-    expect(event.payload).toEqual({ action: 'CANCELLED', checkNumber: check.checkNumber })
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
     const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
-    expect(after.portalSyncStatus).toBe('PENDING')
+    expect(after.status).toBe('VOIDED')
+    expect(after.apvNumbers).toEqual([])
+    expect(after.portalSyncStatus).toBe('NOT_APPLICABLE')
     expect(after.portalDomain).toBe('LOCAL')
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: check.id, action: 'voided' } })
+    expect(audit.details).toMatchObject({ portalNotified: false, apvNumbersDetached: ['AP-ST000003'] })
   })
 
   it('writes no portal event for an INTERNAL check', async () => {
