@@ -108,6 +108,62 @@ describe('reverseRelease — the portal', () => {
   })
 })
 
+/**
+ * A cheque the register delivered at RELEASED was never readied here, so it has
+ * no availability to keep — and the portal refuses a RELEASE_REVERSED with no
+ * pickup date (`6000353139`, 2026-11-03: parked, and the parked reversal then
+ * locked REVERT TO SIGNED). The reversal must be given the day the cheque is
+ * available again, and records the availability it creates.
+ */
+describe('reverseRelease — a check released outside the app has no availability to keep', () => {
+  const NEW_PICKUP = new Date('2026-11-03')
+
+  async function registerReleased() {
+    const check = await makeCheck({ status: 'RELEASED', eligibility: 'SUPPLIER', availablePickupDate: null, apvNumbers: ['AP-ST043002'] })
+    return check
+  }
+
+  it('refuses without a pickup date, and writes nothing', async () => {
+    const check = await registerReleased()
+    const admin = await makeUser('FINANCE_ADMIN')
+    await expect(reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER }))
+      .rejects.toMatchObject({ code: 'PICKUP_DATE_REQUIRED' })
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+    expect(after.status).toBe('RELEASED')
+    expect(after.availablePickupDate).toBeNull()
+    expect(await testDb.auditLog.count({ where: { checkId: check.id, action: 'release_reversed' } })).toBe(0)
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
+  })
+
+  it('with a date, records the availability it creates and queues a deliverable RELEASE_REVERSED', async () => {
+    const check = await registerReleased()
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'Check available as of 3 Nov', now: LATER, availablePickupDate: NEW_PICKUP })
+    expect(out.status).toBe('READY_FOR_RELEASE')
+    expect(out.availablePickupDate).toEqual(NEW_PICKUP)
+    expect(out.readyById).toBe(admin.id)
+    expect(out.readyAt).toEqual(LATER)
+    expect(out.releasedAt).toBeNull()
+    const events = await testDb.portalEvent.findMany({ where: { checkId: check.id, kind: 'RELEASE_REVERSED' } })
+    expect(events).toHaveLength(1)
+    expect(events[0].status).toBe('PENDING')
+    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].details).toEqual({ releasedAt: null, releasedById: null, availablePickupDate: NEW_PICKUP.toISOString() })
+  })
+
+  it('a check readied here keeps its own date; one supplied for it is ignored', async () => {
+    const { user, check } = await released()
+    const admin = await makeUser('FINANCE_ADMIN')
+    const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER, availablePickupDate: NEW_PICKUP })
+    expect(out.availablePickupDate).toEqual(PICKUP)
+    expect(out.readyById).toBe(user.id)
+    expect(out.readyAt).toEqual(NOW)
+    const rows = await testDb.auditLog.findMany({ where: { checkId: check.id, action: 'release_reversed' } })
+    expect(rows[0].details).toEqual({ releasedAt: NOW.toISOString(), releasedById: user.id })
+  })
+})
+
 describe('reverseRelease — the refusals, and that they write nothing', () => {
   async function expectUntouched(checkId: string) {
     const after = await testDb.check.findUniqueOrThrow({ where: { id: checkId } })

@@ -538,11 +538,22 @@ export async function revertAvailability(
  * `readyAt`) and Finance's `remarks`. The reason goes on the audit row, whose
  * `details` record what was undone, so the trail says more than "reversed".
  *
+ * A cheque that was never readied HERE has no availability to keep (2026-11-03):
+ * the 11,225 cheques the register delivered at RELEASED carry no
+ * `availablePickupDate`, and the portal refuses a RELEASE_REVERSED without one
+ * — `6000353139` parked that way, and the parked reversal then locked REVERT
+ * TO SIGNED as well. So for such a cheque the caller must supply the day it is
+ * available again (`PICKUP_DATE_REQUIRED` otherwise, nothing written), and the
+ * reversal records the availability it is creating: the date, `readyById` and
+ * `readyAt`, as `markReadyForRelease` would. A cheque that already has a date
+ * keeps it; a date supplied for one is ignored, because the availability is
+ * not what is being undone.
+ *
  * Refused — before anything is written — when a receipt is on record or the
  * bank has cleared the cheque. See `checkReleaseReversible`.
  */
 export async function reverseRelease(
-  db: Db, args: { checkId: string; userId: string; reason: string; now: Date },
+  db: Db, args: { checkId: string; userId: string; reason: string; now: Date; availablePickupDate?: Date | null },
 ): Promise<Check> {
   if (!args.reason || args.reason.trim() === '') {
     throw new DomainError('REASON_REQUIRED', 'A reason is required to reverse a release.')
@@ -567,6 +578,14 @@ export async function reverseRelease(
     const guard = checkReleaseReversible(check)
     if (!guard.ok) throw new DomainError(guard.code, guard.message)
 
+    const newAvailability = check.availablePickupDate === null
+    if (newAvailability && !args.availablePickupDate) {
+      throw new DomainError(
+        'PICKUP_DATE_REQUIRED',
+        'This check was released outside the app and has no available pickup date. Enter the date it is available for pickup again.',
+      )
+    }
+
     const route = portalRoute(check.eligibility as Eligibility)
     const pushes = route !== null
     const quiet = !pushes && await queuesQuietStatus(tx, check)
@@ -583,6 +602,9 @@ export async function reverseRelease(
         portalConfirmedAt: null,
         portalSyncStatus: pushes ? 'PENDING' : 'NOT_APPLICABLE',
         portalDomain: route,
+        ...(newAvailability
+          ? { availablePickupDate: args.availablePickupDate, readyById: args.userId, readyAt: args.now }
+          : {}),
       },
     })
 
@@ -600,7 +622,12 @@ export async function reverseRelease(
       checkId: check.id, actorType: 'USER', userId: args.userId,
       action: 'release_reversed', remarks: args.reason,
       // What was undone, as it stood: the trail must say more than "reversed".
-      details: { releasedAt: check.releasedAt?.toISOString() ?? null, releasedById: check.releasedById },
+      // And, for a cheque that had no availability here, the one this reversal
+      // created — so the row says where the pickup date came from.
+      details: {
+        releasedAt: check.releasedAt?.toISOString() ?? null, releasedById: check.releasedById,
+        ...(newAvailability ? { availablePickupDate: args.availablePickupDate!.toISOString() } : {}),
+      },
     })
 
     return updated

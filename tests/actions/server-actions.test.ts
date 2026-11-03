@@ -220,6 +220,23 @@ describe('reverseReleaseAction', () => {
     }
   })
 
+  it('passes the pickup date through for a check released outside the app (2026-11-03)', async () => {
+    const { reverseReleaseAction } = await import('@/app/checks/actions')
+    const check = await makeCheck({ status: 'RELEASED', availablePickupDate: null })
+    ;(currentUser as { role: string }).role = 'FINANCE_ADMIN'
+    try {
+      const refused = await reverseReleaseAction(fd({ checkId: check.id, reason: 'Still in hand' }))
+      expect(refused.ok).toBe(false)
+      const result = await reverseReleaseAction(fd({ checkId: check.id, reason: 'Still in hand', availablePickupDate: '2026-11-03' }))
+      expect(result.ok).toBe(true)
+      const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+      expect(after.status).toBe('READY_FOR_RELEASE')
+      expect(after.availablePickupDate).toEqual(new Date('2026-11-03'))
+    } finally {
+      ;(currentUser as { role: string }).role = 'FINANCE_USER'
+    }
+  })
+
   it('refuses a blank reason even for an admin', async () => {
     const { reverseReleaseAction } = await import('@/app/checks/actions')
     const check = await releasedCheck()

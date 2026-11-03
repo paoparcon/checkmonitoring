@@ -1097,7 +1097,19 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    production; both refusals are forward-looking. Migration
    `20260911000100_portal_event_release_reversed` must reach production before the deploy.
    (Reverting availability, READY_FOR_RELEASE -> SIGNED, has been on the detail page since
-   2026-09-10.)
+   2026-09-10.) **A check released outside the app has no availability to keep (2026-11-03).**
+   The 11,225 RELEASED checks the register delivered carry no `availablePickupDate`, and the
+   portal refuses a RELEASE_REVERSED without one: `6000353139` (register-released, reversed by
+   Finance with "CHECK AVAILABLE AS OF 11.03.2026") parked that way, and `revertAvailability`
+   then refused REVERT TO SIGNED while the reversal waited — the check could go neither way.
+   Unblocked by hand that day (pickup date 2026-11-03 written with an `available_pickup_date_set`
+   row, the event re-queued, snapshot `snapshots/pickup-date-6000353139-2026-11-03T08-55-58-852Z.json`).
+   Since then `reverseRelease` takes `availablePickupDate`: REQUIRED when the check has none
+   (`PICKUP_DATE_REQUIRED`, nothing written) and then recorded with `readyById` / `readyAt` as the
+   availability this reversal creates (the audit row's `details` carry it); a check readied here
+   keeps its own date and ignores a supplied one. The check page shows the date box only for a
+   check with none. RETRY on `/admin/portal` cannot clear a MISSING_DATE park on its own — the
+   check needs the date first.
 9. The test suite takes ~20 minutes because every test crosses the South China Sea. A local Postgres
    would make it ~2. It is the tax on every deploy.
 10. **The cash-outflow forecast is BUILT** (2026-09-11) — `/forecast`, on the check date read as

@@ -120,9 +120,12 @@ export async function reverseReleaseAction(formData: FormData): Promise<ActionRe
     return { ok: false, message: 'Only a Finance Admin can reverse a release.' }
   }
   const checkId = str(formData, 'checkId')
+  // The date is read only for a cheque that has none (released outside the
+  // app); the domain ignores it otherwise and refuses without it (2026-11-03).
   return run(checkId, () => reverseRelease(prisma, {
     checkId, userId: user.id,
     reason: str(formData, 'reason'), now: new Date(),
+    availablePickupDate: date(formData, 'availablePickupDate'),
   }))
 }
 

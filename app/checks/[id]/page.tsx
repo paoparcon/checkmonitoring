@@ -402,6 +402,25 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
                   </label>
                   <input name="reason" required placeholder="Ticked the wrong row"
                     className="h-10 w-full max-w-md rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy" />
+                  {/* A cheque released outside the app (the register, a catch-up) has
+                      no availability to fall back to, and the portal refuses a
+                      RELEASE_REVERSED without a pickup date (2026-11-03). The domain
+                      refuses without the date; asking for it here is what makes the
+                      refusal unreachable from this form. A cheque readied here keeps
+                      the date it has, and the box is not shown. */}
+                  {check.availablePickupDate === null && (
+                    <>
+                      <label className="block text-[11px] font-semibold tracking-widest text-slate-400">
+                        AVAILABLE PICKUP DATE <span className="text-danger-ink">— REQUIRED</span>
+                      </label>
+                      <input name="availablePickupDate" type="date" required
+                        className="h-10 rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy" />
+                      <p className="text-[11px] text-slate-500">
+                        This check was released outside the app and has no pickup date on record.
+                        Enter the day it is available for pickup again.
+                      </p>
+                    </>
+                  )}
                   <p className="text-[11px] text-slate-500">
                     Returns this check to READY FOR RELEASE, clears any pickup that was booked
                     {/* Rule 2: an INTERNAL cheque never produces a portal call, and this reversal
