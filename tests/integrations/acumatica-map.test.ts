@@ -324,15 +324,21 @@ describe('mapPayment: the check number both sources must agree on', () => {
 // ---------------------------------------------------------------------------
 
 describe('mapPayment: PaymentMethod decides whether there is a physical document', () => {
-  it('treats only CHK as a check', () => {
-    // Finance ruling of 2026-09-04. Measured across the live feed: CHK 1947,
-    // DEBIT ADV 35, CASH 5. Those 40 non-CHK payments have no physical document
-    // to sign or hand over, so Finance must never be offered a SIGN or RELEASE
-    // button for them — the NOT_A_CHEQUE guard does that, off this flag.
+  it('treats CHK and CASH as a check, nothing else', () => {
+    // Finance ruling of 2026-09-04 (CHK only), widened by the user's ruling of
+    // 2026-10-23: every AP voucher is paid by a physical check, and a CASH
+    // payment method means a check payable to cash or to be encashed — still
+    // paper that is signed and handed over. Measured that day over the 2026
+    // feed: CHK 13,496, TT 1,680, CASH 271 (242 of them PCF-SITIO petty-cash
+    // replenishments), BT 3, DEBIT ADV 1. The wires and debit advices have no
+    // document, so Finance must never be offered a SIGN or RELEASE button for
+    // them — the NOT_A_CHEQUE guard does that, off this flag.
     expect(mapPayment(paymentRow, 'GOLIVE')!.isCheque).toBe(true)
     expect(mapPayment({ ...paymentRow, PaymentMethod: 'chk' }, 'GOLIVE')!.isCheque).toBe(true)
+    expect(mapPayment({ ...paymentRow, PaymentMethod: 'CASH' }, 'GOLIVE')!.isCheque).toBe(true)
+    expect(mapPayment({ ...paymentRow, PaymentMethod: 'cash' }, 'GOLIVE')!.isCheque).toBe(true)
 
-    for (const method of ['DEBIT ADV', 'CASH', 'TT', '']) {
+    for (const method of ['DEBIT ADV', 'TT', 'BT', 'MC', '']) {
       const r = mapPayment({ ...paymentRow, PaymentMethod: method }, 'GOLIVE')!
       expect(r.isCheque, method || '(blank)').toBe(false)
     }
@@ -343,8 +349,10 @@ describe('mapPayment: PaymentMethod decides whether there is a physical document
     // CHK, there is still no physical document — the branch rule is a stated
     // fact about how those offices pay and must not be replaced.
     for (const branch of ['DG', 'SH']) {
-      const r = mapPayment({ ...paymentRow, Branch: branch, PaymentMethod: 'CHK' }, 'GOLIVE')!
-      expect(r.isCheque, branch).toBe(false)
+      for (const method of ['CHK', 'CASH']) {
+        const r = mapPayment({ ...paymentRow, Branch: branch, PaymentMethod: method }, 'GOLIVE')!
+        expect(r.isCheque, `${branch} ${method}`).toBe(false)
+      }
     }
   })
 
@@ -379,6 +387,27 @@ describe('mapPayment: a memo where the check number belongs', () => {
       expect(r.checkDate, memo).not.toBeNull()
       expect(r.isCheque, memo).toBe(true)
     }
+  })
+
+  it('stages a CASH check whose reference is a petty-cash memo number, like its CHK siblings', () => {
+    // 242 of the 271 CASH payments of 2026 sit on PCF-SITIO and carry the fund's
+    // own numbering (`PCF26-0226`). Under the 2026-09-04 ruling a check with a
+    // non-numeric reference is staged NO_CHECK_NUMBER for a human to supply the
+    // real number — 275 CHK payments numbered PCF… are held that way today —
+    // and a CASH one goes the same way, not a different one.
+    const r = mapPayment({ ...paymentRow, PaymentMethod: 'CASH', PaymentRef: 'PCF26-0226', CashAccount: 'PCF-SITIO' }, 'GOLIVE')!
+    expect(r.isCheque).toBe(true)
+    expect(r.checkNumber).toBeNull()
+    expect(r.statedCheckRef).toBe('PCF26-0226')
+  })
+
+  it('keys a CASH check on a bank book by its plain check number', () => {
+    // CV-ST021234, 2026-10-19: Payment Method CASH, Payment Ref 6000354949 on
+    // BPI-S-8879. It is the check that started this — absent from the app and
+    // so from the portal because the feed asked for CHK only.
+    const r = mapPayment({ ...paymentRow, PaymentMethod: 'CASH', PaymentRef: '6000354949', CashAccount: 'BPI-S-8879' }, 'GOLIVE')!
+    expect(r.isCheque).toBe(true)
+    expect(r.checkNumber).toBe('6000354949')
   })
 
   it('never invents a check number out of the digits in a memo', () => {

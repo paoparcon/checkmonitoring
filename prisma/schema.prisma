@@ -55,6 +55,15 @@ enum ClearingStatus {
 enum ReceiptType {
   OR
   CR
+  // Added 2026-10-09 (client): AR Acknowledgement Receipt, PR Provisional
+  // Receipt, SI Sales Invoice. Recorded here only; the portal accepts OR and
+  // CR (lib/domain/receipt.ts, PORTAL_RECEIPT_TYPES).
+  AR
+  PR
+  SI
+  // Added 2026-10-22 (client: "add in the options OTHERS"): any other paper the
+  // supplier hands over. Recorded here only, like AR/PR/SI.
+  OTHERS
 }
 
 enum Eligibility {
@@ -683,6 +692,29 @@ model AcumaticaBill {
   updatedAt      DateTime  @updatedAt
 }
 
+/// A bill's due date and terms, from Acumatica's AP-Bills and Adjustments
+/// (spec 2026-10-15-aging-module-design.md). Reference data like
+/// AcumaticaBill: no Check relation, no audit row. Written by the BILL_REFS
+/// read for EVERY in-scope Bill / Prepayment, blank Vendor Ref included, and
+/// never deleted. A separate table because every AcumaticaBill row reads as
+/// "this bill names a PO".
+model AcumaticaBillTerms {
+  // `ReferenceNbr`, trimmed and upper-cased — the APV.
+  apvNumber      String    @id
+  // GOLIVE or MANUFACTURING: the tenant whose read last wrote the row.
+  tenant         String
+  // `DueDate`, a calendar day (UTC midnight).
+  dueDate        DateTime?
+  // `Terms`, trimmed, otherwise verbatim.
+  termsCode      String?
+  // `Status`, trimmed: Open, Closed, Voided ... A Closed bill is paid, so
+  // AGING leaves out a check whose bills are all Closed (user ruling
+  // 2026-10-16: "those closed in acumatica should be closed to your aging").
+  status         String?
+  lastModifiedOn DateTime?
+  updatedAt      DateTime  @updatedAt
+}
+
 model AuditLog {
   id        String    @id @default(cuid())
   checkId   String?
@@ -811,15 +843,27 @@ model SyncRun {
   @@index([tenant, startedAt])
 }
 
+/// One row per RECIPIENT (spec 2026-10-16-notifications-design.md). Not an
+/// audit row: it can be marked read, and nothing deletes it. `kind` is a
+/// NotificationKind (lib/notifications/messages.ts), a string like SyncRun.mode.
+/// `dedupeKey` makes a repeated notice a no-op for the same user; Postgres
+/// allows many NULLs in the unique index, so it binds only when set.
 model Notification {
-  id        String   @id @default(cuid())
-  type      String
+  id        String    @id @default(cuid())
+  userId    String
+  kind      String
   message   String
+  link      String?
+  dedupeKey String?
   checkId   String?
   readAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  check     Check?   @relation(fields: [checkId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+  check     Check?    @relation(fields: [checkId], references: [id])
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt, createdAt])
 }
 
 model User {
@@ -836,6 +880,15 @@ model User {
   /// NULL`. An inactive account with this null is DEACTIVATED, as before.
   /// `isPending` in lib/admin/users.ts is the one definition.
   pendingSince DateTime?
+  /// The name typed on /signup when an EXISTING inactive account was re-registered. Held
+  /// here, not in `name`, until an admin approves: `name` is read live by every page and
+  /// portal event that says who released a check, and an anonymous submission must not be
+  /// able to rewrite that. Copied into `name` by `approveUser`, cleared by `rejectUser`.
+  pendingName         String?
+  /// The argon2id hash typed at the same re-registration, held aside for the same reason:
+  /// the row's own `passwordHash` stays what it was, so REACTIVATE after a reject restores
+  /// the genuine account. Copied into `passwordHash` by `approveUser`, cleared by `rejectUser`.
+  pendingPasswordHash String?
   createdAt    DateTime  @default(now())
 
   auditLogs         AuditLog[]
@@ -849,6 +902,7 @@ model User {
   plannedOutflowsCancelled PlannedOutflow[] @relation("PlannedOutflowCancelledBy")
   receiptFilesUploaded     CheckReceiptFile[] @relation("receiptFileUploadedBy")
   inventoryNotesUpdated    CheckInventoryNote[] @relation("inventoryNoteUpdatedBy")
+  notifications            Notification[]
 }
 
 /// An outflow that is not a cheque — payroll, a tax remittance, loan

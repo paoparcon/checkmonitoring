@@ -9,7 +9,7 @@ type Db = PrismaClient | Prisma.TransactionClient
 
 /**
  * A LIVE cheque held here whose payment has left the sync's scope — 2026 and
- * `PaymentMethod eq 'CHK'` — and so is never read again. Full check 2026-10-06:
+ * the payment-method clause (CHK or CASH since 2026-10-23) — and so is never read again. Full check 2026-10-06:
  * `PCF26-0244` (A1PP-CV-000028) was re-entered in Acumatica as CASH and sat
  * here as a SIGNATURE_PENDING cheque, because the scoped feed cannot return a
  * payment that is no longer a cheque.

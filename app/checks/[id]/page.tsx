@@ -15,11 +15,11 @@ import { DetailsForm } from '@/components/DetailsForm'
 import { ClearingForm } from '@/components/ClearingForm'
 import { checkDeletable } from '@/lib/domain/incomplete'
 import { checkReleaseReversible } from '@/lib/domain/reversal'
-import { clearingTargets, type ClearingStatus } from '@/lib/domain/check-status'
+import { clearingTargets, isLiveStatus, type ClearingStatus, type CheckStatus } from '@/lib/domain/check-status'
 import { RECEIPT_TYPE_LABELS } from '@/lib/domain/receipt'
 import { isoDay } from '@/lib/domain/details'
 import { loadSettings } from '@/lib/settings/read'
-import { signAction, releaseAction, revertAction, reverseReleaseAction, revertSignatureAction, restoreCancelledAction } from '../actions'
+import { signAction, releaseAction, revertAction, reverseReleaseAction, removeReceiptAction, revertSignatureAction, restoreCancelledAction } from '../actions'
 
 /**
  * ONE CHEQUE.
@@ -273,7 +273,7 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
           than from three unrelated Tailwind hues. */}
       <Panel title="ACTIONS">
         {/* `isCheque` gates this, as it gates the dashboard table's checkbox.
-            A DEBIT ADV or a CASH payment is not a cheque and nobody signs one —
+            A DEBIT ADV or a wire (TT) payment is not a check and nobody signs one —
             CLAUDE.md states that outright. This page offered the button anyway
             until 2026-09-10; `assertReleasable` refused the action server-side,
             so nothing unsafe ever happened, but a button that exists only to be
@@ -306,7 +306,10 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
           </ActionForm>
         )}
 
-        {(check.status === 'READY_FOR_RELEASE' || check.status === 'SCHEDULED') && (
+        {/* From any live rung: below READY FOR RELEASE the check is signed and
+            readied on the way, in one transaction (`releaseDirectly`, client
+            2026-10-16). */}
+        {isLiveStatus(check.status as CheckStatus) && check.isCheque && (
           <ActionForm
             action={releaseAction}
             checkId={check.id}
@@ -410,10 +413,35 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
                   </p>
                 </ActionForm>
               ) : (
-                <p className="text-sm text-slate-600">
-                  <span className="font-semibold text-navy">This release cannot be reversed.</span>{' '}
-                  {reversible.message}
-                </p>
+                <div className="space-y-3">
+                  <p className="text-sm text-slate-600">
+                    <span className="font-semibold text-navy">This release cannot be reversed.</span>{' '}
+                    {reversible.message}
+                  </p>
+                  {/* A receipt typed with a release that never happened (2026-10-23):
+                      removing it is what unblocks REVERSE RELEASE. Offered only when
+                      the receipt IS the blocker; `removeReceipt` refuses the rest. */}
+                  {reversible.code === 'RECEIPT_ON_RECORD' && (
+                    <ActionForm
+                      action={removeReceiptAction}
+                      checkId={check.id}
+                      label="REMOVE RECEIPT"
+                      className="block rounded-lg border border-hairline bg-white px-4 py-2 text-sm font-medium tracking-wide text-navy transition hover:bg-ground disabled:opacity-50"
+                    >
+                      <label className="block text-[11px] font-semibold tracking-widest text-slate-400">
+                        REASON <span className="text-danger-ink">— REQUIRED</span>
+                      </label>
+                      <input name="reason" required placeholder="Released by mistake, not collected"
+                        className="h-10 w-full max-w-md rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy" />
+                      <p className="text-[11px] text-slate-500">
+                        Only when the receipt was recorded by mistake. Removes receipt {check.orNumber ?? ''}
+                        {check.receiptType ? ` (${check.receiptType})` : ''}, its amount and its scanned file;
+                        the check stays RELEASED and REVERSE RELEASE becomes available. What was removed stays
+                        on the audit trail with your reason.
+                      </p>
+                    </ActionForm>
+                  )}
+                </div>
               )
             })()}
 

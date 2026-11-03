@@ -354,7 +354,7 @@ export async function upsertCheck(db: Db, args: UpsertArgs): Promise<UpsertResul
       // a different company's payment, silently and with an audit row asserting
       // the correction was right.
       //
-      // The sync now filters to `PaymentMethod eq 'CHK'`, so such a row should
+      // The sync filters by payment method (CHK or CASH), so such a row should
       // not arrive at all. This is the second lock on that door: the first one
       // is a query filter somebody could widen without ever reading this file.
       const sameNumber = !renumbered && row.isCheque
@@ -543,8 +543,13 @@ export async function upsertCheck(db: Db, args: UpsertArgs): Promise<UpsertResul
       ? { from: existing.checkBookId, to: checkBook.id, code: checkBook.code }
       : undefined
 
-    const mergedVouchers = mergeVouchers(existing.apvNumbers, row.apvNumbers)
-    const addsVoucher = row.apvNumbers.some((v) => !existing.apvNumbers.includes(v))
+    // A CANCELLED or VOIDED cheque stays detached from its AP bills (user
+    // ruling 2026-10-29, `detachFromBills` in lib/domain/actions.ts): the bill
+    // belongs to whichever live cheque pays it now, and re-linking the dead one
+    // would put two cheques on one bill again. Nothing to merge, nothing written.
+    const detached = existing.status === 'CANCELLED' || existing.status === 'VOIDED'
+    const mergedVouchers = detached ? existing.apvNumbers : mergeVouchers(existing.apvNumbers, row.apvNumbers)
+    const addsVoucher = !detached && row.apvNumbers.some((v) => !existing.apvNumbers.includes(v))
 
     await tx.check.update({
       where: { id: existing.id },

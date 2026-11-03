@@ -1,3 +1,4 @@
+import { FilterForm } from '@/components/FilterForm'
 import Link from 'next/link'
 import { requireUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
@@ -62,7 +63,7 @@ export default async function ReconPage({
         <Link href="/clearing" className="underline underline-offset-2">CLEARING</Link> to move a check off this list.
       </p>
 
-      <form className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline" method="get">
+      <FilterForm className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline">
         <label htmlFor="recon-asOf" className="text-[11px] font-semibold tracking-widest text-slate-400">AS OF</label>
         <input id="recon-asOf" name="asOf" type="date" defaultValue={asOfDay} className={field} />
         <label className="sr-only" htmlFor="recon-bank">BANK</label>
@@ -78,7 +79,7 @@ export default async function ReconPage({
         {account && <input type="hidden" name="account" value={account.id} />}
         <button type="submit" className="h-10 rounded-lg bg-navy px-4 text-sm font-medium tracking-wide text-white transition hover:bg-navy/90">APPLY</button>
         {anyFilter && <Link href={RECON_PATH} className="text-sm text-slate-500 underline underline-offset-2">RESET</Link>}
-      </form>
+      </FilterForm>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   SORT_KEYS, DEFAULT_SORT, APP_SORTED_KEYS, isAppSorted, SORT_COOKIE,
   parseSort, formatSortCookie, parseSortCookie, sortCookieString, readCookie,
-  nextSort, sameSort, describeSort, compareSortValues, dbOrderBy,
+  sameSort, describeSort, compareSortValues, dbOrderBy,
 } from '@/lib/list-sort'
 
 describe('the sort keys', () => {
@@ -63,24 +63,6 @@ describe('the remembered sort', () => {
     expect(readCookie('a=1; cm_sort=amount:desc; b=2', 'cm_sort')).toBe('amount:desc')
     expect(readCookie('a=1', 'cm_sort')).toBeUndefined()
     expect(readCookie(null, 'cm_sort')).toBeUndefined()
-  })
-})
-
-describe('nextSort — the header cycle', () => {
-  it('goes ascending, then descending, then back to the default', () => {
-    expect(nextSort(null, 'amount')).toEqual({ key: 'amount', dir: 'asc' })
-    expect(nextSort({ key: 'amount', dir: 'asc' }, 'amount')).toEqual({ key: 'amount', dir: 'desc' })
-    expect(nextSort({ key: 'amount', dir: 'desc' }, 'amount')).toBeNull()
-  })
-
-  it('starts a different column at ascending', () => {
-    expect(nextSort({ key: 'amount', dir: 'desc' }, 'payeeName')).toEqual({ key: 'payeeName', dir: 'asc' })
-  })
-
-  // With no explicit sort the default (check date, newest first) is in force;
-  // clicking CHECK DATE must still do something.
-  it('sorts CHECK DATE ascending on the first click under the default', () => {
-    expect(nextSort(null, 'checkDate')).toEqual({ key: 'checkDate', dir: 'asc' })
   })
 })
 

@@ -35,7 +35,7 @@ import { canonicalCheckNumber, cleanCell } from '@/lib/import/normalise'
  *     about a cheque the register shows handed over is a stale list; nothing is
  *     pulled back from RELEASED on a spreadsheet's word.
  *   - Anything Acumatica reports `Voided`, and any non-cheque payment
- *     (`isCheque = false`): DEBIT ADV and CASH never sit at READY_FOR_RELEASE.
+ *     (`isCheque = false`): DEBIT ADV and TT never sit at READY_FOR_RELEASE.
  *   - Nothing is demoted. The user asked on 2026-09-24 to check first whether
  *     off-list cheques were released in an earlier file; that is a report
  *     (`offList` below), not a write.

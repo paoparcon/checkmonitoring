@@ -16,6 +16,10 @@ import { naiveDate } from './map'
  * Only `CHK` applied to a `Bill`. Measured 2026-10-01: the payment side also
  * carries VCK (the reversal of a voided cheque), PPM, ADR, REF; the bill side
  * `Debit Adj.` and `PPM`. None of those is "the voucher this cheque pays".
+ * `CHK` here is the DOCUMENT type (a Payment), not the payment method: a
+ * Payment whose method is CASH — a check payable to cash, read by the payment
+ * sync since 2026-10-23 — is `AdjgDocType = CHK` all the same (measured on
+ * CV-ST021234, 2026-10-23), so its voucher links with no change here.
  *
  * The two tenants name the columns differently; filtering MANUFACTURING on a
  * Go-Live name is a 500. Pure.
@@ -47,6 +51,18 @@ export function billsSinceFilter(tenant: AcumaticaTenant, since: Date): string {
 
 export function billsInScopeFilter(tenant: AcumaticaTenant): string {
   return `${BILL_FEED_COLUMNS[tenant].date} ge datetime'${IN_SCOPE_FROM}'`
+}
+
+/**
+ * The applications of ONE payment, by its own reference — the direct lookup the
+ * BILLS run makes for a held check that still has no APV (2026-10-26; see
+ * `lookUpApvLess` in `lib/sync/bills.ts`). The tenant's own column name: a
+ * filter on the Go-Live name is a 500 on MANUFACTURING. An `eq` on this column
+ * works on both (measured on CV-HF000161, Go-Live, 2026-10-26). A quote in the
+ * reference is doubled, the OData literal escape.
+ */
+export function billsForPaymentFilter(tenant: AcumaticaTenant, paymentRef: string): string {
+  return `${BILL_FEED_COLUMNS[tenant].paymentRef} eq '${paymentRef.replace(/'/g, "''")}'`
 }
 
 export function billFeedSelect(tenant: AcumaticaTenant): string[] {

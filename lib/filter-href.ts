@@ -19,7 +19,7 @@
  * of the same view would make a card link, a bookmark and a filter submit look
  * like three different pages in the history.
  */
-export function filterHref(entries: Iterable<readonly [string, unknown]>): string {
+export function filterHref(entries: Iterable<readonly [string, unknown]>, base = '/'): string {
   const qs = new URLSearchParams()
   for (const [key, value] of entries) {
     // FormData can yield a File. It cannot happen on this bar, but ruling it
@@ -30,5 +30,5 @@ export function filterHref(entries: Iterable<readonly [string, unknown]>): strin
     qs.append(key, value)
   }
   const s = qs.toString()
-  return s ? `/?${s}` : '/'
+  return s ? `${base}?${s}` : base
 }

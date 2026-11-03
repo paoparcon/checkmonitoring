@@ -30,13 +30,19 @@ describe('portal admin actions', () => {
     expect(state.kicked).toBe(1)
   })
 
-  it('a FINANCE_USER is refused by a returned result', async () => {
-    const { retryPortalEventAction, deliverPortalNowAction } = await import('@/app/admin/portal/actions')
+  it('a FINANCE_USER is refused RETRY by a returned result', async () => {
+    const { retryPortalEventAction } = await import('@/app/admin/portal/actions')
     state.role = 'FINANCE_USER'
     const f = new FormData(); f.set('eventId', 'x')
-    expect(await retryPortalEventAction(f)).toMatchObject({ ok: false })
-    expect(await deliverPortalNowAction()).toMatchObject({ ok: false })
+    expect(await retryPortalEventAction(f)).toMatchObject({ ok: false, message: expect.stringContaining('Finance Admin') })
     expect(state.kicked).toBe(0)
+  })
+
+  it('a FINANCE_USER may DELIVER NOW (2026-10-15)', async () => {
+    const { deliverPortalNowAction } = await import('@/app/admin/portal/actions')
+    state.role = 'FINANCE_USER'
+    expect(await deliverPortalNowAction()).toMatchObject({ ok: false, message: expect.stringContaining('PORTAL_BASE_URL') })
+    expect(state.kicked).toBe(1)
   })
 
   it('deliver now kicks the worker', async () => {

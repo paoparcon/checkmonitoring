@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { CheckStatus, Prisma, PrismaClient, PortalEvent, PortalEventKind } from '@prisma/client'
 import { writeAudit } from '@/lib/audit'
+import { notify } from '@/lib/notifications/notify'
+import { parkedNotice } from '@/lib/notifications/messages'
 import {
   buildPortalEventBody, PortalPayloadError, type PortalClient, type PortalDeliveryResult,
 } from '@/lib/integrations/portal/client'
@@ -112,7 +114,7 @@ async function atomically<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
 
 type Verdict =
   | { status: 'SYNCED'; releaseId: number | null; note?: string }
-  | { status: 'FAILED'; error: string; delayMs: number; maxAttempts: number }
+  | { status: 'FAILED'; error: string; delayMs: number; maxAttempts: number; unmatchedOnly?: true }
   | { status: 'PARKED'; error: string }
 
 function judge(res: PortalDeliveryResult, attempts: number): Verdict {
@@ -123,7 +125,7 @@ function judge(res: PortalDeliveryResult, attempts: number): Verdict {
     if (res.body.results.length === 0) {
       // The portal receives bills from Acumatica nightly; a cheque can precede
       // its bill, so an unmatched cheque is retried daily for a week.
-      return { status: 'FAILED', error: `unmatched: ${res.body.unmatched.join(', ')}`, delayMs: DAILY_MS, maxAttempts: UNMATCHED_MAX_ATTEMPTS }
+      return { status: 'FAILED', error: `unmatched: ${res.body.unmatched.join(', ')}`, delayMs: DAILY_MS, maxAttempts: UNMATCHED_MAX_ATTEMPTS, unmatchedOnly: true }
     }
     const first = res.body.results.find((r) => r.releaseId !== null)
     const note = res.body.unmatched.length ? `unmatched: ${res.body.unmatched.join(', ')}` : undefined
@@ -148,7 +150,7 @@ function judge(res: PortalDeliveryResult, attempts: number): Verdict {
  * this returns null (counted as nothing).
  */
 async function settle(
-  db: Db, ev: PortalEvent, verdict: Verdict, now: Date, flagCheck: boolean, claimedBy: string,
+  db: Db, ev: PortalEvent, verdict: Verdict, now: Date, flagCheck: boolean, claimedBy: string, internal = false,
 ): Promise<Verdict['status'] | null> {
   const attempts = ev.attempts + 1
   let status: Verdict['status'] = verdict.status
@@ -156,7 +158,14 @@ async function settle(
   let nextAttemptAt = ev.nextAttemptAt
   if (verdict.status === 'FAILED') {
     lastError = cap(verdict.error)
-    if (attempts >= verdict.maxAttempts) status = 'PARKED'
+    if (attempts >= verdict.maxAttempts) {
+      // ruling 2026-10-19: payroll, petty-cash and government CVs often have no portal bill, so an
+      // INTERNAL event nothing matched after the full week closes SYNCED (audited), never parked.
+      if (verdict.unmatchedOnly && internal) {
+        status = 'SYNCED'
+        lastError = cap(lastError.replace(/^unmatched:/, 'unmatched (internal):'))
+      } else status = 'PARKED'
+    }
     else nextAttemptAt = new Date(now.getTime() + verdict.delayMs)
   } else if (verdict.status === 'PARKED') {
     lastError = cap(verdict.error)
@@ -183,6 +192,20 @@ async function settle(
       checkId: ev.checkId, actorType: 'SYSTEM', action: `portal_event_${status.toLowerCase()}`,
       details: { eventId: ev.id, kind: ev.kind, attempts, lastError },
     })
+    // The admins are told in the same transaction (spec 2026-10-16
+    // notifications, "Portal event parked"): the notice exists exactly when
+    // the parked state does. Once per event (dedupeKey), so RETRY then parked
+    // again does not repeat it. checkId only when the check still exists, or
+    // the FK would refuse the row.
+    if (status === 'PARKED') {
+      const parkedCheck = await tx.check.findUnique({ where: { id: ev.checkId }, select: { checkNumber: true } })
+      await notify(tx, parkedNotice({
+        eventId: ev.id, kind: ev.kind,
+        checkId: parkedCheck ? ev.checkId : null,
+        checkNumber: parkedCheck?.checkNumber ?? null,
+        error: lastError,
+      }))
+    }
     return true
   })
   return held ? status : null
@@ -369,7 +392,9 @@ export async function deliverPortalEvents(
       let authRefused = false
       try {
         // RULE 2 is asserted inside buildPortalEventBody; an INTERNAL cheque
-        // throws before any request exists and parks below.
+        // sending MARK_AVAILABLE, REVERT or RECEIPT throws before any request
+        // exists and parks below (RELEASED, RELEASE_REVERSED and CANCELLED go
+        // out flagged internal, ruling 2026-10-19).
         const body = buildPortalEventBody({ id: ev.id, kind: ev.kind }, check)
         out.delivered += 1
         const remaining = args.deadline.getTime() - clock()
@@ -392,7 +417,7 @@ export async function deliverPortalEvents(
       // portalSyncStatus / portalTradeId belong to the status lane (review
       // 2026-10-02), so a receipt's success or parking never rewrites them.
       const flagCheck = check.eligibility !== 'INTERNAL' && ev.kind !== 'RECEIPT'
-      const status = await settle(db, ev, verdict, args.now, flagCheck, claimedBy)
+      const status = await settle(db, ev, verdict, args.now, flagCheck, claimedBy, check.eligibility === 'INTERNAL')
       if (ev.kind !== 'RECEIPT' && status === 'SYNCED') statusOpen.delete(ev.checkId)
       if (status === 'SYNCED') out.synced += 1
       else if (status === 'FAILED') out.failed += 1

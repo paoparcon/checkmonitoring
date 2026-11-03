@@ -23,7 +23,7 @@ export default async function WelcomePage() {
 
   return (
     <main className="flex min-h-screen flex-col">
-      <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-6">
+      <header className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-6 py-6">
         <div className="flex items-center gap-3">
           <span
             aria-hidden="true"
@@ -36,12 +36,20 @@ export default async function WelcomePage() {
             <p className="text-[10px] font-semibold tracking-widest text-slate-400">RCL FINANCE · INTERNAL</p>
           </div>
         </div>
-        <Link
-          href="/login"
-          className="shrink-0 whitespace-nowrap rounded-lg bg-navy px-5 py-2.5 text-sm font-medium tracking-wide text-white shadow-sm transition hover:bg-navy/90"
-        >
-          SIGN IN
-        </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href="/signup"
+            className="whitespace-nowrap rounded-lg bg-white px-3 sm:px-5 py-2.5 text-sm font-medium tracking-wide text-navy shadow-sm ring-1 ring-hairline transition hover:bg-navy-bg"
+          >
+            CREATE ACCOUNT
+          </Link>
+          <Link
+            href="/login"
+            className="whitespace-nowrap rounded-lg bg-navy px-3 sm:px-5 py-2.5 text-sm font-medium tracking-wide text-white shadow-sm transition hover:bg-navy/90"
+          >
+            SIGN IN
+          </Link>
+        </div>
       </header>
 
       <section className="mx-auto grid w-full max-w-6xl flex-1 items-center gap-10 px-6 py-8 lg:grid-cols-[1fr_1.15fr_1fr]">

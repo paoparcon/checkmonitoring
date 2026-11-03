@@ -497,6 +497,28 @@ describe('importBills — a check No. cell that is not a check number', () => {
     expect(summary.unmatched[0].companies).toHaveLength(2)
   })
 
+  // USER RULING 2026-10-29: a cancelled cheque is no longer connected to the AP
+  // it was applied to, so it is never a match for a bill — by voucher or by number.
+  it('resolves a voucher to the live re-issue when the other cheque carrying it is VOIDED', async () => {
+    await makeCheck({ checkNumber: '6000353106', apvNumbers: ['AP-ST042652'], status: 'VOIDED' })
+    const reissue = await makeCheck({ checkNumber: '6000353107', apvNumbers: ['AP-ST042652'] })
+    const summary = await run([misKeyed(81)])
+
+    expect(summary.unmatched).toEqual([])
+    const [bill] = await testDb.checkBill.findMany()
+    expect(bill.checkId).toBe(reissue.id)
+  })
+
+  it('stages a check number that names only a CANCELLED or VOIDED cheque as NO_MATCHING_CHECK', async () => {
+    await makeCheck({ checkNumber: '6000338925', status: 'CANCELLED' })
+    const summary = await run([billRow(2)])
+
+    expect(summary.unmatched).toEqual([
+      expect.objectContaining({ reason: 'NO_MATCHING_CHECK', checkNumber: '6000338925', row: 2 }),
+    ])
+    expect(await testDb.checkBill.count()).toBe(0)
+  })
+
   it('does not re-resolve a good check number that names no check', async () => {
     // The fallback is for a cell that holds no cheque number, and only that. A
     // perfectly good number naming no cheque here is not an invitation to

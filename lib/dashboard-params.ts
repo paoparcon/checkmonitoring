@@ -210,7 +210,10 @@ export function resolveDashboardQuery(
     releasedFrom: releasedFrom.day ? manilaDayStart(releasedFrom.day) : undefined,
     releasedTo: releasedTo.day ? manilaDayEnd(releasedTo.day) : undefined,
     ...viewStatusFilter(selection),
-    ...(column.status ? { status: column.status } : {}),
+    // One ticked status is `status`; several are `statusIn`, which `buildWhere`
+    // reads only while `status` is unset — so it is cleared here explicitly.
+    ...(column.status?.length === 1 ? { status: column.status[0], statusIn: undefined } : {}),
+    ...(column.status && column.status.length > 1 ? { status: undefined, statusIn: column.status } : {}),
     ...(refused ? { refused: true as const } : {}),
   }
 

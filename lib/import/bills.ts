@@ -471,11 +471,18 @@ export async function matchBills(
     // same "exactly one" rule. Fifty rows wanting to resolve is not a reason to
     // relax it. A row that stays staged is a cell somebody re-keys; a row
     // resolved by relaxing it is a cheque nobody can defend.
+    //
+    // A CANCELLED or VOIDED cheque is never a match (user ruling 2026-10-29: a
+    // cancelled cheque is no longer connected to the AP it was applied to). So
+    // a voucher that names a voided cheque and its live re-issue resolves to
+    // the re-issue, and a number that names only a dead cheque stages as
+    // NO_MATCHING_CHECK — the bill is waiting for its replacement to arrive.
     const checkNumber = bill.checkNumber
     const byVoucher = checkNumber === null
-    const where: Prisma.CheckWhereInput = byVoucher
-      ? { apvNumbers: { has: bill.apvNumber } }
-      : { checkNumber }
+    const where: Prisma.CheckWhereInput = {
+      ...(byVoucher ? { apvNumbers: { has: bill.apvNumber } } : { checkNumber }),
+      status: { notIn: ['CANCELLED', 'VOIDED'] },
+    }
     const matches = await db.check.findMany({
       where,
       select: { id: true, company: { select: { code: true } } },

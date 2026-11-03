@@ -37,13 +37,18 @@ describe('the registry', () => {
     expect(new Set(SETTING_KEYS).size).toBe(11)
   })
 
-  it('declares Monday auto-sign as a WORKFLOW ON/OFF switch, on by default', () => {
-    const def = settingDef('autoSign.mondayEnabled')
-    expect(def).toMatchObject({ kind: 'int', group: 'WORKFLOW', default: 1, min: 0, max: 1 })
-    expect(DEFAULTS['autoSign.mondayEnabled']).toBe(1)
-    expect(parseSettingText(def!, '0')).toEqual({ ok: true, value: 0 })
-    expect(parseSettingText(def!, '2').ok).toBe(false)
+  it('declares the registration allowance as a LOGIN setting, five an hour by default', () => {
+    const def = settingDef('signup.ipPerHour')
+    expect(def).toMatchObject({ kind: 'int', group: 'LOGIN', default: 5, min: 1, max: 100 })
+    expect(DEFAULTS['signup.ipPerHour']).toBe(5)
+    expect(parseSettingText(def!, '0').ok).toBe(false)
+    expect(parseSettingText(def!, '101').ok).toBe(false)
+  })
+
+  it('declares no auto-sign setting: the rule is retired in code (user ruling 2026-10-27)', () => {
+    expect(settingDef('autoSign.mondayEnabled' as never)).toBeUndefined()
     expect(settingDef('autoSign.afterDays' as never)).toBeUndefined()
+    expect(SETTINGS.some((d) => d.group === ('WORKFLOW' as never))).toBe(false)
   })
 
   it('takes every default from the constant the code already uses', () => {

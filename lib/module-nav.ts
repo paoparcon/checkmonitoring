@@ -1,14 +1,16 @@
 /**
  * THE MODULES, and which one a path belongs to.
  *
- * Eight peers: the cheque dashboard and the four reports built in September
+ * Nine peers: the cheque dashboard and the four reports built in September
  * 2026, plus administration. Client request 2026-09-12: "I want this all to
  * have their own module like CHECK RELEASE." Pure: the bar reads this and
  * decides nothing itself. It highlights; it never gates — every page keeps
  * its own `requireUser()` / `requireAdmin()`. NUMBERING (2026-10-01) checks
  * cheque consecutives per cash account.
+ * AGING (2026-10-15) lists SIGNED checks in the
+ * Supplier Portal's aging buckets for the next release run.
  */
-export type ModuleId = 'CHECK_RELEASE' | 'VOUCHERS' | 'FORECAST' | 'CLEARING' | 'RECON' | 'NUMBERING' | 'TRANSMITTAL' | 'ADMINISTRATION'
+export type ModuleId = 'CHECK_RELEASE' | 'AGING' | 'VOUCHERS' | 'FORECAST' | 'CLEARING' | 'RECON' | 'NUMBERING' | 'TRANSMITTAL' | 'ADMINISTRATION'
 export type Module = {
   id: ModuleId
   label: string
@@ -20,6 +22,7 @@ export type Module = {
 
 export const MODULES: readonly Module[] = [
   { id: 'CHECK_RELEASE', label: 'CHECK RELEASE', href: '/', prefixes: ['/', '/checks', '/receipts'], adminOnly: false },
+  { id: 'AGING', label: 'AGING', href: '/aging', prefixes: ['/aging'], adminOnly: false },
   { id: 'VOUCHERS', label: 'VOUCHERS', href: '/vouchers', prefixes: ['/vouchers'], adminOnly: false },
   { id: 'FORECAST', label: 'FORECAST', href: '/forecast', prefixes: ['/forecast'], adminOnly: false },
   { id: 'CLEARING', label: 'CLEARING', href: '/clearing', prefixes: ['/clearing'], adminOnly: false },

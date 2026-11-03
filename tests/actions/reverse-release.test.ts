@@ -12,9 +12,9 @@ const PICKUP = new Date('2026-09-03')
 beforeEach(resetDb)
 
 /** A cheque released through the app, the way every future release will be. */
-async function released(opts: { eligibility?: 'SUPPLIER' | 'INTERNAL'; withReceipt?: boolean } = {}) {
+async function released(opts: { eligibility?: 'SUPPLIER' | 'INTERNAL'; withReceipt?: boolean; apvNumbers?: string[] } = {}) {
   const user = await makeUser()
-  const check = await makeCheck({ status: 'SIGNED', eligibility: opts.eligibility ?? 'SUPPLIER' })
+  const check = await makeCheck({ status: 'SIGNED', eligibility: opts.eligibility ?? 'SUPPLIER', ...(opts.apvNumbers ? { apvNumbers: opts.apvNumbers } : {}) })
   await markReadyForRelease(testDb, { checkId: check.id, userId: user.id, availablePickupDate: PICKUP, now: NOW })
   await markReleased(testDb, {
     checkId: check.id, userId: user.id, now: NOW, remarks: 'Handed to the courier',
@@ -91,16 +91,18 @@ describe('reverseRelease — the portal', () => {
   })
 
   /**
-   * Rule 2. An INTERNAL cheque — payroll, tax, an inter-company transfer — must
-   * never produce a portal call, and the database's own CHECK constraint
-   * refuses routing state on one. Pinned here the way the other three sites
-   * pin it.
+   * Rule 2. An INTERNAL cheque — payroll, tax, an inter-company transfer —
+   * queues its RELEASE_REVERSED flagged internal so the portal bill ages again
+   * (ruling 2026-10-19), but carries no routing state: the database's own CHECK
+   * constraint refuses portalSyncStatus / portalDomain on one. Pinned here the
+   * way the other three sites pin it.
    */
-  it('never queues anything for an INTERNAL check', async () => {
-    const { check } = await released({ eligibility: 'INTERNAL' })
+  it('queues a RELEASE_REVERSED for an INTERNAL check and writes no portal state (ruling 2026-10-19)', async () => {
+    const { check } = await released({ eligibility: 'INTERNAL', apvNumbers: ['AP-1'] })
     const admin = await makeUser('FINANCE_ADMIN')
     const out = await reverseRelease(testDb, { checkId: check.id, userId: admin.id, reason: 'x', now: LATER })
-    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
+    const kinds = (await testDb.portalEvent.findMany({ where: { checkId: check.id }, orderBy: { createdAt: 'asc' } })).map((e) => e.kind)
+    expect(kinds).toEqual(['RELEASED', 'RELEASE_REVERSED'])
     expect(out.portalSyncStatus).toBe('NOT_APPLICABLE')
     expect(out.portalDomain).toBeNull()
   })

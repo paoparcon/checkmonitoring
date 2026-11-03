@@ -154,7 +154,7 @@ describe('runBillRefsSync — the table', () => {
 })
 
 describe('runBillRefsSync — the run record', () => {
-  it('records mode BILL_REFS, the counts, watermark = max − 120 min, finishedAt, no message', async () => {
+  it('records mode BILL_REFS, the counts, watermark = max − 120 min, finishedAt, due-date message', async () => {
     await testDb.acumaticaBill.create({
       data: { apvNumber: 'AP-GONE', tenant: 'GOLIVE', vendorRef: 'PO-ST-000009', poNumbers: ['PO-ST-000009'] },
     })
@@ -174,7 +174,7 @@ describe('runBillRefsSync — the run record', () => {
     expect(run.updated).toBe(1)
     expect(run.staged).toBe(1)
     expect(run.errors).toBe(0)
-    expect(run.message).toBeNull()
+    expect(run.message).toBe(`due dates: ${result.termsWritten} bills written`)
     expect(run.watermark).toEqual(new Date('2026-09-29T07:00:00Z'))
   })
 
@@ -186,7 +186,7 @@ describe('runBillRefsSync — the run record', () => {
     expect(a.calls[0].feed).toBe(BILL_REFS_FEED)
     expect(a.calls[0].opts?.filter).toBe(billRefsSinceFilter(since))
     expect(a.calls[0].opts?.orderby).toBe('LastModifiedOn asc')
-    expect(a.calls[0].opts?.select).toEqual(['Type', 'ReferenceNbr', 'Date', 'VendorRef', 'LastModifiedOn'])
+    expect(a.calls[0].opts?.select).toEqual(['Type', 'ReferenceNbr', 'Date', 'VendorRef', 'LastModifiedOn', 'DueDate', 'Terms', 'Status'])
 
     const b = read([])
     await b.result
@@ -202,6 +202,8 @@ describe('runBillRefsSync — the run record', () => {
     expect(run.errors).toBe(1)
     expect(run.watermark).toBeNull()
     expect(run.message).toContain('inquiry down')
+    expect(run.message).not.toContain('due dates')
+
   })
 
   it('a failed write is an error, the other writes still land, and the watermark is held', async () => {
@@ -235,6 +237,49 @@ describe('runBillRefsSync — the run record', () => {
     expect(run.watermark).toBeNull()
     expect(run.message).toContain('write refused for the first batch')
     expect(run.message).toContain('AP-ST044591')
+  })
+})
+
+describe('runBillRefsSync — due-date activity in the message', () => {
+  it('a clean run of two bills records how many were written', async () => {
+    const result = await read([docRow({ ReferenceNbr: 'AP-1' }), docRow({ ReferenceNbr: 'AP-2' })]).result
+    const run = await testDb.syncRun.findUniqueOrThrow({ where: { id: result.syncRunId } })
+    expect(run.message).toBe('due dates: 2 bills written')
+  })
+
+  it('a re-run of the same unchanged bills records none written', async () => {
+    const rows = [docRow({ ReferenceNbr: 'AP-1' }), docRow({ ReferenceNbr: 'AP-2' })]
+    await read(rows).result
+    const again = await read(rows).result
+    const run = await testDb.syncRun.findUniqueOrThrow({ where: { id: again.syncRunId } })
+    expect(run.message).toBe('due dates: 0 bills written')
+  })
+})
+
+describe('runBillRefsSync — a failed terms batch', () => {
+  it('holds the watermark and names the terms batch while the bill write lands', async () => {
+    const flaky = new Proxy(testDb, {
+      get(target, prop, receiver) {
+        if (prop === '$executeRaw') {
+          return (...a: unknown[]) => {
+            const q = a[0] as { sql?: string } | undefined
+            if ((q?.sql ?? '').includes('"AcumaticaBillTerms"')) return Promise.reject(new Error('terms write refused'))
+            return (target.$executeRaw as (...x: unknown[]) => unknown).apply(target, a)
+          }
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+    const result = await read([docRow({ ReferenceNbr: 'AP-ST044591' })], { db: flaky }).result
+    expect(result.errors).toBeGreaterThan(0)
+    expect(result.upserted).toBe(1)
+    expect(result.watermark).toBeNull()
+    const run = await testDb.syncRun.findUniqueOrThrow({ where: { id: result.syncRunId } })
+    expect(run.watermark).toBeNull()
+    expect(run.message?.startsWith('due dates: ')).toBe(true)
+    expect(run.message).toContain(' | terms ')
+    expect(run.message).toContain('terms AP-ST044591')
+    expect(run.message).toContain('terms write refused')
   })
 })
 
@@ -320,7 +365,7 @@ describe('runScheduledBillRefsSync', () => {
     const feed = fakeFeed([docRow(), docRow({ ReferenceNbr: 'AP-2', VendorRef: 'SI#1' })])
     const outcome = await runScheduledBillRefsSync(testDb, { tenant: 'GOLIVE', now: NOW, client: () => feed.client })
     expect(outcome).toMatchObject({
-      tenant: 'GOLIVE', outcome: 'RAN', fetched: 2, ignored: 0, upserted: 2, deleted: 0, noPo: 1, errors: 0,
+      tenant: 'GOLIVE', outcome: 'RAN', fetched: 2, ignored: 0, upserted: 2, deleted: 0, noPo: 1, termsWritten: 2, errors: 0,
     })
     expect(feed.calls[0].opts?.filter).toBe(billRefsSinceFilter(new Date('2026-09-29T08:00:00Z')))
     if (outcome.outcome !== 'RAN') throw new Error('unreachable')
@@ -357,5 +402,52 @@ describe('recordBillRefsTimeBudgetSkip', () => {
     expect(run.finishedAt).not.toBeNull()
     // The skip moves nothing: the next run reads from the previous watermark.
     expect(await lastBillRefsWatermark(testDb, 'GOLIVE')).toEqual(new Date('2026-09-29T08:00:00Z'))
+  })
+})
+
+describe('AcumaticaBillTerms (AGING, 2026-10-15)', () => {
+  it('writes every in-scope bill, blank Vendor Ref included, and leaves AcumaticaBill as it was', async () => {
+    const { result } = read([
+      docRow({ ReferenceNbr: 'AP-ST000001', DueDate: '2026-10-29T00:00:00', Terms: '30D' }),
+      docRow({ ReferenceNbr: 'AP-ST000002', VendorRef: '', DueDate: '2026-11-15T00:00:00', Terms: 'COD' }),
+    ])
+    const res = await result
+    expect(res.termsWritten).toBe(2)
+    const terms = await testDb.acumaticaBillTerms.findMany({ orderBy: { apvNumber: 'asc' } })
+    expect(terms.map((t) => [t.apvNumber, t.tenant, t.dueDate?.toISOString().slice(0, 10), t.termsCode])).toEqual([
+      ['AP-ST000001', 'GOLIVE', '2026-10-29', '30D'],
+      ['AP-ST000002', 'GOLIVE', '2026-11-15', 'COD'],
+    ])
+    expect((await testDb.acumaticaBill.findMany()).map((b) => b.apvNumber)).toEqual(['AP-ST000001'])
+  })
+
+  it('updates a changed bill, counts an unchanged one as not written, never deletes', async () => {
+    await (read([docRow({ ReferenceNbr: 'AP-ST000001', DueDate: '2026-10-29T00:00:00', Terms: '30D' })]).result)
+    const again = await (read([docRow({ ReferenceNbr: 'AP-ST000001', DueDate: '2026-10-29T00:00:00', Terms: '30D' })]).result)
+    expect(again.termsWritten).toBe(0)
+    const changed = await (read([docRow({ ReferenceNbr: 'AP-ST000001', DueDate: '2026-11-28T00:00:00', Terms: '60D' })]).result)
+    expect(changed.termsWritten).toBe(1)
+    const row = await testDb.acumaticaBillTerms.findUniqueOrThrow({ where: { apvNumber: 'AP-ST000001' } })
+    expect(row.dueDate?.toISOString().slice(0, 10)).toBe('2026-11-28')
+    expect(row.termsCode).toBe('60D')
+    // A Vendor Ref going blank deletes the AcumaticaBill row, never the terms.
+    await (read([docRow({ ReferenceNbr: 'AP-ST000001', VendorRef: '', DueDate: '2026-11-28T00:00:00', Terms: '60D' })]).result)
+    expect(await testDb.acumaticaBill.count()).toBe(0)
+    expect(await testDb.acumaticaBillTerms.count()).toBe(1)
+  })
+
+  it('stores the bill status, and a bill turning Closed is written again (user ruling 2026-10-16)', async () => {
+    await (read([docRow({ ReferenceNbr: 'AP-ST000004', DueDate: '2026-10-29T00:00:00', Terms: '30D', Status: 'Open' })]).result)
+    expect((await testDb.acumaticaBillTerms.findUniqueOrThrow({ where: { apvNumber: 'AP-ST000004' } })).status).toBe('Open')
+    const closed = await (read([docRow({ ReferenceNbr: 'AP-ST000004', DueDate: '2026-10-29T00:00:00', Terms: '30D', Status: 'Closed' })]).result)
+    expect(closed.termsWritten).toBe(1)
+    expect((await testDb.acumaticaBillTerms.findUniqueOrThrow({ where: { apvNumber: 'AP-ST000004' } })).status).toBe('Closed')
+  })
+
+  it('a bill the feed gives neither value is still recorded, as nulls', async () => {
+    await (read([docRow({ ReferenceNbr: 'AP-ST000003' })]).result)
+    const row = await testDb.acumaticaBillTerms.findUniqueOrThrow({ where: { apvNumber: 'AP-ST000003' } })
+    expect(row.dueDate).toBeNull()
+    expect(row.termsCode).toBeNull()
   })
 })

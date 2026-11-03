@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { signOutAction } from '@/app/actions'
 import type { SessionUser } from '@/lib/auth'
+import { prisma } from '@/lib/db'
+import { countUnread } from '@/lib/notifications/queries'
 import { ModuleNav } from './ModuleNav'
 
 /**
@@ -21,14 +23,27 @@ import { ModuleNav } from './ModuleNav'
  * and on a page with a JavaScript error — which is exactly when a shared
  * workstation most needs to be signable-out of. `/login` and `/welcome` are
  * the only pages without this header, and they have nothing to sign out of.
+ *
+ * Since 2026-10-16 it carries the NOTIFICATIONS link with the user's unread
+ * count (spec 2026-10-16-notifications-design.md), so it is an async server
+ * component.
  */
-export function AppHeader({
+export async function AppHeader({
   user, title, back,
 }: {
   user: SessionUser
   title: string
   back?: { href: string; label: string }
 }) {
+  // The bell's count: one indexed count per render, no polling. A failed count
+  // shows no number rather than breaking the page.
+  let unread: number | null = null
+  try {
+    unread = await countUnread(prisma, user.id)
+  } catch (e) {
+    console.error('unread notification count failed:', e instanceof Error ? e.message : e)
+  }
+
   return (
     <header className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -42,6 +57,15 @@ export function AppHeader({
           <p className="text-[11px] font-semibold tracking-widest text-slate-500">CHECK RELEASE MONITORING</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
+          <Link
+            href="/notifications"
+            className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-hairline transition hover:bg-navy-bg hover:text-navy"
+          >
+            NOTIFICATIONS
+            {unread !== null && unread > 0 && (
+              <span className="rounded-full bg-navy px-2 py-0.5 text-[10px] font-semibold text-white">{unread}</span>
+            )}
+          </Link>
           {/* The name, with the email beside it. Two people called "Ronald" is
               not a hypothetical in a finance department, and the address is what
               makes the session unambiguous on a shared machine. */}

@@ -100,7 +100,7 @@ It follows that:
   `voucher_linked_from_acumatica` row each — and moved the 90 SIGNED checks to READY_FOR_RELEASE,
   snapshot first. Available after: **233, 21,013,221.48**; 0 list vouchers unlinked. The bill
   column is `AdjdRefNbr` in Go-Live and `ReferenceNbr_2` in MANUFACTURING (a filter on the Go-Live
-  name is a 500 there), and an `or` of several `eq` filters is a 500 in Go-Live. **Since 2026-10-01 the scheduled run reads it** (`lib/sync/bills.ts`, `runScheduledBillsSync`, `SyncRun.mode = 'BILLS'`; feed in `lib/integrations/acumatica/bills.ts`, `BILL_FEED_COLUMNS`): every `CHK` → `Bill` application is unioned into the paying check's `apvNumbers`, matched on the payment's own reference (`acumaticaPaymentId`), add-only, never status. The first read is `npx tsx scripts/sync.ts <TENANT> --bills` from a terminal (it snapshots to `snapshots/bills-<tenant>-<timestamp>.json` first; `--dry-run` reads and writes nothing). The run message names up to 10 payments the inquiry shows that are not held here, because the watermark moves past them for good — `scripts/sync.ts <TENANT> --bills --full` relinks them once their checks exist (idempotent, add-only). **First reads done:** GOLIVE 2026-10-01 19:09 Manila (MANUAL) — 755 vouchers added to 755 checks, 3,343 payments in the inquiry not held here (not yet examined; most are expected to be outside the sync's 2026-and-CHK scope); MANUFACTURING 2026-10-02 11:38 Manila — 180 fetched, 52 not CHK → Bill, 22 vouchers added to 22 checks, 2 not held here, 0 errors, snapshot `snapshots/bills-MANUFACTURING-2026-10-02T03-38-32-602Z.json`. The cron runs BILLS for a tenant only after that tenant's payment read RAN (`SKIPPED_PAYMENT_NOT_RUN` otherwise, not a failure) — a failed payment read's checks would otherwise count as not held and be skipped for good. The watermark is held (the run finishes with none, so the previous one stays) when any check's write failed, and the problem names its payment reference. Only a check with something missing opens a transaction; a re-read of an already-linked set costs one lookup. `upsertCheck` now writes `apvNumbers` only when the merge adds a voucher, so the payment sync cannot erase a BILLS append. A check's PO NUMBER is `CheckBill.poNumber` ∪ the real POs Acumatica's `AP-Bills and Adjustments` names in `VendorRef` for any APV the check shows (spec `2026-10-05-po-from-acumatica-design.md`, client 2026-10-05 "only real POs"): `lib/sync/bill-refs.ts` mirrors it into `AcumaticaBill` (keyed by APV, reference data — no `Check` column, no audit row per bill, deleted when the ref stops naming a PO), `SyncRun.mode = 'BILL_REFS'`, its own watermark, run by the cron after BILLS for a tenant whose payment read RAN; the first read is `npx tsx scripts/sync.ts <TENANT> --bill-refs` (snapshot `snapshots/bill-refs-<tenant>-<timestamp>.json` first). `extractPoNumbers` (`lib/integrations/acumatica/bill-refs.ts`) keeps only the measured PO shapes; ONE column map serves both tenants for this inquiry. `displayPoNumbers` in `lib/queries.ts` is the one definition — list, Excel, print, PO sort, PO filter and search all read it or its SQL twin `acumaticaPoMatch`. The list, Excel and print show a PO NUMBER column (Excel AMOUNT moved to column 8; the column-choice storage key is now `check-monitoring.columns.v2`). **User ruling 2026-10-06 supersedes "only real POs": Acumatica's Vendor Ref STANDS AS the PO NUMBER, whatever it looks like** (`26P09-0420` is a PO number to Finance). `AcumaticaBill` keeps EVERY bill with a non-blank Vendor Ref (a row is deleted only when the ref goes blank), `loadAcumaticaPoIndex` and `acumaticaPoMatch` read `vendorRef` whole, and `extractPoNumbers` / `AcumaticaBill.poNumbers` are now diagnostic only — nothing displays or matches on them. There is no separate REFERENCE column (one was built and deployed the same day, then removed on request). **2026-10-06, user ruling: a PPM (prepayment) is linked like a Bill** (`BILL_SIDE_TYPES` in `lib/integrations/acumatica/bills.ts`; `BILL_REF_TYPES` adds `Prepayment` to the bill-ref read) — cargo, customs and brokerage checks (e.g. `6000354281`…) pay a PPM, so they had no APV and no PO. Full re-reads on both tenants linked 40 more checks (GOLIVE 40, MANUFACTURING 0), snapshots `snapshots/bills-<TENANT>-2026-10-06T01-2*.json`; 0 live Acumatica checks left with no APV. Consequence the user accepted: those checks now carry an APV, so the portal outbox may send events for them. **SYNC NOW also runs the BILLS and BILL_REFS reads** (`syncNowAction`), because a check first read manually used to wait for the next cron with no APV and no PO. **Run 2026-10-06 by the user, `--bill-refs --full` on both tenants, 0 errors: GOLIVE 15,919 fetched, 3,050 ignored, 7,662 naming a PO shape, 5,207 not, 5,335 rows written, 0 deleted; MANUFACTURING 217 fetched, 56 ignored, 72 / 89, 92 written, 0 deleted** — so every bill's ref is already stored.
+  name is a 500 there), and an `or` of several `eq` filters is a 500 in Go-Live. **Since 2026-10-01 the scheduled run reads it** (`lib/sync/bills.ts`, `runScheduledBillsSync`, `SyncRun.mode = 'BILLS'`; feed in `lib/integrations/acumatica/bills.ts`, `BILL_FEED_COLUMNS`): every `CHK` → `Bill` application is unioned into the paying check's `apvNumbers`, matched on the payment's own reference (`acumaticaPaymentId`), add-only, never status. The first read is `npx tsx scripts/sync.ts <TENANT> --bills` from a terminal (it snapshots to `snapshots/bills-<tenant>-<timestamp>.json` first; `--dry-run` reads and writes nothing). The run message names up to 10 payments the inquiry shows that are not held here, because the watermark moves past them for good — `scripts/sync.ts <TENANT> --bills --full` relinks them once their checks exist (idempotent, add-only). **That was not enough (2026-10-26): `CV-HF000161` (`6000354602`, HAMFI) was released on 23 Oct with no APV and its RELEASED event parked** — a manual full BILLS read at 01:23 on 6 Oct read its application and moved the watermark past it, and the payment sync only created the check at 04:00; three HAMFI checks (CV-HF000161..163) sat that way for three weeks. User ruling: *"this should not happen again."* **Since then every incremental BILLS run also looks up, by payment reference, each held Acumatica check of the tenant that is a check, live or RELEASED, and still has no APV** (`lookUpApvLess` in `lib/sync/bills.ts`, `billsForPaymentFilter` — the tenant's own column; at most `DIRECT_LOOKUP_LIMIT` = 20 a run, oldest first, one request each; only that payment's applications are taken from the answer; add-only; a failed lookup is an error named in the message but never holds the feed watermark; a first read looks nothing up). The run message and `scripts/sync.ts --bills` print `N held check(s) with no APV looked up directly: M linked`. The backlog measured that day was four (the three HAMFI checks and `6000318443`, the first CASH check the full re-read created) — so the lookup, not a human, closes the gap for the CASH checks arriving now. **First reads done:** GOLIVE 2026-10-01 19:09 Manila (MANUAL) — 755 vouchers added to 755 checks, 3,343 payments in the inquiry not held here (not yet examined; most are expected to be outside the sync's 2026-and-CHK scope); MANUFACTURING 2026-10-02 11:38 Manila — 180 fetched, 52 not CHK → Bill, 22 vouchers added to 22 checks, 2 not held here, 0 errors, snapshot `snapshots/bills-MANUFACTURING-2026-10-02T03-38-32-602Z.json`. The cron runs BILLS for a tenant only after that tenant's payment read RAN (`SKIPPED_PAYMENT_NOT_RUN` otherwise, not a failure) — a failed payment read's checks would otherwise count as not held and be skipped for good. The watermark is held (the run finishes with none, so the previous one stays) when any check's write failed, and the problem names its payment reference. Only a check with something missing opens a transaction; a re-read of an already-linked set costs one lookup. `upsertCheck` now writes `apvNumbers` only when the merge adds a voucher, so the payment sync cannot erase a BILLS append. A check's PO NUMBER is `CheckBill.poNumber` ∪ the real POs Acumatica's `AP-Bills and Adjustments` names in `VendorRef` for any APV the check shows (spec `2026-10-05-po-from-acumatica-design.md`, client 2026-10-05 "only real POs"): `lib/sync/bill-refs.ts` mirrors it into `AcumaticaBill` (keyed by APV, reference data — no `Check` column, no audit row per bill, deleted when the ref stops naming a PO), `SyncRun.mode = 'BILL_REFS'`, its own watermark, run by the cron after BILLS for a tenant whose payment read RAN; the first read is `npx tsx scripts/sync.ts <TENANT> --bill-refs` (snapshot `snapshots/bill-refs-<tenant>-<timestamp>.json` first). `extractPoNumbers` (`lib/integrations/acumatica/bill-refs.ts`) keeps only the measured PO shapes; ONE column map serves both tenants for this inquiry. `displayPoNumbers` in `lib/queries.ts` is the one definition — list, Excel, print, PO sort, PO filter and search all read it or its SQL twin `acumaticaPoMatch`. The list, Excel and print show a PO NUMBER column (Excel AMOUNT moved to column 8; the column-choice storage key was then `check-monitoring.columns.v2`; since the table kit it is `check-monitoring.table.checks.v1`, migrated once from `check-monitoring.columns.v3`). **User ruling 2026-10-06 supersedes "only real POs": Acumatica's Vendor Ref STANDS AS the PO NUMBER, whatever it looks like** (`26P09-0420` is a PO number to Finance). `AcumaticaBill` keeps EVERY bill with a non-blank Vendor Ref (a row is deleted only when the ref goes blank), `loadAcumaticaPoIndex` and `acumaticaPoMatch` read `vendorRef` whole, and `extractPoNumbers` / `AcumaticaBill.poNumbers` are now diagnostic only — nothing displays or matches on them. There is no separate REFERENCE column (one was built and deployed the same day, then removed on request). **2026-10-06, user ruling: a PPM (prepayment) is linked like a Bill** (`BILL_SIDE_TYPES` in `lib/integrations/acumatica/bills.ts`; `BILL_REF_TYPES` adds `Prepayment` to the bill-ref read) — cargo, customs and brokerage checks (e.g. `6000354281`…) pay a PPM, so they had no APV and no PO. Full re-reads on both tenants linked 40 more checks (GOLIVE 40, MANUFACTURING 0), snapshots `snapshots/bills-<TENANT>-2026-10-06T01-2*.json`; 0 live Acumatica checks left with no APV. Consequence the user accepted: those checks now carry an APV, so the portal outbox may send events for them. **SYNC NOW also runs the BILLS and BILL_REFS reads** (`syncNowAction`), because a check first read manually used to wait for the next cron with no APV and no PO. **Run 2026-10-06 by the user, `--bill-refs --full` on both tenants, 0 errors: GOLIVE 15,919 fetched, 3,050 ignored, 7,662 naming a PO shape, 5,207 not, 5,335 rows written, 0 deleted; MANUFACTURING 217 fetched, 56 ignored, 72 / 89, 92 written, 0 deleted** — so every bill's ref is already stored.
   **Scope widened 2026-10-06 (user request): the bill-ref read now starts at bills dated 2024-01-01, not 2026** (`IN_SCOPE_FROM`, `lib/integrations/acumatica/bill-refs.ts`) — a 2026 check pays older bills (`AP-A1030212`, dated 2025-10-29, had no PO on the transmittal; 40 of 1,332 SIGNED/PENDING checks had no stored ref). The incremental read looks only at recent `LastModifiedOn`, so the older bills arrive only with `--bill-refs --full` on each tenant (run by the user; not run by Claude).
   **`FOR RELEASE 9_1.25.2026v2.xlsx`** (same day): LOCAL unchanged; BROKERS 39 checks / 8,174,750.00,
   with a new SCM REMARKS column (DELIVERED …), unused. Added `6000354012` and `6000354067` (linked
@@ -133,7 +133,7 @@ It follows that:
 
 ```bash
 npm run dev                    # local dev server — against PRODUCTION (DATABASE_URL)
-node --env-file=.env scripts/dev-testdb.mjs   # dev server on :3001 against the TEST database (seed it first)
+node scripts/dev-test-db.mjs      # dev server on the TEST database (the repo .env is PRODUCTION); outward integrations blanked
 npm test                       # full suite (Vitest, hits the TEST database)
 npx tsc --noEmit               # REQUIRED before claiming done - see below
 npx next build
@@ -158,6 +158,7 @@ npx tsx scripts/mark-ready-from-release-list.ts "<for-release>.xlsx" --apply    
 npx tsx scripts/revert-detail1-ready.ts "<for-release>.xlsx" <ready-from-list snapshot> [--apply]  # Detail1-only READY back to prior status (run 2026-09-25)
 npx tsx scripts/void-acumatica-voided.ts [--apply]                # void what Acumatica voided (live or RELEASED here)
 npx tsx scripts/close-unmatchable-cancelled.ts [--apply]         # parked CANCELLED events whose check has no APV: close unsent
+npx tsx scripts/detach-cancelled-apvs.ts [--apply]               # CANCELLED/VOIDED checks still on an AP bill: detach, close their open CANCELLED events (ruling 2026-10-29)
 npx tsx scripts/reinstate-register-cancelled.ts [--apply --check <number>]   # CANCELLED by the register only, live in Acumatica: list; put NAMED ones back to SIGNED with their bills
 npx tsx scripts/backfill-check-books.ts GOLIVE [--apply]       # record a missing check book from CashAccount; also moves or clears a book that differs from Acumatica's (§G1) (MANUFACTURING likewise)
 npx tsx scripts/link-vouchers-from-acumatica.ts "<for-release>.xlsx" [--apply]  # link list vouchers via AP-PAYMENTS-WITH-BILLS, ready their checks
@@ -167,6 +168,7 @@ npx tsx scripts/sync.ts GOLIVE --bill-refs --dry-run  # read AP-Bills and Adjust
 npx tsx scripts/sync.ts GOLIVE --bill-refs            # snapshot AcumaticaBill, then mirror bill -> PO; add --full to re-read
 npx tsx scripts/sync.ts GOLIVE --full               # snapshot, re-read every 2026 CHK payment, then the live checks that left that feed (--dry-run lists them)
 npx tsx scripts/reconcile-with-acumatica.ts "<file>.xlsx" [--apply --user <email>]   # AFTER --full: Closed-in-Acumatica checks to RELEASED, Finance verdicts (2026-10-06)
+npx tsx scripts/revert-recent-signed.ts 2026-10-19 [--apply --user <email>]   # SIGNED first read on/after that Manila day back to PENDING (signing manual, 2026-10-22)
 ```
 
 **On Windows, use `npx.cmd` / `npm.cmd`.** PowerShell's execution policy is `Undefined` (i.e.
@@ -178,9 +180,15 @@ These are safety properties, not preferences. Each exists because of a specific 
 
 1. **INTERNAL USE ONLY.** No supplier login, supplier dashboard, or supplier-facing page. Suppliers
    never log in here.
-2. **An `INTERNAL` check must never produce a portal call.** Payroll, tax, fund transfers and
-   inter-company payments are classified `INTERNAL` by `lib/domain/eligibility.ts`, and the portal
-   client asserts it again before building any request. Two independent checks, deliberately.
+2. **An `INTERNAL` check never tells a payee anything.** Payroll, tax, fund transfers and
+   inter-company payments are classified `INTERNAL` by `lib/domain/eligibility.ts`. Since user
+   ruling 2026-10-19 (portal spec `2026-10-19-cm-internal-release-quiet-design.md`) the portal is
+   sent their RELEASED, RELEASE_REVERSED and CANCELLED, flagged `internal: true`, so their bills
+   stop aging there; the portal records them silently. MARK_AVAILABLE, REVERT and RECEIPT are never
+   sent, and the check row never carries portal state (`check_internal_never_routes_to_portal`).
+   The actions decide (`queuesQuietStatus`), and the portal client asserts it again
+   (`INTERNAL_PORTAL_KINDS`). Two independent checks, deliberately. **Since 2026-10-29 CANCELLED is
+   not sent for any check** — see "A cancelled or voided check is detached from its AP bills" below.
 3. **Acumatica is read-only.** `lib/integrations/acumatica/client.ts` exposes no mutating method,
    and a test asserts it. Read-only by construction, not by callers being careful.
 4. **An import never changes a check's status.** Acumatica does not know whether Finance has signed
@@ -238,7 +246,12 @@ These are safety properties, not preferences. Each exists because of a specific 
     never a JS number); the file (PDF/JPG/PNG, at most 3 MB, signature-checked) is stored in
     `CheckReceiptFile` (BYTEA) and read only when a RECEIPT is delivered. Once recorded neither is
     overwritten: `attachReceiptFile` adds a missing amount or file later and refuses to replace one
-    that is there. They travel to the portal as the `RECEIPT` outbox event, queued only for a
+    that is there. **The one way out is `removeReceipt` (2026-10-23, REMOVE RECEIPT on the check page,
+    FINANCE_ADMIN, reason required)**: for a receipt typed with a release that never happened
+    (6000354897, AR 4852). RELEASED and uncleared only; refused when a RECEIPT event was DELIVERED to
+    the portal (it has no remove message); clears the receipt columns, amount and file, one
+    `receipt_removed` audit row. It exists to unblock REVERSE RELEASE, never to edit a real receipt.
+    They travel to the portal as the `RECEIPT` outbox event, queued only for a
     portal-routed check with an APV (an INTERNAL or APV-less check records the receipt here and
     queues nothing). Server actions allow a 4 MB body (`bodySizeLimit` in `next.config.ts`).
     **The outbox has two lanes per check.** Status lane: MARK_AVAILABLE, REVERT, RELEASED,
@@ -310,15 +323,50 @@ are ordered in the app over the FULL matching set (`APP_SORTED_KEYS`, `lib/list-
 Prisma cannot order by them; every other key is `listChecks`'s `orderBy`. Export and print read the
 same cookie. **Filters:** the `f.*` parameters (`lib/column-filters.ts`; COMPANY, BANK and DATE
 RELEASED keep their old names). **An unreadable box refuses, never widens**: `CheckFilters.refused`
-makes `buildWhere` match nothing (`id IN ()`), so the list shows no rows with the boxes still
-there and the bad one marked red; the export answers 400, print shows the refusal, and EXPORT
+makes `buildWhere` match nothing (`id IN ()`), so the list shows no rows, with a red chip naming
+the bad filter (since the table kit; it used to leave the boxes in place); the export answers 400, print shows the refusal, and EXPORT
 EXCEL / PRINT are drawn disabled. SIGN ALL honours the column filters — the server re-parses them
 from the confirm form's hidden `f.*` fields, and the button is offered only when `signAllOffered`
 (`lib/dashboard-view.ts`) says so; RELEASE ALL refuses any column filter. **Columns:** `cols=` on
-EXPORT EXCEL reorders the file's columns and never drops one. The preference stays under
-`check-monitoring.columns.v2` as an ordered list of visible columns (a part-B value reads as the
-default order); a column forced visible because a filter is set on it is shown but never
+EXPORT EXCEL reorders the file's columns and never drops one. The preference is the table kit's
+`check-monitoring.table.checks.v1` (an ordered list of visible columns), migrated once from
+`check-monitoring.columns.v3` (it was `check-monitoring.columns.v2` before the kit); a column forced visible because a filter is set on it is shown but never
 persisted. Print keeps its fixed columns.
+
+**Every table is on the table kit** (2026-10-13, spec `2026-10-13-table-kit-design.md`, the Supplier
+Portal's header menu). Click a header: Sort Ascending / Descending, Clear Filter, the filter (date
+and amount: Equals … Is Between, Today, This Month; enum: a dropdown, or ticked boxes for a `multi` column — the main list's STATUS since 2026-10-15,
+needle `=A,B`, URL `f.status=SIGNED,RELEASED`, one bad value refuses the box, one status is
+`CheckFilters.status` and several `statusIn`; text: contains). Chips above
+the table; ⚙ CUSTOMIZE COLUMNS opens Column Configuration; drag a header edge to resize. Layout is
+per browser under `check-monitoring.table.<id>.v1`. Two modes: `KitTable` filters the rows the page
+drew (a capped page says "N OF THE M ROWS SHOWN"); the main list and Audit are URL mode — the menu
+writes the parameters they already parse (`lib/table-kit/url-binding.ts`), so on the main list
+`lib/column-filters.ts` still refuses, and "Does Not Equal" / strict amount bounds are not offered
+there. The filter-box row and COLUMNS chooser are gone; their values ride as hidden inputs on the
+bar's form. Audit does not sort (its keyset is newest first). Left alone: print (including the printed transmittal sheet), the forecast
+matrix, the planned-outflow list.
+
+**`/signup` is public and creates INACTIVE accounts only** (2026-10-09, spec
+`2026-10-09-self-registration-design.md`, §11 for what changed in review). A registration sets
+`User.pendingSince`; PENDING is `!active && pendingSince !== null` (`isPending`, `lib/admin/users.ts`,
+the one definition) and is shown on `/admin/users` under PENDING APPROVAL, where APPROVE picks the role
+and REJECT leaves it deactivated. **Registering with an INACTIVE account's address re-opens it** —
+user ruling 2026-10-09, so the three deactivated accounts Finance asked to delete could register again
+— but **nothing on the row changes until approval**: the typed name and password wait in
+`pendingName` / `pendingPasswordHash`, because `name` is read live wherever a check says who released
+it and an anonymous `/signup` submission must not rewrite that. APPROVE copies them in; REJECT discards
+them, so REACTIVATE after a reject restores the genuine account; SET PASSWORD discards a held hash. An
+ACTIVE address is refused. REACTIVATE refuses a pending account (approve instead). Every
+read-then-write is a conditional `updateMany` on the state it read (`REREGISTERED` / `NOT_PENDING` /
+`CHANGED`), and the page passes the `pendingSince` it displayed. Throttle: `signup.ipPerHour`
+(default 5) over `RegistrationAttempt` in Postgres (`lib/registration-throttle.ts`) — an advisory
+xact lock per address, insert then count, refused when the count including this row exceeds the
+allowance, and **refused, not let through, when the attempt cannot be recorded**. Length caps and a
+minimal email shape check sit on the public action. The sign-in error stays generic, and `/login` now
+redirects a refused sign-in to `?error=CredentialsSignin` instead of letting next-auth's throw become a
+500 (pre-existing). No mail path, no domain restriction, no delete (rule 6). `node
+scripts/dev-test-db.mjs` runs the dev server on the TEST database for a browser check.
 
 **READY FOR RELEASE from an uploaded list** (`/admin/import`, top section, user request 2026-10-29;
 `lib/admin/ready-upload.ts`, `uploadReadyListAction`, `components/ReadyListUploadForm.tsx`). A Finance
@@ -365,6 +413,18 @@ the 10-06 file (`1791362864`, `1791363469`, `6000318754`, `6000330347`, `1791363
 INTERNAL) that have not been voided in Acumatica either. The script's dry run shows the ruling per
 check; `--check` one of them only on a new Finance ruling, never `--all` on a hunch.
 
+**A deploy from a branch behind master REGRESSES production** (measured 2026-11-03). `npx vercel
+--prod` builds the working tree you run it from, not master. `feature/check-inventory` was cut from a
+9 October base; deployed at 07:01 Manila it put a build 127 commits behind master on
+`checkmonitoring.rclcompanies.com` for two hours: the dashboard threw `Value 'OTHERS' not found in
+enum 'ReceiptType'` (production rows already held receipt types that older build did not know), the
+aging screen, notifications and the table kit were gone, and sign-in showed "Application error" for a
+mistyped password (master had fixed that on 9 October). Before any deploy: `git log --oneline
+feature/<branch>..master | wc -l` must be 0 — merge master in first — and the migrations production
+has applied (`_prisma_migrations`) must all exist in `prisma/migrations` (`prisma migrate status`
+says "up to date" even when production has MORE). `npx vercel ls --environment production` lists what
+is live; `npx vercel promote <deployment-url> --yes` puts a known-good one back without a build.
+
 **`/welcome` is the public front door, and it is public by name** (2026-09-27, spec
 `2026-09-27-landing-login-and-theme-design.md`). The landing page and `/login` both render
 `components/MoneyMachines.tsx` — a cash register and a check register, inline SVG moved by the
@@ -374,8 +434,53 @@ the middleware sends an anonymous bare `/` there and every other guarded path to
 before, and sign-out lands on `/welcome`. `requireUser()` still redirects to `/login`. The page
 reads no data and must never show a figure: it is the one page a stranger can load.
 
+**A cancelled or voided check is detached from its AP bills, and the portal is not told** (user
+ruling 2026-10-29: *"Once the check is cancelled, it should not be connected to the AP it was applied
+to"*; spec `2026-10-29-cancelled-check-detaches-from-ap-design.md`). The portal keeps one release row
+per BILL, keyed by APV; this app keeps events per check. A void and re-issue is two checks on one bill,
+and the voided check's CANCELLED event cancelled the bill's row in the portal, so the replacement's
+RELEASED was refused — `6000354974`..`77` on `AP-ST039900`/`07`/`10`/`12`, released 26 Oct, four
+RELEASED events parked *"cancelled in the portal; a super must resolve"*. **That message names no
+screen: the portal has no manual restore of a cancelled row, and its Excel re-issue path is retired.
+The resolution is in the portal's code** (`prop-db/Supplier-Database`, `src/integrations/check-monitoring.js`,
+branch `claude/reissue-revives-cancelled-row`, 2026-10-29): a RELEASED arriving on a row the portal
+cancelled on Check Monitoring's own CANCELLED (`cancel_requested_at` null) under a DIFFERENT check
+number is applied as the re-issue it is; the same number, or a portal user's cancellation, stays
+refused. **Deployed 2026-10-29 ~17:20 Manila by the user (`npx vercel --prod` from a ZIP of the branch,
+Vercel project `supplier-portal`); RETRY then delivered the four RELEASED events and their receipts,
+0 parked after. The branch is merged into the portal's `main` (fast-forward) and this one into
+`master`, because both systems deploy the LOCAL tree and a later deploy from main would otherwise drop
+the fix. Check Monitoring was deployed from `~/Projects/checkmonitoring` the same day (Ready in 53 s);
+Vercel reports that project as "linked by git", so a push to `master` may deploy it as well.** **It also covers the 23 voided checks detached today: their CANCELLED events were
+delivered weeks ago, so their replacements will meet the same refusal when released.** On 2026-10-29
+the user reversed and re-released the four (receipts removed and re-typed), which changed nothing at
+the portal — do not do that again; the parked rows wait for the portal deploy. Now `voidCheck` / `cancelCheck` call
+`detachFromBills` (`lib/domain/actions.ts`): `apvNumbers` emptied, `CheckBill` rows deleted, NO
+portal event, `portalSyncStatus = NOT_APPLICABLE`; the `cancelled` / `voided` row carries
+`apvNumbersDetached`, `billsDetached` (whole rows) and, for a routed check, `portalNotified: false,
+portalSkipReason: DETACHED_SKIP_REASON`, and its remark names the APVs. Nothing re-links a dead check:
+the BILLS read skips a CANCELLED/VOIDED check (counted `cancelledHere`, named in the run message —
+Acumatica still lists a voided payment's applications), `upsertCheck` merges no voucher onto one, and
+`matchBills` (approval workbook) never matches one — so a voucher naming a voided check and its live
+re-issue resolves to the re-issue. `restoreCancelled` re-attaches the detached vouchers (not the bills)
+unless a live/RELEASED check of the company has taken one since. **Consequence, accepted with the
+ruling:** the portal hears of no cancellation at all, re-issue or not; a bill whose check was
+cancelled with no replacement keeps whatever state the portal had until someone there changes it.
+`scripts/detach-cancelled-apvs.ts [--apply]` (`lib/admin/detach-cancelled-apvs.ts`) detaches the
+checks cancelled or voided before the rule and closes their open CANCELLED events unsent
+(`unmatchable: …`, counted on `/admin/portal`), snapshot first, one `apv_detached_on_cancel` row each —
+**run 2026-10-29 by the user, from a Mac, in two passes** (the first was interrupted after a few
+checks because the script prints nothing while it works; the second found 23 left, all VOIDED, and
+detached 23 of 23, 0 open CANCELLED events, 0 still connected; snapshots
+`snapshots/detach-cancelled-apvs-2026-10-29T08-06-47-676Z.json` and `…T08-14-04-455Z.json`, on the
+user's machine). `queueCancelledForStale` (`--queue-cancelled`) is superseded and
+must not be run again. **The user's scripts now run from a Mac** (`~/Projects/checkmonitoring`,
+plain `npx`); the `npx.cmd` note above is for the Windows machine. The Neon address has two
+databases on one project: `check_monitoring` is NOT production and lacks recent columns —
+`check_monitoring_prod` is. The 2026-10-01 guard below is subsumed: a cancelled check never has an APV now.
+
 **A void or cancel of a check with no APV queues nothing for the portal** (2026-10-01, spec
-`2026-10-01-cheque-numbering-and-cancel-guard-design.md`). The portal matches on APV and the client
+`2026-10-01-cheque-numbering-and-cancel-guard-design.md`; subsumed by the 2026-10-29 rule above). The portal matches on APV and the client
 refuses an event with none, so such an event parked on its first attempt and RETRY parked it again —
 which is how `6000354350` and `1791259553` reached `/admin/portal`. `voidCheck` / `cancelCheck` now
 ask `portalApvs` (`lib/integrations/portal/apvs.ts`, the same rule the client uses) first; a routed
@@ -387,12 +492,43 @@ user with `--apply`: closed 2 of 2 (`6000354350`, `1791259553`), 0 left, snapsho
 day's deploy rather than after a cron delivery, so a no-APV CANCELLED still PENDING then could park
 once more on the next run; if `/admin/portal` shows one, run the script again.
 
+**AGING (`/aging`) picks SIGNED checks for release in the Supplier Portal's buckets** (2026-10-15,
+spec `2026-10-15-aging-module-design.md`). CURRENT / 1–30 / 31–60 / 61–90 / OVER 90 / NO DUE DATE,
+on days past the EARLIEST due date of the bills a check pays (`lib/aging/buckets.ts`; COD, PDC,
+dated-check and 100PBD terms never age, as in the portal). The due date and terms come from
+`AP-Bills and Adjustments` into `AcumaticaBillTerms` (written by the BILL_REFS read for every
+in-scope bill, blank Vendor Ref included, never deleted; `CheckBill.dueDate` only where Acumatica
+states none). MARK READY FOR RELEASE calls `bulkReadyForReleaseAction` unchanged — no new write
+path — and submits only `effectiveSelection`: ticked checks still on the page, with a SELECTED view
+listing every one of them, so nothing hidden is readied. A card counts every check in its bucket;
+its amount is PHP only, and the page says how many it leaves out. The totals do not match the
+portal's aging and are not meant to: the portal ages open bill balances, this ages SIGNED check
+amounts.
+**Bucket by column (2026-10-16, user request).** The table shows one amount column per bucket
+(`BUCKET_COLUMN_KEYS` in `lib/aging-picker.ts`) — a check's amount sits under its own bucket only —
+with a TOTAL (PHP) row over every row the view matches; BUCKET and AMOUNT are hidden by default
+under CUSTOMIZE COLUMNS. The layout key is `aging.by-bucket` (renamed so a layout stored for the
+old single-column table does not keep it). The export matches: SUMMARY, then `ALL CHECKS`, then one
+sheet per non-empty bucket, each built by one `addCheckSheet` with the same columns (CURRENCY, then
+the six buckets) and a bold TOTAL (PHP) row; an unreadable amount is blank, never 0.
+**Live since 2026-10-16.** Migration `20261015000100_acumatica_bill_terms` reached production
+before the deploy. **First fill run by the user that day, `--bill-refs --full` from a master
+worktree: GOLIVE 41,825 fetched, 37,822 terms rows written; MANUFACTURING 244 fetched, 181 written;
+0 errors**, snapshots `snapshots/bill-refs-<TENANT>-2026-10-16T01-1*.json`. The 12:00 and 18:00
+BILL_REFS runs keep it current. Since 2026-10-16 every BILL_REFS run that reaches the write phase
+records `due dates: N bills written` as the start of its `SyncRun.message` (problems follow after
+` | `), so `/admin/sync` shows whether due dates are being kept current; no column was added (the
+BILLS read's `runMessage` is the precedent). A run whose fetch fails has no such prefix. **Running any `scripts/*.ts` from a
+deploy worktree needs `npx prisma generate` there first** — the junctioned client is generated from
+whichever checkout last ran it, and a new model reads as `undefined` ("Cannot read properties of
+undefined (reading 'findMany')"); the first fill hit exactly that, before any write.
+
 **NUMBERING (`/numbering`) checks check consecutives per check book.** Every check of every
 status — VOIDED, CANCELLED and no-amount included — in BigInt order; each unused number between a
 book's first and last is one MISSING line, however large (user ruling 2026-10-01: "every number
 counts", not a booklet heuristic). The check book is the series key — Acumatica's CashAccount value
 (spec §D, 2026-10-02); checks with no book are a stated count. A series holds every company's
-checks in that book; the company filter selects the books a company uses and shows them whole. MISSING is bounded by the sync's scope (2026 onward, CHK only). A number Acumatica
+checks in that book; the company filter selects the books a company uses and shows them whole. MISSING is bounded by the sync's scope (2026 onward, CHK or CASH). A number Acumatica
 re-used with a trailing dot — a second payment document on the same check number, which Acumatica
 will not accept twice on one cash account — sits on `/admin/staged` as NO_CHECK_NUMBER and is shown
 as a **STAGED** line, never MISSING (`stagedSeriesNumber`, spec §C, 2026-10-02). Measured that day:
@@ -417,7 +553,10 @@ it uses `BigInt(0)` / `BigInt(1)` constants instead — keep it that way.
 **NUMBERING is also the CHECK INVENTORY (2026-11-03, spec §H).** On a book's page EVERY line — a
 held check of any status and every MISSING number — has a tick box and a remarks field
 (`components/InventoryNoteCell.tsx`), so the physical count is recorded here and not in a
-spreadsheet. **Nothing is saved as it changes**: each change is a draft in
+spreadsheet. The series table is a `KitTable` (`numbering-inventory`, spec §H8): held, staged and
+MISSING-number lines are data rows that survive the kit's filter and sort (STATUS contains MISSING
+lists the gaps; INVENTORY contains UNTICKED lists what is left to count), a long run is a band
+(`MissingRunBand`) that hides while filtered or sorted, and the table says so. **Nothing is saved as it changes**: each change is a draft in
 `components/InventoryForm.tsx`, the sticky bar counts UNSAVED CHANGES, and SAVE INVENTORY
 (`saveInventoryAction` → `recordInventoryNote` in `lib/numbering/inventory-notes.ts`, every Finance
 user, one row and one audit entry per change, answered per row, 25 s budget then "press again")
@@ -508,7 +647,7 @@ category not on it.
 | `lib/import/` | Workbook parsing → `parse.ts`, `field-sniffer.ts`, `company.ts`, `implied-status.ts`, `bills.ts`, and `upsert.ts` — the single write path where duplicate prevention lives. |
 | `lib/integrations/acumatica/` | OData reader and mapper. |
 | `lib/sync/run.ts` | Incremental sync, watermark with a 120-minute overlap. |
-| `lib/sync/bills.ts` | The BILLS read: `AP-PAYMENTS-WITH-BILLS` applications unioned into `Check.apvNumbers` by `acumaticaPaymentId`; own watermark, `runScheduledBillsSync` for the cron. |
+| `lib/sync/bills.ts` | The BILLS read: `AP-PAYMENTS-WITH-BILLS` applications unioned into `Check.apvNumbers` by `acumaticaPaymentId`; own watermark, `runScheduledBillsSync` for the cron. Since 2026-10-26 an incremental run also looks up each held check with no APV directly (`lookUpApvLess`), so a check created after the watermark passed its application is still linked. |
 | `lib/integrations/acumatica/bills.ts` | The inquiry's per-tenant columns (`BILL_FEED_COLUMNS`), `ge` date filters, read-only. |
 | `lib/sync/bill-refs.ts` | The BILL_REFS read: `AP-Bills and Adjustments` → `AcumaticaBill` (APV → real POs); own watermark, `runScheduledBillRefsSync` for the cron. |
 | `lib/integrations/acumatica/bill-refs.ts` | `extractPoNumbers` (real PO shapes only), the inquiry's one column map (both tenants), `mapBillRef`. Pure. |
@@ -518,6 +657,8 @@ category not on it.
 | `lib/sync/portal-kick.ts` | Best-effort delivery within a time budget, from an action (`afterResponse`), the cron and `/admin/portal`; never throws, `{ skipped }` when the env is unset. |
 | `lib/admin/portal-backlog.ts` | Backlog dry run for `scripts/portal-backlog.ts` (winners, superseded, `stale`) and `queueCancelledForStale` (`--queue-cancelled [--apply]`). |
 | `lib/forecast/` | Cash outflow by check date: `buckets.ts` (the ageing buckets, pure), `query.ts` (the population — live, real, with an amount), `matrix.ts` (bucket × bank and bucket × stage, centavo-exact, pure). `/forecast` and `/api/export/forecast` sit on it. Since 2026-09-12 a check's typed `expectedOutflowDate` wins over its check date, and `PlannedOutflow` lines (`lib/planned-outflow/`, `/forecast/planned`) join the population as their own PLANNED column. |
+| `lib/aging/` | AGING: `buckets.ts` (the portal's buckets, pure), `query.ts` (SIGNED, aged). `lib/aging-picker.ts` (strip, selection, pure). `/aging` and `/api/export/aging` sit on it (`lib/export/aging-workbook.ts`). |
+| `lib/notifications/` | `messages.ts` (pure: what each notice says and to whom), `notify.ts` (the one writer; `safeNotify` for callers whose work has committed), `queries.ts` (bell count, page, mark read), `cron.ts`, `ready.ts`. `/notifications` and the header's NOTIFICATIONS link sit on it. |
 | `lib/recon/` | Outstanding checks: `outstanding.ts` (the as-of rule, pure), `summary.ts` (per account, centavo-exact, pure), `query.ts` (the released population). `/recon` and `/api/export/recon` sit on it. |
 | `lib/list-sort.ts` | The list's order: params, the `cm_sort` cookie, database and in-app keys. Pure. |
 | `lib/column-filters.ts` | The filter row's `f.*` parameters: parsing, refusal, description. Pure. |
@@ -656,8 +797,23 @@ The register (`CHECK MONITORING 9.1.2026.xlsx`) has 15 sheets and 12,227 data ro
   writes them bare. `canonicalCheckNumber` reconciles them — without it the same check stores twice.
 - **`Branch` from Acumatica is space-padded** (`"A1+       "`). `orNull` trims it; an untrimmed read
   resolves every payment to no company.
-- **`PaymentMethod` decides `isCheque`**, alongside the China-branch rule. `DEBIT ADV` and `CASH` are
-  not checks and must not offer a SIGN button.
+- **`PaymentMethod` decides `isCheque`**, alongside the China-branch rule. **`CHK` and `CASH` are
+  checks; `TT`, `DEBIT ADV`, `BT`, `MC` are not** and must not offer a SIGN button. CASH was a
+  non-check until 2026-10-23, when the user ruled: *"all the AP issued CV will be paid thru checks,
+  its either will be checks pay to cash or to be encashed"* — and the feed filter in `lib/sync/run.ts`
+  asked for CHK only, so `CV-ST021234` (`6000354949`, BPI-S-8879, 19 Oct, CASH) was never fetched,
+  never held, never in the portal. Measured that day on Go-Live 2026: CHK 13,496, TT 1,680, CASH 271
+  (242 PCF-SITIO petty-cash replenishments numbered `PCF26-xxxx`, 29 on bank books, 26 with a plain
+  check number — 21 of those held from the register, `6000353877` and `6000354949` not held at all);
+  Manufacturing 1 CASH. **The user ruled the PCF-SITIO ones are checks too.** Since the sync reads
+  `(PaymentMethod eq 'CHK' or PaymentMethod eq 'CASH')` — the payments inquiry accepts that `or`,
+  measured, unlike the bills inquiry — and `CHEQUE_PAYMENT_METHODS` in `map.ts` is the same pair;
+  keep the two in step. A CASH check numbered `PCF26-xxxx` is not a bare number, so it stages
+  NO_CHECK_NUMBER like the 275 CHK payments numbered that way already do (2026-09-04 ruling, not
+  revisited) — it does not appear on the dashboard. The BILLS read needs no change: its `CHK` is
+  the DOCUMENT type (Payment), and CV-ST021234's application to AP-ST045103 maps as it is. A full
+  re-read (`scripts/sync.ts <TENANT> --full`) is what brings the CASH checks in; the incremental
+  read sees only those modified after the watermark.
 - **Acumatica's `CashAccount` column is the CHECK BOOK, not this system's cash account.** It states
   `BPI-S-4636`, `MBT-A-4155`, `BDO-A-3838` — the eight `CheckBook` codes the register used — while
   `CashAccount` here holds six register labels (`BPI STK`, `MBTC A1+`, …). Until 2026-10-02 `map.ts`
@@ -681,7 +837,7 @@ The register (`CHECK MONITORING 9.1.2026.xlsx`) has 15 sheets and 12,227 data ro
   **blocked READY FOR RELEASE on 930 of the 1,370 SIGNED/pending checks**. Where a check has both,
   the book wins (follow Acumatica). The forecast's bank split, `/vouchers`' BANK column and portal
   event bodies still read the label first and fall back to the book.
-  `PCF-SITIO`, `PAYROLL`, `PCF-SILANG`, `RSB-S-0869`, `MBTC-S-988` are no check book.
+  `PCF-SITIO`, `PAYROLL`, `PCF-SILANG`, `RSB-S-0869`, `MBTC-S-988` are no check book. **`PAYROLL` is the clearing account, a BPI CASH ACCOUNT since 2026-10-16** (user ruling; companyId STK decides nothing), and `MBT-S-9048` an MBTC check book: `scripts/add-clearing-accounts.ts <TENANT> [--apply]` (`lib/admin/clearing-accounts.ts`) created both and, run that day by Claude on the user's "do it", linked 818 PAYROLL checks (GOLIVE 784, MANUFACTURING 34; one `cash_account_linked_from_acumatica` row each) and set 10 on MBT-S-9048, snapshots `snapshots/clearing-accounts-<TENANT>-2026-10-16T03-*.json`. Before it those checks had no account, so READY FOR RELEASE and MARK RELEASED refused them.
 - A voided check is **two feed rows** under one reference; the original's positive amount survives.
   **`collapseVoidPairs` pairs on company + payment reference + check number** (2026-10-06). Keyed on
   the number alone it treated a RE-ISSUE on the same number as the void's other half and flagged the
@@ -691,8 +847,8 @@ The register (`CHECK MONITORING 9.1.2026.xlsx`) has 15 sheets and 12,227 data ro
   payments took turns writing over one check and the voided one voided the live one. Measured that day:
   5 Go-Live numbers — void + re-issue `1791361374`, `1791361447`, `1791361448`; two live payments
   `6000338856`, `6000349314`. Fix the number in Acumatica, or settle it by hand.
-- **A payment that leaves the sync's scope is never read again** (2026 + `CHK`): `PCF26-0244` became
-  CASH in Acumatica and stayed a SIGNATURE_PENDING check here. `scripts/sync.ts <TENANT> --full`
+- **A payment that leaves the sync's scope is never read again** (2026 + CHK-or-CASH): `PCF26-0244` became
+  CASH in Acumatica (a non-check until 2026-10-23) and stayed a SIGNATURE_PENDING check here. `scripts/sync.ts <TENANT> --full`
   now (a) snapshots the tenant's checks to `snapshots/payments-full-<tenant>-<ts>.json` first and
   (b) re-reads, one request per reference, every LIVE check whose payment is no longer in the scoped
   feed (`lib/sync/out-of-scope.ts`), through `upsertCheck` — status untouched. `--full --dry-run` lists them.
@@ -756,7 +912,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**1,918 tests across 130 files** (measured, full run 2026-10-05, 52.0 minutes, 0 failures, on
+**2,065 tests across 137 files** (measured, full run 2026-10-10, 53.9 minutes, on `feature/self-registration-wt` before its merge: 2,063 passed and 2 failed on a Neon connection drop in `sync/portal-kick`, which passed 7/7 when re-run alone; self-registration added `auth/registration-throttle` and `actions/signup`, and extended `admin/users`, `admin/user-actions`, `settings/registry`, `public-paths`)  **1,918 tests across 130 files** (measured, full run 2026-10-05, 52.0 minutes, 0 failures, on
 `feature/shared-books` after merging master 7591c6d — shared check books on top of the PO work; the
 meta-tags commit 3b341f7 merged after it touches no tested module and passed tsc and the pure tests)
 — 1,913 across 130 (measured 2026-10-05 on `feature/po-from-acumatica` after merging
@@ -841,11 +997,13 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    **To go live:** set `CRON_SECRET` in Vercel, `node scripts/migrate.mjs prod --confirm`,
    `npx vercel --prod`, then trigger the job once from the Vercel dashboard and confirm two
    SCHEDULED rows on `/admin/sync`. Until that is done, item 1 is still open in production.
-   **Auto-sign** (rewritten 2026-10-01, spec `2026-10-01-signing-schedule-apv-and-table-design.md`): the cron runs at 12:00 and 18:00 Manila (`0 4 * * *`, `0 10 * * *`); on a Manila Tuesday only, an Acumatica check first read on the Monday before and still at SIGNATURE_PENDING becomes SIGNED (`signedById` null, one `auto_signed` row, no portal event). Every other pending check is signed by SIGN ALL on the SIGNATURE PENDING list (server-confirmed like RELEASE ALL, every Finance user). `SIGNED -> SIGNATURE_PENDING` is `revertSignature`, every Finance user, reason optional, one `signature_reverted` row; a reverted check is never auto-signed again. Setting `autoSign.mondayEnabled` (1/0) replaces `autoSign.afterDays`. Every run writes one `auto_sign_run` row (read by LAST AUTO-SIGN on `/admin/sync`: "N Monday check(s) signed", "not a Tuesday - nothing due", "switched off in settings") - `IDLE` on a non-Tuesday; a FAILED run turns the cron response 500, and the route's 50-second time budget still applies. Nothing retries a failed run by hand: the 18:00 run retries what 12:00 left (same Monday window); anything left after 18:00 waits for SIGN ALL, and the FAILED message says which (`LAST_RUN_UTC_HOUR` in `lib/sync/auto-sign.ts`, tied to `vercel.json`). Rule 4 is untouched: the sync never writes status.
+   **Auto-sign** (rewritten 2026-10-16, spec `2026-10-16-auto-sign-monday-and-tuesday-design.md`, replacing the 2026-10-01 Monday-only rule): the cron runs at 12:00 and 18:00 Manila (`0 4 * * *`, `0 10 * * *`); on a Manila Monday it signs every SIGNATURE_PENDING Acumatica check first read before that Monday (last Tuesday to Sunday and any older backlog — user ruling 2026-10-16), and on a Manila Tuesday every one first read before that Tuesday (Monday's checks and any Monday leftover), so Monday's checks sign on Tuesday and the rest on the next Monday (`signedById` null, one `auto_signed` row with `rule: 'WEEKLY'` and `runDay`, no portal event; rows written before 2026-10-16 say `rule: 'MONDAY'`). Measured 2026-10-16 before the change: 727 pending, not one `marked_signed` row ever — SIGN ALL had never been pressed. SIGN ALL on the SIGNATURE PENDING list still signs sooner (server-confirmed like RELEASE ALL, every Finance user). `SIGNED -> SIGNATURE_PENDING` is `revertSignature`, every Finance user, reason optional, one `signature_reverted` row; a reverted check is never auto-signed again. Setting `autoSign.mondayEnabled` (1/0, key kept, label "AUTO-SIGN ACUMATICA CHECKS ON MONDAY AND TUESDAY"). Every run writes one `auto_sign_run` row (read by LAST AUTO-SIGN on `/admin/sync`: "N check(s) signed", "not a Monday or Tuesday - nothing due", "switched off in settings") - `IDLE` Wednesday to Sunday; a FAILED run turns the cron response 500, and the route's 50-second time budget still applies. A run cut off by the budget is continued by the next run — the 18:00 run, else Tuesday's for Monday, else next Monday's for Tuesday — and the FAILED message says which (`LAST_RUN_UTC_HOUR` in `lib/sync/auto-sign.ts`, tied to `vercel.json`). Rule 4 is untouched: the sync never writes status.
+   **Signing is MANUAL since 2026-10-22 (user ruling): "We will manually transfer from pending signature to signed."** Auto-sign is to be switched off with `autoSign.mondayEnabled = 0` on `/admin/settings` (the code is unchanged; the setting is the switch). The same day `scripts/revert-recent-signed.ts 2026-10-19 --apply` (run by the user) returned the 48 SIGNED checks first read since 19 Oct — all auto-signed, all first read 19 Oct — to SIGNATURE_PENDING through `revertSignature`, one `signature_reverted` row each, snapshot `snapshots/revert-recent-signed-2026-10-21T23-47-59-581Z.json`; 0 left. Do not re-enable auto-sign without asking. **The setting was not enough: on Tuesday 2026-10-27 the 12:00 run signed 137 of Monday's checks** (the switch had never been set to 0, or was reset). All 137 were returned to SIGNATURE_PENDING the same day by `scripts/revert-recent-signed.ts 2026-10-26 --apply` (snapshot `snapshots/revert-recent-signed-2026-10-27T08-11-35-599Z.json`) — and the user then said not to revert them, so putting those 137 back to SIGNED is an open item, theirs to call. **User ruling 2026-10-27: the rule is off in code.** `runAutoSign` records DISABLED and signs nothing, `autoSign.mondayEnabled` is gone from the registry (a stored row is ignored), and /admin/settings has no WORKFLOW group. `lib/domain/auto-sign.ts` and `listAutoSignCandidates` stay as the record of the retired rule; nothing signs from them.
    SIGN ALL and RELEASE ALL share one unexported helper `runConfirmedAll` (`app/checks/bulk-actions.ts`) and one client form `components/ConfirmAllForm.tsx`; the confirm block stays mounted while `?confirm=` is set, so the success report stays on screen after a run. SIGN ALL is offered only on the SIGNATURE PENDING list with no search and the incomplete toggle off; its set excludes non-checks (DEBIT ADV, CASH) and the page states how many. The bulk bar's REVERT TO PENDING has its own optional reason box.
-2. **One active FINANCE_ADMIN**, of three active users. This stopped being housekeeping the moment
-   admin-only actions shipped (revert availability; the release reversal below). One forgotten
-   password locks administration, and one has already been forgotten on this system.
+2. ~~**One active FINANCE_ADMIN**, of three active users.~~ **Closed: the user reports three active
+   FINANCE_ADMINs (2026-10-16).** It mattered because admin-only actions (revert availability, the
+   release reversal below) and user administration would lock with one forgotten password — which
+   had already happened once. The last active admin still cannot be deactivated or demoted (rule 6).
 3. **The audit trail can be read** (built 2026-09-11): `/admin/audit`, FINANCE_ADMIN only. It opens
    on people's actions — measured that day, 4 of 65,269 rows; the rest are imports, backfills and
    the sync — with SYSTEM ROWS one toggle away, because the 10 September restorations are SYSTEM
@@ -854,8 +1012,16 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    the page says so), Manila dates. Keyset pagination on `(createdAt, id)`; four indexes in
    `20260911000200_audit_log_indexes`, which must reach production before the deploy. Excel extract
    of the filtered range at `/api/export/audit`. `writeAudit` remains the only writer.
-4. **No notifications at all.** A failed sync is silent; nobody is told a check is ready or that a
-   supplier booked a pickup.
+4. **Notifications are in-app** (built 2026-10-16, spec `2026-10-16-notifications-design.md`): a
+   NOTIFICATIONS link with the unread count in the header and `/notifications`. One `Notification`
+   row per recipient. FINANCE_ADMINs are told when a scheduled read (payments, BILLS, BILL_REFS) or
+   auto-sign FAILS or is REFUSED (every run), when a tenant goes past `sync.staleAfterHours` (once
+   per stale stretch, `dedupeKey`), and when a portal event PARKS (in `settle`'s transaction, once
+   per event). Every other active user is told once per READY FOR RELEASE action (single or bulk,
+   the actor excluded). No email. Not notified, and not reachable: a supplier's pickup booking
+   (rule 12). If the cron stops running, the stale notice cannot fire; the dashboard's stale line
+   is the backstop. Migration `20261016000100_notification_recipients` must reach production
+   before the deploy (the header queries it on every page).
 5. **3,718 staged rows with no owner** — no ageing, no alert, nobody assigned.
 6. **"Acumatica wins" is not enforced in code.** See the amounts note above.
 7. **No general snapshot step before a bulk write.** The 10 September recovery depended on one

@@ -53,16 +53,24 @@ describe('buildPortalEventBody', () => {
     expect(buildPortalEventBody({ id: 'e', kind: 'REVERT' }, check({ apvNumbers: [] })).apvs).toEqual(['AP-1001', 'AP-1002'])
   })
 
-  it('refuses an INTERNAL check before building anything', () => {
-    expect(() => buildPortalEventBody({ id: 'e', kind: 'MARK_AVAILABLE' }, check({ eligibility: 'INTERNAL' })))
-      .toThrow(/INTERNAL/)
-    try {
-      buildPortalEventBody({ id: 'e', kind: 'MARK_AVAILABLE' }, check({ eligibility: 'INTERNAL' }))
-      expect.fail('expected buildPortalEventBody to throw')
-    } catch (err) {
-      expect(err).toBeInstanceOf(PortalPayloadError)
-      expect((err as PortalPayloadError).code).toBe('INTERNAL')
+  it('refuses an INTERNAL check for every kind that would tell a payee something', () => {
+    for (const kind of ['MARK_AVAILABLE', 'REVERT', 'RECEIPT'] as const) {
+      expect(() => buildPortalEventBody({ id: 'e', kind }, check({ eligibility: 'INTERNAL' }))).toThrow(PortalPayloadError)
     }
+  })
+
+  // spec 2026-10-19 (Supplier Portal docs/superpowers/specs/2026-10-19-cm-internal-release-quiet-design.md)
+  it('sends RELEASED, RELEASE_REVERSED and CANCELLED for an INTERNAL check, flagged internal', () => {
+    const internal = check({ eligibility: 'INTERNAL', releasedAt: new Date('2026-10-05T02:00:00Z') })
+    expect(buildPortalEventBody({ id: 'e', kind: 'RELEASED' }, internal)).toMatchObject({ kind: 'RELEASED', internal: true, releaseDate: '2026-10-05' })
+    expect(buildPortalEventBody({ id: 'e', kind: 'CANCELLED' }, internal)).toMatchObject({ kind: 'CANCELLED', internal: true })
+    const reversed = buildPortalEventBody({ id: 'e', kind: 'RELEASE_REVERSED' }, check({ eligibility: 'INTERNAL', availablePickupDate: null }))
+    expect(reversed).toMatchObject({ kind: 'RELEASE_REVERSED', internal: true })
+    expect(reversed).not.toHaveProperty('availablePickupDate')
+  })
+
+  it('never flags a SUPPLIER check internal', () => {
+    expect(buildPortalEventBody({ id: 'e', kind: 'CANCELLED' }, check())).not.toHaveProperty('internal')
   })
 
   it('MARK_AVAILABLE with no availablePickupDate throws PortalPayloadError MISSING_DATE', () => {

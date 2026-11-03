@@ -8,10 +8,10 @@ import {
 } from '@/lib/queries'
 import { resolveDashboardQuery, type RawDashboardSearchParams } from '@/lib/dashboard-params'
 import { SORT_COOKIE } from '@/lib/list-sort'
-import { activeFilterColumns, columnParamsOf } from '@/lib/column-filters'
+import { columnParamsOf } from '@/lib/column-filters'
 import {
   clearFiltersHref, dashboardScreen, describeView, incompleteHref,
-  cardHref, releaseConfirmHref, releaseCancelHref, signAllConfirmHref, signAllCancelHref, sortLinks, totalsHref,
+  cardHref, releaseConfirmHref, releaseCancelHref, signAllConfirmHref, signAllCancelHref, totalsHref,
   signAllOffered as isSignAllOffered,
 } from '@/lib/dashboard-view'
 import { AppHeader } from '@/components/AppHeader'
@@ -29,6 +29,7 @@ import { CheckTable } from '@/components/CheckTable'
 import { getSyncOverview } from '@/lib/admin/sync-overview'
 import { describeStaleness } from '@/lib/sync/staleness'
 import { SyncStatusLine } from '@/components/SyncStatusLine'
+import { DashboardSyncControls } from '@/components/DashboardSyncControls'
 import { loadSettings } from '@/lib/settings/read'
 import { formatMoney } from '@/lib/money'
 
@@ -163,7 +164,8 @@ export default async function DashboardPage({
 
         {/* When Acumatica was last read. Above the cards, because every number
             on them is only as current as this line says. */}
-        <SyncStatusLine staleness={staleness} isAdmin={user.role === 'FINANCE_ADMIN'} />
+        <SyncStatusLine staleness={staleness} />
+        <DashboardSyncControls />
 
         {/* The day's job, and the ONE place READY FOR RELEASE is shown. */}
         <DashboardHero
@@ -320,7 +322,7 @@ export default async function DashboardPage({
           )}
           {matching > pendingSign.count && (
             <p className="mt-2 text-xs text-slate-500">
-              {(matching - pendingSign.count).toLocaleString('en-PH')} NON-CHECK PAYMENT(S) (DEBIT ADV, CASH) IN THIS VIEW ARE NOT SIGNED.
+              {(matching - pendingSign.count).toLocaleString('en-PH')} NON-CHECK PAYMENT(S) (DEBIT ADV, TT) IN THIS VIEW ARE NOT SIGNED.
             </p>
           )}
         </div>
@@ -418,17 +420,16 @@ export default async function DashboardPage({
           toTableRow in lib/queries.ts. */}
       <CheckTable
         rows={rows.map(toTableRow)}
-        canRelease={user.role === 'FINANCE_ADMIN'}
+        // MARK RELEASED on the list is every Finance user's (client, 2026-10-16).
+        canRelease
         bulkCap={settings.values['caps.bulkSelection']}
         sort={sort}
-        sortLinks={sortLinks(selection, activeSort)}
         filters={{
           options,
           values: columnValues,
           errors: filterErrors,
           showStatus: showAll && !status,
           showReleasedRange: status === 'RELEASED' || showAll,
-          filteredColumns: activeFilterColumns(columnValues),
         }}
       />
     </main>

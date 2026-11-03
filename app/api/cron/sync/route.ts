@@ -11,6 +11,7 @@ import {
 } from '@/lib/sync/bill-refs'
 import { runAutoSign } from '@/lib/sync/auto-sign'
 import { kickPortalDelivery } from '@/lib/sync/portal-kick'
+import { notifyCronResults } from '@/lib/notifications/cron'
 
 /**
  * THE SCHEDULED SYNC. Vercel calls this twice a day — `crons` in vercel.json,
@@ -56,13 +57,18 @@ import { kickPortalDelivery } from '@/lib/sync/portal-kick'
  * BILL_REFS row with no watermark; the next run catches up), but one begun
  * before that — or an unusually large incremental BILLS read — can still run
  * long enough to push auto-sign past its 50 s deadline: auto-sign then
- * records FAILED, the response is 500, and the 18:00 run retries what 12:00
+ * records FAILED, the response is 500, and the next run continues what it
  * left. That is the same exposure BILLS already had.
  *
- * Then AUTO-SIGN (lib/sync/auto-sign.ts): on a Manila Tuesday, the Acumatica
- * cheques first read on the Monday become SIGNED; on any other day the run
- * records IDLE. It runs even when a tenant failed, and its own failure also
- * turns the response 500.
+ * Then AUTO-SIGN (lib/sync/auto-sign.ts): on a Manila Monday or Tuesday, every
+ * due Acumatica check first read before that day becomes SIGNED; on any other
+ * day the run records IDLE. It runs even when a tenant failed, and its own
+ * failure also turns the response 500.
+ *
+ * Then NOTIFICATIONS (lib/notifications/cron.ts): every FAILED or REFUSED
+ * read and an auto-sign FAILED notify the active FINANCE_ADMINs, and a tenant
+ * past `sync.staleAfterHours` notifies them once per stale stretch. Never a
+ * failure of the cron.
  */
 
 // ExcelJS is not involved, but the Prisma client is Node-only all the same.
@@ -175,6 +181,11 @@ export async function GET(request: Request): Promise<Response> {
   // record of what is left, rather than being killed by the platform with
   // nothing written at all.
   const autoSign = await runAutoSign(prisma, { now, deadline: new Date(now.getTime() + 50_000) })
+
+  // Tell the admins what failed, and whether a tenant has gone stale (spec
+  // 2026-10-16-notifications-design.md). Before the portal kick so the kick's
+  // budget is measured after it; never throws, never changes the status code.
+  await notifyCronResults(prisma, { outcomes, bills, billRefs, autoSign }, new Date())
 
   // The outbox: retries and the backlog. Whatever budget is left inside the
   // route's 60s ceiling, minus room for the response.

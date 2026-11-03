@@ -218,14 +218,18 @@ describe('bulkReadyForReleaseAction', () => {
 })
 
 describe('bulkReleaseAction', () => {
-  it('refuses a FINANCE_USER by returning a result, never by throwing a redirect', async () => {
+  it('releases for a FINANCE_USER too (client, 2026-10-16)', async () => {
     const { bulkReleaseAction } = await import('@/app/checks/bulk-actions')
     const a = await makeCheck({ status: 'READY_FOR_RELEASE' })
+    const s = await makeCheck({ status: 'SIGNED' })
 
-    const result = await bulkReleaseAction(fd([a.id]))
+    const result = await bulkReleaseAction(fd([a.id, s.id]))
 
-    expect(result).toEqual({ ok: false, message: 'Only a Finance Admin can mark a check RELEASED.' })
-    expect((await testDb.check.findUniqueOrThrow({ where: { id: a.id } })).status).toBe('READY_FOR_RELEASE')
+    expect(result.ok && result.succeeded).toBe(2)
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: a.id } })).status).toBe('RELEASED')
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: s.id } })
+    expect(after.status).toBe('RELEASED')
+    expect(after.releasedById).toBe(currentUser.id)
   })
 
   it('releases the selected checks for a FINANCE_ADMIN', async () => {
@@ -233,7 +237,7 @@ describe('bulkReleaseAction', () => {
     currentUser.role = 'FINANCE_ADMIN'
     const a = await makeCheck({ status: 'READY_FOR_RELEASE' })
     const b = await makeCheck({ status: 'SCHEDULED' })
-    const notReady = await makeCheck({ status: 'SIGNED' })
+    const notReady = await makeCheck({ status: 'CANCELLED' })
 
     const result = await bulkReleaseAction(fd([a.id, b.id, notReady.id]))
 
@@ -243,7 +247,93 @@ describe('bulkReleaseAction', () => {
     expect(result.failed).toBe(1)
     expect((await testDb.check.findUniqueOrThrow({ where: { id: a.id } })).status).toBe('RELEASED')
     expect((await testDb.check.findUniqueOrThrow({ where: { id: b.id } })).status).toBe('RELEASED')
-    expect(outcomeFor(result, notReady.id).message).toBe('Cannot move a check from SIGNED to RELEASED.')
+    expect(outcomeFor(result, notReady.id).message).toBe('Cannot move a check from CANCELLED to RELEASED.')
+  })
+
+  /**
+   * A SIGNED check handed over directly (client, 2026-10-09). It is readied and
+   * then released, each through its own domain action — so the READY guards
+   * still apply, the audit shows both steps, and the receipt rides the release.
+   */
+  it('releases a SIGNED check directly, readying it first, with an AR receipt recorded here and no portal RECEIPT', async () => {
+    const { bulkReleaseAction } = await import('@/app/checks/bulk-actions')
+    currentUser.role = 'FINANCE_ADMIN'
+    const signed = await makeCheck({ status: 'SIGNED', apvNumbers: ['AP-ST000001'] })
+
+    const result = await bulkReleaseAction(fd([signed.id], rk(signed.id, 'AR-0042', 'AR')))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.succeeded).toBe(1)
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })
+    expect(after.status).toBe('RELEASED')
+    expect(after.orNumber).toBe('AR-0042')
+    expect(after.receiptType).toBe('AR')
+    expect(after.readyAt).not.toBeNull()
+    expect(after.remarks).toBe('Released directly from SIGNED')
+    const actions = (await testDb.auditLog.findMany({ where: { checkId: signed.id }, orderBy: { createdAt: 'asc' } })).map((r) => r.action)
+    expect(actions).toEqual(expect.arrayContaining(['ready_for_release', 'released', 'receipt_recorded']))
+    // The portal accepts OR and CR only: an AR is kept here and never queued.
+    expect(await testDb.portalEvent.count({ where: { checkId: signed.id, kind: 'RECEIPT' } })).toBe(0)
+  })
+
+  it('still queues a RECEIPT for a SIGNED check released directly with an OR', async () => {
+    const { bulkReleaseAction } = await import('@/app/checks/bulk-actions')
+    currentUser.role = 'FINANCE_ADMIN'
+    const signed = await makeCheck({ status: 'SIGNED', apvNumbers: ['AP-ST000002'] })
+
+    await bulkReleaseAction(fd([signed.id], rk(signed.id, 'OR-77', 'OR')))
+
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })).status).toBe('RELEASED')
+    expect(await testDb.portalEvent.count({ where: { checkId: signed.id, kind: 'RECEIPT' } })).toBe(1)
+  })
+
+  it('refuses a SIGNED check the READY guards refuse, leaving it SIGNED', async () => {
+    const { bulkReleaseAction } = await import('@/app/checks/bulk-actions')
+    currentUser.role = 'FINANCE_ADMIN'
+    const noPayee = await makeCheck({ status: 'SIGNED', payeeName: null })
+
+    const result = await bulkReleaseAction(fd([noPayee.id]))
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.failed).toBe(1)
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: noPayee.id } })).status).toBe('SIGNED')
+  })
+
+  /**
+   * GENERATED and SIGNATURE PENDING too (client, 2026-10-16): signed, readied and
+   * released in one transaction, so a refusal at any step moves nothing.
+   */
+  it.each(['SIGNATURE_PENDING', 'GENERATED'] as const)('releases a %s check directly, signing and readying it first', async (status) => {
+    const { bulkReleaseAction } = await import('@/app/checks/bulk-actions')
+    currentUser.role = 'FINANCE_ADMIN'
+    const c = await makeCheck({ status, apvNumbers: ['AP-ST000003'] })
+
+    const result = await bulkReleaseAction(fd([c.id]))
+
+    expect(result.ok && result.succeeded).toBe(1)
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: c.id } })
+    expect(after.status).toBe('RELEASED')
+    expect(after.signedById).toBe(currentUser.id)
+    expect(after.readyAt).not.toBeNull()
+    expect(after.remarks).toBe(`Released directly from ${status}`)
+    const actions = (await testDb.auditLog.findMany({ where: { checkId: c.id } })).map((r) => r.action)
+    expect(actions).toEqual(expect.arrayContaining(['marked_signed', 'ready_for_release', 'released']))
+  })
+
+  it('refuses a SIGNATURE_PENDING check the READY guards refuse, leaving it unsigned', async () => {
+    const { bulkReleaseAction } = await import('@/app/checks/bulk-actions')
+    currentUser.role = 'FINANCE_ADMIN'
+    const noPayee = await makeCheck({ status: 'SIGNATURE_PENDING', payeeName: null })
+
+    const result = await bulkReleaseAction(fd([noPayee.id]))
+
+    expect(result.ok && result.failed).toBe(1)
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: noPayee.id } })
+    expect(after.status).toBe('SIGNATURE_PENDING')
+    expect(after.signedById).toBeNull()
+    expect(await testDb.auditLog.count({ where: { checkId: noPayee.id, action: 'marked_signed' } })).toBe(0)
   })
 
   /**
@@ -281,7 +371,7 @@ describe('bulkReleaseAction', () => {
 
     const result = await bulkReleaseAction(fd([a.id, b.id], { [`orNumber:${a.id}`]: '4471' }))
 
-    expect(result).toEqual({ ok: false, message: 'Choose OR or CR for every receipt reference you typed. Nothing was saved.' })
+    expect(result).toEqual({ ok: false, message: 'Choose the receipt type (OR, CR, AR, PR, SI or OTHERS) for every reference you typed. Nothing was saved.' })
     for (const id of [a.id, b.id]) {
       expect((await testDb.check.findUniqueOrThrow({ where: { id } })).status).toBe('READY_FOR_RELEASE')
     }
@@ -896,5 +986,31 @@ describe('bulkRevertToPendingAction', () => {
     expect(result.message).toContain(String(MAX_BULK_SELECTION))
     expect((await testDb.check.findUniqueOrThrow({ where: { id: real.id } })).status).toBe('SIGNED')
     expect(await testDb.auditLog.count({ where: { action: 'signature_reverted' } })).toBe(0)
+  })
+})
+
+describe('bulkReadyForReleaseAction: notifications', () => {
+  it('notifies every other active user once for the batch, counting only checks that moved', async () => {
+    const { bulkReadyForReleaseAction } = await import('@/app/checks/bulk-actions')
+    const other = await makeUser('FINANCE_ADMIN')
+    const a = await makeCheck({ status: 'SIGNED' })
+    const b = await makeCheck({ status: 'SIGNED' })
+    const refused = await makeCheck({ status: 'SIGNATURE_PENDING' })
+
+    const result = await bulkReadyForReleaseAction(fd([a.id, b.id, refused.id], { availablePickupDate: '2026-09-10' }))
+    expect(result.ok && result.succeeded).toBe(2)
+
+    const rows = await testDb.notification.findMany()
+    expect(rows.map((r) => r.userId)).toEqual([other.id]) // the actor is not told of their own action
+    expect(rows[0]).toMatchObject({ kind: 'READY_FOR_RELEASE', link: '/?status=READY_FOR_RELEASE' })
+    expect(rows[0].message).toBe('Finance User marked 2 checks READY FOR RELEASE: ₱395,430.84')
+  })
+
+  it('sends nothing when no check moved', async () => {
+    const { bulkReadyForReleaseAction } = await import('@/app/checks/bulk-actions')
+    await makeUser('FINANCE_ADMIN')
+    const refused = await makeCheck({ status: 'SIGNATURE_PENDING' })
+    await bulkReadyForReleaseAction(fd([refused.id], { availablePickupDate: '2026-09-10' }))
+    expect(await testDb.notification.count()).toBe(0)
   })
 })

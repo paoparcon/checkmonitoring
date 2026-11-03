@@ -1,3 +1,4 @@
+import { FilterForm } from '@/components/FilterForm'
 import Link from 'next/link'
 import { requireAdmin } from '@/lib/auth'
 import { prisma } from '@/lib/db'
@@ -55,7 +56,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
 
   return (
     <div className="space-y-6">
-      <form className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline" method="get">
+      <FilterForm className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline">
         <label className="flex h-10 items-center gap-2 rounded-lg border border-hairline bg-white px-3 text-sm">
           <input type="checkbox" name="system" value="1" defaultChecked={filters.system} />
           SYSTEM ROWS
@@ -73,7 +74,7 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
         <input name="to" type="date" defaultValue={raw.to ?? ''} className={FIELD} />
         <button type="submit" className="h-10 rounded-lg bg-navy px-4 text-sm font-medium tracking-wide text-white transition hover:bg-navy/90">APPLY</button>
         {anyFilter && <Link href={AUDIT_PATH} className="text-sm text-slate-500 underline underline-offset-2">RESET</Link>}
-      </form>
+      </FilterForm>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
@@ -99,14 +100,21 @@ export default async function AuditPage({ searchParams }: { searchParams: Promis
         </div>
       </div>
 
-      {page.rows.length === 0 ? (
-        <EmptyState title={anyFilter ? 'NO ROWS MATCH' : 'NOBODY HAS DONE ANYTHING YET'}>
-          {anyFilter
-            ? filteredEmptyMessage
-            : "No signature, release, reversal or user change has been recorded by a person. Tick SYSTEM ROWS to see what the imports and the sync have done."}
+      {page.rows.length === 0 && !anyFilter ? (
+        <EmptyState title="NOBODY HAS DONE ANYTHING YET">
+          No signature, release, reversal or user change has been recorded by a person. Tick SYSTEM ROWS to see what the imports and the sync have done.
         </EmptyState>
       ) : (
-        <AuditTable rows={page.rows} />
+        <AuditTable
+          rows={page.rows}
+          actions={actions}
+          users={users.map((u) => ({ id: u.id, name: u.name }))}
+          values={{
+            action: filters.action ?? '', user: filters.userId ?? '', check: filters.checkNumber ?? '',
+            from: raw.from ?? '', to: raw.to ?? '',
+          }}
+          empty={filteredEmptyMessage}
+        />
       )}
 
       <div className="flex items-center justify-between text-sm">

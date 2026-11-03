@@ -29,9 +29,10 @@ import {
 } from '@/lib/admin/ready-upload'
 
 /**
- * The two Finance Admin actions.
+ * SYNC NOW (every Finance user, since 2026-10-15) and the workbook import
+ * (Finance Admin only).
  *
- * **Both refuse a FINANCE_USER by RETURNING a result, never by redirecting.**
+ * **The import refuses a FINANCE_USER by RETURNING a result, never by redirecting.**
  * `requireAdmin` redirects, and Next implements a redirect by throwing — which
  * the catch below would then have to re-throw out of a form submission that had
  * already been accepted. `revertAction` established the pattern for exactly
@@ -39,7 +40,6 @@ import {
  * an explicit role test that returns.
  */
 
-const ADMIN_ONLY_SYNC = 'Only a Finance Admin can run a sync.'
 const ADMIN_ONLY_IMPORT = 'Only a Finance Admin can import a workbook.'
 const ADMIN_ONLY_READY_UPLOAD = 'Only a Finance Admin can upload a ready-for-release list.'
 
@@ -94,8 +94,10 @@ function failure(e: unknown, message: string): { ok: false; message: string } {
 }
 
 export async function syncNowAction(formData: FormData): Promise<SyncNowResult> {
-  const user = await requireUser()
-  if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY_SYNC }
+  // Every Finance user (user request 2026-10-15): a read of Acumatica changes no
+  // status (rule 4), and the sync is the only way a check arrives, so a stale
+  // board should not wait for an admin. `requireUser` still refuses the signed-out.
+  await requireUser()
 
   // Stated, never inferred and never defaulted: Go-Live `ST` is Starkson
   // Packaging and MANUFACTURING `ST` is Starkson Paper and Plastic, so a run

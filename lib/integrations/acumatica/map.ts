@@ -53,19 +53,33 @@ const VOIDED_STATUS = 'Voided'
 const NON_CHEQUE_BRANCHES: ReadonlySet<string> = new Set(['DG', 'SH'])
 
 /**
- * The feed's own word for a payment made by cheque, and the second half of the
- * `isCheque` rule (Finance ruling of 2026-09-04). Measured over the live feed:
+ * The feed's words for a payment made by check, and the second half of the
+ * `isCheque` rule. Finance ruled on 2026-09-04 that only `CHK` is a check;
+ * the user widened that on 2026-10-23: **every AP voucher is paid by a
+ * physical check, and `CASH` is the method for a check payable to cash or to
+ * be encashed** — still paper that is signed and handed over. Measured that
+ * day over the 2026 feed (Go-Live):
  *
- *     1785  CHK        bank-prefixed cheque no.
- *       82  CHK        bare cheque no.
- *       80  CHK        free text
- *       35  DEBIT ADV  free text
- *        5  CASH
+ *     13,496  CHK
+ *      1,680  TT         wire — no document
+ *        271  CASH       242 on PCF-SITIO (`PCF26-0226`), 29 on bank books
+ *          3  BT
+ *          1  DEBIT ADV
+ *          1  MC
  *
- * The 40 non-`CHK` payments still import and stay visible — they are real money
- * that moved — but they never had a physical document, so the `NOT_A_CHEQUE`
- * guard must block signing and releasing them. Offering Finance a SIGN button
- * for a debit advice is the failure this rule exists to prevent.
+ * Under `CHK` only, `CV-ST021234` (6000354949 on BPI-S-8879, 19 Oct) was never
+ * fetched, so it never reached the app or the portal; 6000353877 the same.
+ * While the register ran it carried such checks by hand, which is why 21 of
+ * the 26 bank-book CASH checks were held — all from the register.
+ *
+ * A CASH check with the petty-cash fund's own numbering is still keyed like
+ * any check: `PCF26-0226` is not a bare number, so it stages NO_CHECK_NUMBER
+ * exactly as the 275 CHK payments numbered that way already do.
+ *
+ * The wires and debit advices still import and stay visible — they are real
+ * money that moved — but they never had a physical document, so the
+ * `NOT_A_CHEQUE` guard must block signing and releasing them. Offering Finance
+ * a SIGN button for a debit advice is the failure this rule exists to prevent.
  *
  * This is IN ADDITION TO the branch rule above, never instead of it: the two
  * answer different questions, and a DG payment stays a non-cheque whatever its
@@ -73,7 +87,7 @@ const NON_CHEQUE_BRANCHES: ReadonlySet<string> = new Set(['DG', 'SH'])
  * not a cheque, which is the only safe direction — it withholds a button rather
  * than offering one over money with no document behind it.
  */
-const CHEQUE_PAYMENT_METHOD = 'CHK'
+const CHEQUE_PAYMENT_METHODS: ReadonlySet<string> = new Set(['CHK', 'CASH'])
 
 /**
  * A decimal string, or null. Never a JS number and never a round trip through
@@ -137,8 +151,9 @@ export function mapPayment(row: unknown, tenant: AcumaticaTenant): NormalisedRow
   const status = str(r.Status)
   const branch = orNull(r.Branch)
 
+  const method = orNull(r.PaymentMethod)?.toUpperCase()
   const isCheque =
-    orNull(r.PaymentMethod)?.toUpperCase() === CHEQUE_PAYMENT_METHOD &&
+    method != null && CHEQUE_PAYMENT_METHODS.has(method) &&
     !(branch !== null && NON_CHEQUE_BRANCHES.has(branch.toUpperCase()))
 
   // What the feed printed, and what it means as a key. They differ on 90.0% of

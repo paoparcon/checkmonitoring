@@ -23,13 +23,19 @@ describe('isTickable', () => {
 })
 
 describe('takesReceipt', () => {
-  it('opens a box only where a receipt can exist: ready, scheduled, released without one', () => {
+  it('opens a box only where a receipt can exist: any live rung, or released without one', () => {
     expect(takesReceipt(row({ status: 'READY_FOR_RELEASE' }))).toBe(true)
     expect(takesReceipt(row({ status: 'SCHEDULED' }))).toBe(true)
     expect(takesReceipt(row({ status: 'RELEASED' }))).toBe(true)
     expect(takesReceipt(row({ status: 'RELEASED', hasReceipt: true }))).toBe(false)
-    expect(takesReceipt(row({ status: 'SIGNED' }))).toBe(false)
-    expect(takesReceipt(row({ status: 'SIGNATURE_PENDING' }))).toBe(false)
+    // SIGNED opens one too (client, 2026-10-09): MARK RELEASED readies and releases it.
+    expect(takesReceipt(row({ status: 'SIGNED' }))).toBe(true)
+    expect(takesReceipt(row({ status: 'SIGNED', hasReceipt: true }))).toBe(false)
+    // GENERATED and SIGNATURE PENDING too (client, 2026-10-16): signed and readied on the way.
+    expect(takesReceipt(row({ status: 'SIGNATURE_PENDING' }))).toBe(true)
+    expect(takesReceipt(row({ status: 'GENERATED' }))).toBe(true)
+    expect(takesReceipt(row({ status: 'CANCELLED' }))).toBe(false)
+    expect(takesReceipt(row({ status: 'VOIDED' }))).toBe(false)
   })
 
   it('never opens a box on a row that already carries a receipt, whatever its status', () => {

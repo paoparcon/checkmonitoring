@@ -24,6 +24,10 @@ export function isPublicPath(pathname: string): boolean {
     // The landing page (2026-09-27): the two machines and a SIGN IN button,
     // reading no data. Exact match for the same reason as `/login`.
     pathname === '/welcome' ||
+    // Self-registration (2026-10-09). Creates an INACTIVE account only; the
+    // page guards itself (a signed-in visitor is redirected) and reads no
+    // data. Exact match for the same reason as `/login`.
+    pathname === '/signup' ||
     pathname.startsWith('/api/auth/') ||
     // The scheduled sync. Vercel's cron presents `Authorization: Bearer
     // <CRON_SECRET>` and never a session cookie; the route checks that bearer

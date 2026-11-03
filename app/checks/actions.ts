@@ -9,10 +9,11 @@ import { isNextControlFlowError } from '@/lib/next-errors'
 import { afterResponse, kickPortalDelivery } from '@/lib/sync/portal-kick'
 import {
   markSigned, markReadyForRelease, revertAvailability,
-  markReleased, recordClearing, cancelCheck, deleteIncompleteCheck, recordReceipt,
-  reverseRelease, updateDetails, revertSignature, restoreCancelled, attachReceiptFile,
+  releaseDirectly, recordClearing, cancelCheck, deleteIncompleteCheck, recordReceipt,
+  reverseRelease, updateDetails, revertSignature, restoreCancelled, attachReceiptFile, removeReceipt,
 } from '@/lib/domain/actions'
 import { readReceiptFields } from '@/lib/receipt-form'
+import { notifyReady } from '@/lib/notifications/ready'
 
 export type ActionResult = { ok: true } | { ok: false; message: string }
 
@@ -68,11 +69,14 @@ export async function signAction(formData: FormData): Promise<ActionResult> {
 export async function readyForReleaseAction(formData: FormData): Promise<ActionResult> {
   const user = await requireUser()
   const checkId = str(formData, 'checkId')
-  return run(checkId, () => markReadyForRelease(prisma, {
+  const result = await run(checkId, () => markReadyForRelease(prisma, {
     checkId, userId: user.id,
     availablePickupDate: date(formData, 'availablePickupDate'),
     now: new Date(),
   }))
+  // The others are told after the check moved; never fails the action.
+  if (result.ok) await notifyReady(prisma, user, [checkId])
+  return result
 }
 
 export async function revertAction(formData: FormData): Promise<ActionResult> {
@@ -122,12 +126,28 @@ export async function reverseReleaseAction(formData: FormData): Promise<ActionRe
   }))
 }
 
+/**
+ * A receipt recorded by mistake, removed (2026-10-23). FINANCE_ADMIN only, the
+ * same guard as `reverseReleaseAction`, which it unblocks; the domain requires
+ * the reason and refuses a cleared check or a receipt the portal already holds.
+ */
+export async function removeReceiptAction(formData: FormData): Promise<ActionResult> {
+  const user = await requireUser()
+  if (user.role !== 'FINANCE_ADMIN') {
+    return { ok: false, message: 'Only a Finance Admin can remove a receipt.' }
+  }
+  const checkId = str(formData, 'checkId')
+  return run(checkId, () => removeReceipt(prisma, {
+    checkId, userId: user.id, reason: str(formData, 'reason'), now: new Date(),
+  }))
+}
+
 export async function releaseAction(formData: FormData): Promise<ActionResult> {
   const user = await requireUser()
   const checkId = str(formData, 'checkId')
   const receipt = await readReceiptFields(formData)
   if (!receipt.ok) return { ok: false, message: receipt.message }
-  return run(checkId, () => markReleased(prisma, {
+  return run(checkId, () => releaseDirectly(prisma, {
     checkId, userId: user.id,
     orNumber: receipt.orNumber,
     orDate: receipt.orDate,

@@ -29,7 +29,7 @@ describe('readRowReceipts', () => {
 
   it('refuses a reference with no OR/CR, and nothing is read', () => {
     const r = readRowReceipts(form([['orNumber:a', '4471']]), ['a'])
-    expect(r).toEqual({ ok: false, message: 'Choose OR or CR for every receipt reference you typed. Nothing was saved.' })
+    expect(r).toEqual({ ok: false, message: 'Choose the receipt type (OR, CR, AR, PR, SI or OTHERS) for every reference you typed. Nothing was saved.' })
   })
 
   it('refuses a type that is neither OR nor CR', () => {

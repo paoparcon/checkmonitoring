@@ -17,7 +17,9 @@ export type ClearingStatus = 'NONE' | 'DEPOSITED' | 'ENCASHED' | 'CLEARED'
 // uncomfortable fact. CANCELLED is excluded only because it is already a
 // Finance decision with a recorded reason, so it has no void edge.
 const TRANSITIONS: Record<CheckStatus, readonly CheckStatus[]> = {
-  GENERATED:         ['SIGNATURE_PENDING', 'CANCELLED', 'VOIDED'],
+  // SIGNED directly: a GENERATED cheque released at the counter is signed on
+  // the way (`releaseDirectly`, client 2026-10-16).
+  GENERATED:         ['SIGNATURE_PENDING', 'SIGNED', 'CANCELLED', 'VOIDED'],
   SIGNATURE_PENDING: ['SIGNED', 'CANCELLED', 'VOIDED'],
   // SIGNATURE_PENDING is the signature undone (client, 2026-10-01): any
   // Finance user, `revertSignature` in actions.ts. A cheque on the release

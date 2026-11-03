@@ -2,6 +2,9 @@ import { requireAdmin } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { getPortalOverview } from '@/lib/admin/portal-overview'
 import { PortalActionButton } from '@/components/PortalRetryButton'
+import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
+import type { KitColumn } from '@/lib/table-kit/types'
+import { instantValue } from '@/lib/table-kit/match'
 import { deliverPortalNowAction, retryPortalEventAction } from './actions'
 
 const fmt = (d: Date) => d.toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -9,6 +12,40 @@ const fmt = (d: Date) => d.toLocaleString('en-PH', { month: 'short', day: 'numer
 export default async function AdminPortalPage() {
   await requireAdmin()
   const o = await getPortalOverview(prisma)
+  const distinct = (vals: string[]) => [...new Set(vals)].sort().map((v) => ({ value: v, label: v }))
+  const columns: KitColumn[] = [
+    { key: 'check', label: 'CHECK', kind: 'text', locked: true },
+    { key: 'payee', label: 'PAYEE', kind: 'text' },
+    { key: 'kind', label: 'EVENT', kind: 'enum', options: distinct(o.attention.map((r) => r.kind)) },
+    { key: 'status', label: 'STATUS', kind: 'enum', options: distinct(o.attention.map((r) => r.status)) },
+    { key: 'tries', label: 'TRIES', kind: 'amount' },
+    { key: 'lastError', label: 'LAST ERROR', kind: 'text', className: 'max-w-md truncate' },
+    { key: 'next', label: 'NEXT', kind: 'date' },
+    { key: 'retry', label: '', kind: 'text', noSort: true, noFilter: true, locked: true },
+  ]
+  const rows: KitRow[] = o.attention.map((r) => ({
+    key: r.id,
+    values: {
+      check: r.checkNumber, payee: r.payeeName, kind: r.kind, status: r.status, tries: String(r.attempts),
+      lastError: r.lastError, next: r.status === 'FAILED' ? instantValue(r.nextAttemptAt) : null,
+    },
+    cells: {
+      check: <a className="underline" href={`/checks/${r.checkId}`}>{r.checkNumber}</a>,
+      payee: r.payeeName ?? '—',
+      kind: r.kind,
+      status: r.status,
+      tries: r.attempts,
+      lastError: <span title={r.lastError ?? ''}>{r.lastError ?? '—'}</span>,
+      next: r.status === 'FAILED' ? fmt(r.nextAttemptAt) : '—',
+      retry: (
+        <PortalActionButton label="RETRY" pending="…" action={async () => {
+          'use server'
+          const f = new FormData(); f.set('eventId', r.id)
+          return retryPortalEventAction(f)
+        }} />
+      ),
+    },
+  }))
   return (
     <div className="space-y-6">
       <section className="rounded-2xl bg-white p-6 ring-1 ring-hairline">
@@ -25,31 +62,12 @@ export default async function AdminPortalPage() {
         {o.attention.length === 0 ? (
           <p className="mt-2 text-sm text-slate-500">Nothing is parked or retrying.</p>
         ) : (
-          <table className="mt-3 w-full text-sm">
-            <thead className="text-left text-xs text-slate-400">
-              <tr><th>CHECK</th><th>PAYEE</th><th>EVENT</th><th>STATUS</th><th>TRIES</th><th>LAST ERROR</th><th>NEXT</th><th></th></tr>
-            </thead>
-            <tbody>
-              {o.attention.map((r) => (
-                <tr key={r.id} className="border-t border-hairline">
-                  <td className="py-2"><a className="underline" href={`/checks/${r.checkId}`}>{r.checkNumber}</a></td>
-                  <td>{r.payeeName ?? '—'}</td>
-                  <td>{r.kind}</td>
-                  <td>{r.status}</td>
-                  <td>{r.attempts}</td>
-                  <td className="max-w-md truncate" title={r.lastError ?? ''}>{r.lastError ?? '—'}</td>
-                  <td>{r.status === 'FAILED' ? fmt(r.nextAttemptAt) : '—'}</td>
-                  <td>
-                    <PortalActionButton label="RETRY" pending="…" action={async () => {
-                      'use server'
-                      const f = new FormData(); f.set('eventId', r.id)
-                      return retryPortalEventAction(f)
-                    }} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="mt-3">
+            <KitTable
+              tableId="portal-attention" columns={columns} rows={rows} frameClassName="" cellClassName="py-2 pr-4"
+              capped={o.attention.length >= 200}
+            />
+          </div>
         )}
       </section>
     </div>

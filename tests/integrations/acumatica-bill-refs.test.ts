@@ -61,8 +61,9 @@ describe('the feed', () => {
     expect(BILL_REFS_FEED).toBe('AP-Bills and Adjustments')
     expect(BILL_REF_COLUMNS).toEqual({
       type: 'Type', ref: 'ReferenceNbr', date: 'Date', vendorRef: 'VendorRef', lastModified: 'LastModifiedOn',
+      dueDate: 'DueDate', terms: 'Terms', status: 'Status',
     })
-    expect(billRefsSelect()).toEqual(['Type', 'ReferenceNbr', 'Date', 'VendorRef', 'LastModifiedOn'])
+    expect(billRefsSelect()).toEqual(['Type', 'ReferenceNbr', 'Date', 'VendorRef', 'LastModifiedOn', 'DueDate', 'Terms', 'Status'])
   })
 
   it('filters on one column with the datetime literal, no zone', () => {
@@ -84,6 +85,9 @@ describe('mapBillRef', () => {
       vendorRef: 'PO-ST-031109.',
       poNumbers: ['PO-ST-031109'],
       lastModifiedOn: new Date('2026-09-29T08:15:00Z'),
+      dueDate: null,
+      termsCode: null,
+      status: null,
     })
   })
 
@@ -111,5 +115,42 @@ describe('mapBillRef', () => {
 
   it('keeps a row whose LastModifiedOn cannot be read, with a null date', () => {
     expect(mapBillRef(doc({ LastModifiedOn: 'nonsense' }))?.lastModifiedOn).toBeNull()
+  })
+})
+
+describe('mapBillRef — due date and terms (AGING, 2026-10-15)', () => {
+  const row = (o: Record<string, unknown> = {}) => ({
+    Type: 'Bill', ReferenceNbr: 'AP-ST044591', Date: '2026-09-29T00:00:00',
+    VendorRef: 'PO-ST-031109', LastModifiedOn: '2026-09-29T08:15:00',
+    DueDate: '2026-10-29T00:00:00', Terms: ' 30D ', ...o,
+  })
+
+  it('reads the due date as a day and the terms trimmed', () => {
+    const ref = mapBillRef(row())!
+    expect(ref.dueDate).toEqual(new Date('2026-10-29T00:00:00Z'))
+    expect(ref.termsCode).toBe('30D')
+  })
+
+  it('a missing or blank value is null, and the bill is still mapped', () => {
+    const ref = mapBillRef(row({ DueDate: null, Terms: '   ' }))!
+    expect(ref.apvNumber).toBe('AP-ST044591')
+    expect(ref.dueDate).toBeNull()
+    expect(ref.termsCode).toBeNull()
+  })
+
+  it('reads the status trimmed, null when blank (user ruling 2026-10-16)', () => {
+    expect(mapBillRef(row({ Status: ' Closed ' }))!.status).toBe('Closed')
+    expect(mapBillRef(row({ Status: '' }))!.status).toBeNull()
+    expect(mapBillRef(row())!.status).toBeNull()
+  })
+
+  it('a bill with a blank Vendor Ref still carries its terms', () => {
+    const ref = mapBillRef(row({ VendorRef: '' }))!
+    expect(ref.vendorRef).toBe('')
+    expect(ref.termsCode).toBe('30D')
+  })
+
+  it('selects both columns', () => {
+    expect(billRefsSelect()).toEqual(expect.arrayContaining([BILL_REF_COLUMNS.dueDate, BILL_REF_COLUMNS.terms]))
   })
 })

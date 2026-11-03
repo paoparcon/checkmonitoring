@@ -322,3 +322,19 @@ Narrow runs, per the usual practice; `npx tsc --noEmit` before claiming done.
 2. `node scripts/migrate.mjs prod --confirm`.
 3. Deploy. `/signup` is live the moment the deploy is; nothing else needs
    switching on. The three deactivated accounts can register again at once.
+
+## 11. Changes made during implementation (2026-10-09)
+
+**Re-registration holds the typed credentials (§3).** The typed name and password go to `User.pendingName` / `User.pendingPasswordHash` (migration `20261009000200_pending_credentials`), not onto `name` / `passwordHash`. `name` is read live wherever a check says who signed or released it, and an anonymous submission must not rewrite that. `approveUser` copies them into place, `rejectUser` discards them, so REACTIVATE after a reject restores the genuine account, and `setUserPassword` discards a held hash (`heldPasswordDiscarded`). The `user_reregistered` audit row carries the typed `name`, `currentName` and `wasPending`.
+
+**Races (§3).** Every read-then-write (`registerUser` re-open, `approveUser`, `rejectUser`, `setUserActive(true)`) is a conditional `updateMany` on the state it read. `approveUser` takes `seenPendingSince` (the admin page passes the displayed value) and refuses `REREGISTERED` / `NOT_PENDING` / `CHANGED` by re-reading.
+
+**Throttle (§5).** `registrationLockout` was removed. `recordRegistrationAttempt` takes `pg_advisory_xact_lock(hashtext(ip))` with `lock_timeout = 3s`, inserts, counts the window including its own row, and returns `{ recent }`. The action records first and refuses when `recent > limit`. A submission that cannot be recorded is refused ('Could not register right now. Try again in a minute.'), never let through.
+
+**The action (§4).** Length caps: email 254, name 200, password 1024 ('That entry is too long.'). A minimal email shape check (`EMAIL_INVALID`) sits in `registerUser` and `createUser`. Unexpected errors are logged as `name: first non-empty line`. The email field's `autoComplete` is `email`, not `username`.
+
+**Admin (§6).** ORIGIN reads NEW ACCOUNT / REGISTERED AGAIN WHILE PENDING / RE-REGISTERED — PREVIOUSLY DEACTIVATED. The NAME cell shows `→ <pendingName>`, labelled NAME ON APPROVAL, when it differs. The row refreshes on every result. The settings group is retitled SIGN-IN AND SIGN-UP THROTTLES.
+
+**`/login`.** A refused sign-in used to throw next-auth's `CredentialsSignin` out of the inline action and render a 500. It now redirects to `/login?error=CredentialsSignin`. This was already so on master; it is fixed here because pending accounts hit it.
+
+**Accepted tradeoff.** 'An account for that address already exists.' confirms that an address holds an account. The throttle bounds how fast that can be probed.

@@ -10,16 +10,16 @@ import { DomainError } from './errors'
 import { portalRoute, type Eligibility } from './eligibility'
 import { checkDeletable } from './incomplete'
 import {
-  checkReceipt, normaliseReceipt, hasReceipt, checkReceiptAmount, checkReceiptFile,
+  checkReceipt, normaliseReceipt, hasReceipt, checkReceiptAmount, checkReceiptFile, portalAcceptsReceiptType,
   type Receipt, type ReceiptType, type ReceiptFileInput,
 } from './receipt'
 import { checkReleaseReversible } from './reversal'
 import { normaliseDetails, diffDetails, dayToDate, isoDay, type DetailInput, type DetailValues } from './details'
 import {
-  assertTransition, assertClearing, assertReleasable, checkReadyForRelease,
+  assertTransition, assertClearing, assertReleasable, checkReadyForRelease, LIVE_STATUSES,
   type CheckStatus, type ClearingStatus,
 } from './check-status'
-import { isDueForAutoSign, AUTO_SIGNED_ACTION, SIGNATURE_REVERTED_ACTION } from './auto-sign'
+import { autoSignRunDay, isDueForAutoSign, AUTO_SIGNED_ACTION, SIGNATURE_REVERTED_ACTION } from './auto-sign'
 
 type Db = PrismaClient | Prisma.TransactionClient
 
@@ -84,20 +84,9 @@ function portalEventKey(checkId: string, kind: PortalEventKind, now: Date): stri
   return `${checkId}:${kind}:${now.toISOString()}`
 }
 
-/**
- * The fifth kind. The reason stays here: the portal never shows a payee an
- * internal reason, and a field it does not accept is a field that can fail a
- * delivery nobody is watching (the same rule as `receiptType` on RELEASED).
- */
-async function queueCancelled(tx: Prisma.TransactionClient, checkId: string, checkNumber: string, now: Date): Promise<void> {
-  await tx.portalEvent.create({
-    data: {
-      checkId, direction: 'OUT', kind: 'CANCELLED', status: 'PENDING',
-      idempotencyKey: portalEventKey(checkId, 'CANCELLED', now),
-      payload: { action: 'CANCELLED', checkNumber },
-    },
-  })
-}
+// CANCELLED is no longer queued by anything (user ruling 2026-10-29, see
+// `detachFromBills`): a cancelled cheque is cut loose from its AP bills, and the
+// portal matches on APV. The kind stays in the enum for the rows already written.
 
 /** For the receipt actions, which may carry a 3 MB file into the transaction. */
 const RECEIPT_TX_OPTIONS: TxOptions = { timeout: 30_000, maxWait: 10_000 }
@@ -140,8 +129,9 @@ async function queueReceipt(
   args: { orNumber: string | null; receiptType: string | null; amount: string | null; hasFile: boolean; now: Date },
 ): Promise<void> {
   // A legacy receipt with no OR/CR type would only park (the portal requires
-  // the type; final review 2026-10-02).
-  if (!args.orNumber || !args.receiptType) return
+  // the type; final review 2026-10-02), and so would an AR, PR or SI, which
+  // the portal does not accept yet: those stay recorded here only.
+  if (!args.orNumber || !portalAcceptsReceiptType(args.receiptType)) return
   // Same guard as CANCELLED (review 2026-10-02): the portal matches on APV, so
   // a cheque with none could only ever park; the receipt stays recorded here.
   if (!(await portalCanMatch(tx, check))) return
@@ -154,17 +144,14 @@ async function queueReceipt(
   })
 }
 
-/** Recorded on the audit row when a routed cheque's CANCELLED event is skipped. */
-export const NO_APV_SKIP_REASON = 'no APV numbers'
-
 /**
- * Whether a CANCELLED event for this cheque could ever be delivered. The portal
+ * Whether the portal could match an event for this cheque at all. The portal
  * matches on APV and the client refuses an event with none, so an event queued
  * for a cheque with no APV parks on its first attempt and RETRY parks it again
- * (spec 2026-10-01-cheque-numbering-and-cancel-guard-design §A1). The plainest
- * case is a cheque the sync creates already voided: the portal was never told
- * it existed. Bills are read only when `apvNumbers` is empty — the same
- * fallback as the client, through the same function.
+ * (spec 2026-10-01-cheque-numbering-and-cancel-guard-design §A1). Bills are
+ * read only when `apvNumbers` is empty — the same fallback as the client,
+ * through the same function. Asked by the RECEIPT queue and by the quiet
+ * INTERNAL events; CANCELLED no longer asks (ruling 2026-10-29).
  */
 async function portalCanMatch(tx: Prisma.TransactionClient, check: { id: string; apvNumbers: string[] }): Promise<boolean> {
   const bills = check.apvNumbers.length
@@ -173,10 +160,98 @@ async function portalCanMatch(tx: Prisma.TransactionClient, check: { id: string;
   return portalApvs({ apvNumbers: check.apvNumbers, bills }).length > 0
 }
 
-/** The audit keys for the portal decision; none for an unrouted (INTERNAL) cheque. */
-function portalAuditDetails(routed: boolean, pushes: boolean): { portalNotified?: boolean; portalSkipReason?: string } {
-  if (!routed) return {}
-  return pushes ? { portalNotified: true } : { portalNotified: false, portalSkipReason: NO_APV_SKIP_REASON }
+/**
+ * User ruling 2026-10-19 (Supplier Portal spec 2026-10-19-cm-internal-release-quiet):
+ * an INTERNAL check's release and reversal are sent so the portal stops aging
+ * its bill. Only those kinds, only with an APV to match, and the check's own
+ * portal columns stay untouched (check_internal_never_routes_to_portal):
+ * delivery state lives on the PortalEvent row. Its cancellation was sent the
+ * same way until 2026-10-29; a cancelled cheque now has no APV to send it on.
+ */
+async function queuesQuietStatus(tx: Prisma.TransactionClient, check: { id: string; eligibility: string; apvNumbers: string[] }): Promise<boolean> {
+  return check.eligibility === 'INTERNAL' && portalCanMatch(tx, check)
+}
+
+/**
+ * Recorded on the `cancelled` / `voided` audit row of a portal-routed cheque:
+ * nothing was sent, because a cancelled cheque is no longer connected to the AP
+ * bills it was applied to, and the portal matches on APV.
+ */
+export const DETACHED_SKIP_REASON = 'detached from its AP bills on cancel'
+
+/** The audit action the one-off repair writes for a cheque cancelled or voided before this rule. */
+export const APV_DETACHED_ACTION = 'apv_detached_on_cancel'
+
+export type DetachedBills = {
+  apvNumbersDetached: string[]
+  /** The `CheckBill` rows deleted, whole, so the append-only trail keeps what the workbook stated. */
+  billsDetached: Array<{
+    apvNumber: string; poNumber: string | null; rrNumber: string | null; statusRr: string | null
+    description: string | null; glAccount: string | null; dueDate: string | null; termsCode: string | null
+    amount: string; createdByName: string | null
+  }>
+}
+
+/**
+ * USER RULING 2026-10-29: "Once the check is cancelled, it should not be
+ * connected to the AP it was applied to."
+ *
+ * The Supplier Portal keeps one release row per BILL, keyed by APV; this system
+ * keeps events per CHEQUE. A void and re-issue is two cheques on one bill, and
+ * the voided cheque's CANCELLED event — matched on that APV — cancelled the
+ * bill's row in the portal, so the replacement's RELEASED arrived at a
+ * cancelled row and was refused ("cancelled in the portal; a super must
+ * resolve": 6000354974..77 on AP-ST039900/07/10/12, 26 October). The bill was
+ * never cancelled; it moved to a new cheque.
+ *
+ * So a cancel or void cuts the cheque loose from its bills: `apvNumbers` is
+ * emptied and its `CheckBill` rows are deleted, and NO portal event is queued
+ * — there is no APV left to match it on, and the bill now belongs to whichever
+ * live cheque pays it. What was detached is written, whole, onto the audit row
+ * that records the cancellation. The BILLS read (`lib/sync/bills.ts`), the
+ * payment sync's voucher merge (`lib/import/upsert.ts`) and the
+ * approval-workbook importer (`lib/import/bills.ts`) all refuse to re-link a
+ * CANCELLED or VOIDED cheque, so the detachment holds.
+ *
+ * Consequence, accepted with the ruling: the portal is no longer told about a
+ * cancellation at all, re-issue or not. A bill whose cheque was cancelled with
+ * no replacement keeps whatever state the portal had for it until somebody
+ * there changes it — which is how the portal worked before the integration.
+ */
+export async function detachFromBills(
+  tx: Prisma.TransactionClient, check: { id: string; apvNumbers: readonly string[] },
+): Promise<DetachedBills> {
+  const bills = await tx.checkBill.findMany({
+    where: { checkId: check.id },
+    orderBy: { apvNumber: 'asc' },
+    select: {
+      apvNumber: true, poNumber: true, rrNumber: true, statusRr: true, description: true,
+      glAccount: true, dueDate: true, termsCode: true, amount: true, createdByName: true,
+    },
+  })
+  if (bills.length) await tx.checkBill.deleteMany({ where: { checkId: check.id } })
+  if (check.apvNumbers.length) await tx.check.update({ where: { id: check.id }, data: { apvNumbers: [] } })
+  return {
+    apvNumbersDetached: [...check.apvNumbers],
+    billsDetached: bills.map((b) => ({
+      ...b, dueDate: b.dueDate?.toISOString() ?? null, amount: b.amount.toString(),
+    })),
+  }
+}
+
+/** The audit keys for a cancellation: the portal decision (routed cheques only) and what was detached. */
+function cancelAuditDetails(routed: boolean, detached: DetachedBills): Prisma.InputJsonObject {
+  const anyDetached = detached.apvNumbersDetached.length > 0 || detached.billsDetached.length > 0
+  return {
+    ...(routed ? { portalNotified: false, portalSkipReason: DETACHED_SKIP_REASON } : {}),
+    ...(anyDetached ? detached : {}),
+  }
+}
+
+/** One sentence naming what a cancellation detached, for the remark a reader sees on the trail. */
+function detachedRemark(detached: DetachedBills): string {
+  const apvs = [...new Set([...detached.apvNumbersDetached, ...detached.billsDetached.map((b) => b.apvNumber)])].sort()
+  return apvs.length ? ` Detached from ${apvs.join(', ')} (user ruling 2026-10-29).` : ''
 }
 
 async function load(tx: Prisma.TransactionClient, checkId: string) {
@@ -208,10 +283,10 @@ export async function markSigned(
 }
 
 /**
- * The Monday rule's write (lib/domain/auto-sign.ts). No user: `signedById`
+ * The Monday-and-Tuesday rule's write (lib/domain/auto-sign.ts). No user: `signedById`
  * stays null, because a name on a signature nobody gave is worse than none.
  * Reached only when the setting is on — the run decides that. Re-judged on
- * the row as loaded, so a cheque someone signed, reverted or cancelled after
+ * the row as loaded, so a check someone signed, reverted or cancelled after
  * the candidates were listed is skipped (null), never overwritten. No portal
  * event — `markSigned` queues none either.
  */
@@ -221,7 +296,9 @@ export async function autoSign(
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
     const reverted = (await tx.auditLog.count({ where: { checkId: check.id, action: SIGNATURE_REVERTED_ACTION } })) > 0
-    if (!isDueForAutoSign({ ...check, reverted }, args.now, true)) return null
+    const runDay = autoSignRunDay(args.now)
+    if (runDay === null || !isDueForAutoSign({ ...check, reverted }, args.now, true)) return null
+    const day = runDay === 'MONDAY' ? 'Monday' : 'Tuesday'
     assertTransition(check.status as CheckStatus, 'SIGNED')
     const { count } = await tx.check.updateMany({
       where: { id: check.id, status: 'SIGNATURE_PENDING' },
@@ -232,10 +309,10 @@ export async function autoSign(
       checkId: check.id,
       actorType: 'SYSTEM',
       action: AUTO_SIGNED_ACTION,
-      details: { from: 'SIGNATURE_PENDING', to: 'SIGNED', rule: 'MONDAY', inAppSince: check.createdAt.toISOString() },
+      details: { from: 'SIGNATURE_PENDING', to: 'SIGNED', rule: 'WEEKLY', runDay, inAppSince: check.createdAt.toISOString() },
       remarks:
-        `Signed automatically at Tuesday's run: this Acumatica check first reached the app on ` +
-        `Monday (${check.createdAt.toISOString()}). No one signed it here, so no signing user is recorded.`,
+        `Signed automatically at ${day}'s run: this Acumatica check first reached the app on ` +
+        `${check.createdAt.toISOString()}, before that ${day}. No one signed it here, so no signing user is recorded.`,
     })
     return tx.check.findUniqueOrThrow({ where: { id: check.id } })
   })
@@ -385,6 +462,23 @@ export async function revertAvailability(
     const check = await load(tx, args.checkId)
     assertTransition(check.status as CheckStatus, 'SIGNED')
 
+    // A release reversal the portal has not received yet (2026-10-23): this
+    // REVERT would supersede it unsent (latest wins), the portal ignores a REVERT
+    // on a row it still holds as RELEASED, and the supplier's AP would stay
+    // paid there. Refused until RELEASE_REVERSED is delivered.
+    const reversalWaiting = await tx.portalEvent.findFirst({
+      where: { checkId: check.id, kind: 'RELEASE_REVERSED', status: { in: ['PENDING', 'IN_FLIGHT', 'FAILED', 'PARKED'] } },
+      select: { status: true },
+    })
+    if (reversalWaiting) {
+      throw new DomainError(
+        'PORTAL_REVERSAL_PENDING',
+        reversalWaiting.status === 'PARKED'
+          ? 'The supplier portal refused the release reversal (see Administration → Portal). Resolve it there before reverting to SIGNED.'
+          : 'The supplier portal has not received the release reversal yet. Try again in a few seconds.',
+      )
+    }
+
     const route = portalRoute(check.eligibility as Eligibility)
     const pushes = route !== null
 
@@ -455,7 +549,7 @@ export async function reverseRelease(
     const check = await load(tx, args.checkId)
     // Same guard `markSigned` and `markReleased` apply: an import-derived row
     // can carry `isCheque: false` with status RELEASED, and reversing one
-    // would land a DEBIT ADV or CASH payment at READY_FOR_RELEASE — a state
+    // would land a DEBIT ADV or TT payment at READY_FOR_RELEASE — a state
     // `markReadyForRelease` itself refuses for a non-cheque.
     assertReleasable({ isCheque: check.isCheque })
     // `assertTransition` alone cannot tell this reversal apart from the
@@ -473,6 +567,7 @@ export async function reverseRelease(
 
     const route = portalRoute(check.eligibility as Eligibility)
     const pushes = route !== null
+    const quiet = !pushes && await queuesQuietStatus(tx, check)
 
     const updated = await tx.check.update({
       where: { id: check.id },
@@ -489,7 +584,7 @@ export async function reverseRelease(
       },
     })
 
-    if (pushes) {
+    if (pushes || quiet) {
       await tx.portalEvent.create({
         data: {
           checkId: check.id, direction: 'OUT', kind: 'RELEASE_REVERSED', status: 'PENDING',
@@ -556,6 +651,10 @@ export async function applyPickupConfirmation(
 const RECEIPT_REMARK_LABELS: Record<ReceiptType | 'UNSTATED', string> = {
   OR: 'Official Receipt',
   CR: 'Collection Receipt',
+  AR: 'Acknowledgement Receipt',
+  PR: 'Provisional Receipt',
+  SI: 'Sales Invoice',
+  OTHERS: 'Other receipt',
   UNSTATED: 'Receipt of unstated kind',
 }
 
@@ -651,6 +750,7 @@ export async function markReleased(
 
     const route = portalRoute(check.eligibility as Eligibility)
     const pushes = route !== null
+    const quiet = !pushes && await queuesQuietStatus(tx, check)
     // The receipt columns are written by this release: it carries a reference
     // and the cheque had none. Only then do the amount and file go with them.
     const writesReceipt = !alreadyHasReceipt && hasReceipt(receipt)
@@ -673,7 +773,7 @@ export async function markReleased(
       },
     })
 
-    if (pushes) {
+    if (pushes || quiet) {
       await tx.portalEvent.create({
         data: {
           checkId: check.id,
@@ -728,6 +828,42 @@ export async function markReleased(
       })
     }
     return updated
+  }, RECEIPT_TX_OPTIONS)
+}
+
+/** The statuses `releaseDirectly` walks up the ladder before releasing. */
+export const DIRECT_RELEASE_FROM = ['GENERATED', 'SIGNATURE_PENDING', 'SIGNED'] as const satisfies readonly CheckStatus[]
+
+/**
+ * MARK RELEASED from any rung below READY FOR RELEASE (client, 2026-10-09 for
+ * SIGNED; 2026-10-16 for GENERATED and SIGNATURE PENDING: "all checks from
+ * generated to signed can be directly released").
+ *
+ * The ladder keeps its shape: the check is signed, readied and released, each
+ * through its own domain action, so every guard still runs — the READY guards
+ * (payee, amount, check book, …), the portal's MARK_AVAILABLE, the receipt
+ * rules. All three share ONE transaction, so a refusal at any step leaves the
+ * check exactly where it was rather than stranded halfway up. A READY FOR
+ * RELEASE or SCHEDULED check is simply released.
+ */
+export async function releaseDirectly(
+  db: Db,
+  args: Parameters<typeof markReleased>[1],
+): Promise<Check> {
+  // The receipt is refused before anything is written, as in `markReleased`.
+  const guard = checkReceipt(args)
+  if (!guard.ok) throw new DomainError(guard.code, guard.message)
+
+  return inTx(db, async (tx) => {
+    const check = await load(tx, args.checkId)
+    const from = check.status as CheckStatus
+    if (!(DIRECT_RELEASE_FROM as readonly CheckStatus[]).includes(from)) return markReleased(tx, args)
+
+    assertReleasable({ isCheque: check.isCheque })
+    const step = { checkId: check.id, userId: args.userId, now: args.now }
+    if (from !== 'SIGNED') await markSigned(tx, step)
+    await markReadyForRelease(tx, { ...step, availablePickupDate: args.now })
+    return markReleased(tx, { ...args, remarks: args.remarks ?? `Released directly from ${from}` })
   }, RECEIPT_TX_OPTIONS)
 }
 
@@ -886,6 +1022,72 @@ export async function attachReceiptFile(
   }, RECEIPT_TX_OPTIONS)
 }
 
+export const RECEIPT_REMOVED_ACTION = 'receipt_removed'
+
+/**
+ * A receipt recorded by mistake, removed (user request 2026-10-23: 6000354897,
+ * AR 4852, typed with a release that never happened). FINANCE_ADMIN only —
+ * enforced by the server action — with a mandatory reason. It is what makes
+ * REVERSE RELEASE possible again, since `checkReleaseReversible` refuses while a
+ * receipt is on record; nothing else about the check changes.
+ *
+ * Clears rule 11's three receipt columns, the amount and the scanned file, and
+ * records all of it (file metadata, never the bytes - rule 7) on one
+ * `receipt_removed` audit row. Refused when the check is not RELEASED, when the
+ * bank has cleared it, and when a RECEIPT event for it was DELIVERED to the
+ * portal: the portal has no "remove receipt" message, so the two systems would
+ * disagree. RECEIPT events still waiting are closed unsent.
+ */
+export async function removeReceipt(
+  db: Db, args: { checkId: string; userId: string; reason: string; now: Date },
+): Promise<Check> {
+  const reason = args.reason?.trim() ?? ''
+  if (!reason) throw new DomainError('REASON_REQUIRED', 'A reason is required to remove a receipt.')
+  return inTx(db, async (tx) => {
+    const check = await load(tx, args.checkId)
+    const file = await tx.checkReceiptFile.findUnique({
+      where: { checkId: check.id }, select: { fileName: true, contentType: true, sizeBytes: true, sha256: true },
+    })
+    if (check.orNumber === null && check.receiptType === null && check.receiptAmount === null && !file) {
+      throw new DomainError('RECEIPT_REQUIRED', 'This check has no receipt to remove.')
+    }
+    if (check.status !== 'RELEASED') {
+      throw new DomainError('ILLEGAL_TRANSITION', `A receipt is removed only from a RELEASED check; this one is ${check.status}.`)
+    }
+    if (check.clearingStatus !== 'NONE' || check.crNumber !== null || check.clearedDate !== null) {
+      throw new DomainError('CLEARED', 'The bank has cleared this check; its receipt is not removed.')
+    }
+    const receiptEvents = await tx.portalEvent.findMany({ where: { checkId: check.id, kind: 'RECEIPT' } })
+    const delivered = receiptEvents.filter((e) =>
+      e.status === 'SYNCED' && !(e.lastError ?? '').startsWith('superseded by') && !(e.lastError ?? '').startsWith('stale:'))
+    if (delivered.length > 0) {
+      throw new DomainError(
+        'RECEIPT_DELIVERED',
+        'This receipt was already sent to the supplier portal, which cannot be told to remove it. Settle it there first.',
+      )
+    }
+    const waiting = receiptEvents.filter((e) => e.status !== 'SYNCED').map((e) => e.id)
+    if (waiting.length > 0) {
+      await tx.portalEvent.updateMany({
+        where: { id: { in: waiting } }, data: { status: 'SYNCED', lastError: 'closed: receipt removed' },
+      })
+    }
+
+    const updated = await tx.check.update({
+      where: { id: check.id }, data: { orNumber: null, orDate: null, receiptType: null, receiptAmount: null },
+    })
+    if (file) await tx.checkReceiptFile.delete({ where: { checkId: check.id } })
+    await writeAudit(tx, {
+      checkId: check.id, actorType: 'USER', userId: args.userId, action: RECEIPT_REMOVED_ACTION, remarks: reason,
+      details: {
+        orNumber: check.orNumber, orDate: check.orDate?.toISOString() ?? null, receiptType: check.receiptType,
+        receiptAmount: check.receiptAmount?.toFixed(2) ?? null, file, closedPortalEvents: waiting,
+      },
+    })
+    return updated
+  })
+}
+
 /**
  * The four register fields — remarks, point person, who is holding the
  * cheque, category. No status guard: a note can be added to a cancelled
@@ -986,14 +1188,11 @@ export const VOID_AFTER_RELEASE_WARNING =
  * a void arriving for a cancelled cheque throws rather than overwriting a
  * Finance decision that carries a recorded reason.
  *
- * Queues a `CANCELLED` `PortalEvent` for a portal-routed cheque (task 2026-09-26,
- * plan `portal-outbox-delivery`), the same shape `cancelCheck` queues: the
- * supplier portal must stop showing a cheque the ERP says no longer exists,
- * whichever side declared it gone. The payload carries no `reason` and no
- * distinction between a Finance cancel and an Acumatica void — the portal only
- * needs to know the cheque is CANCELLED, never why. Only when the cheque carries
- * an APV the portal can match it on (spec 2026-10-01 §A1); otherwise nothing is
- * queued and the audit row says so.
+ * Queues NOTHING for the portal and detaches the cheque from its AP bills
+ * (`detachFromBills`, user ruling 2026-10-29) — the same as `cancelCheck`. Until
+ * that day a CANCELLED event went to the portal, which cancelled the BILL's row
+ * there and refused the re-issued cheque's RELEASED. The audit row says what
+ * was detached and that the portal was not told.
  */
 export async function voidCheck(
   db: Db, args: { checkId: string; reason: string; now: Date },
@@ -1007,7 +1206,7 @@ export async function voidCheck(
     assertTransition(from, 'VOIDED')
 
     const route = portalRoute(check.eligibility as Eligibility)
-    const pushes = route !== null && await portalCanMatch(tx, check)
+    const detached = await detachFromBills(tx, check)
 
     const updated = await tx.check.update({
       where: { id: check.id },
@@ -1017,12 +1216,10 @@ export async function voidCheck(
       data: {
         status: 'VOIDED',
         voidedAt: args.now,
-        portalSyncStatus: pushes ? 'PENDING' : 'NOT_APPLICABLE',
+        portalSyncStatus: 'NOT_APPLICABLE',
         portalDomain: route,
       },
     })
-
-    if (pushes) await queueCancelled(tx, check.id, check.checkNumber, args.now)
 
     // A distinct action, not just distinct remarks: every audit query, filter
     // and screen that groups by action then separates this case for free,
@@ -1034,9 +1231,9 @@ export async function voidCheck(
       action: afterRelease ? 'voided_after_release' : 'voided',
       details: {
         fromStatus: from, releasedAt: check.releasedAt?.toISOString() ?? null,
-        ...portalAuditDetails(route !== null, pushes),
+        ...cancelAuditDetails(route !== null, detached),
       },
-      remarks: afterRelease ? `${VOID_AFTER_RELEASE_WARNING} ${args.reason}` : args.reason,
+      remarks: (afterRelease ? `${VOID_AFTER_RELEASE_WARNING} ${args.reason}` : args.reason) + detachedRemark(detached),
     })
 
     return updated
@@ -1210,7 +1407,10 @@ export async function cancelCheck(
     assertTransition(check.status as CheckStatus, 'CANCELLED')
 
     const route = portalRoute(check.eligibility as Eligibility)
-    const pushes = route !== null && await portalCanMatch(tx, check)
+    // Detached BEFORE the status is written, so a concurrent BILLS append that
+    // read the cheque live still finds its lock after the detach and sees the
+    // status (lib/sync/bills.ts re-reads both under FOR UPDATE).
+    const detached = await detachFromBills(tx, check)
 
     const updated = await tx.check.update({
       where: { id: check.id },
@@ -1219,16 +1419,15 @@ export async function cancelCheck(
         cancelledById: args.userId,
         cancelledAt: args.now,
         cancelReason: args.reason,
-        portalSyncStatus: pushes ? 'PENDING' : 'NOT_APPLICABLE',
+        portalSyncStatus: 'NOT_APPLICABLE',
         portalDomain: route,
       },
     })
-    if (pushes) await queueCancelled(tx, check.id, check.checkNumber, args.now)
-    const portal = portalAuditDetails(route !== null, pushes)
+    const details = cancelAuditDetails(route !== null, detached)
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId,
-      action: 'cancelled', remarks: args.reason,
-      ...(Object.keys(portal).length ? { details: portal } : {}),
+      action: 'cancelled', remarks: args.reason + detachedRemark(detached),
+      ...(Object.keys(details).length ? { details } : {}),
     })
     return updated
   })
@@ -1241,6 +1440,14 @@ export async function cancelCheck(
  * supplier-facing record would then say cancelled for a live cheque. An event
  * still waiting is closed unsent by the outbox, since it no longer matches the
  * cheque's status. The cancel fields are cleared; the audit row keeps them.
+ *
+ * The vouchers the cancellation detached (`apvNumbersDetached` on its audit
+ * row, ruling 2026-10-29) are put back, so the restored cheque pays what it
+ * paid; the deleted `CheckBill` rows are not rebuilt — the row keeps them, and
+ * the approval workbook and the BILLS read are the live sources. A voucher
+ * another live or RELEASED cheque of the company has taken since is left with
+ * that cheque: the bill moved, and two live cheques on one bill is the conflict
+ * the voucher screen refuses.
  */
 export async function restoreCancelled(
   db: Db, args: { checkId: string; userId: string; reason: string; now: Date },
@@ -1260,11 +1467,13 @@ export async function restoreCancelled(
         'The portal has already been told this check is cancelled, so it cannot be restored here.',
       )
     }
+    const reattach = await vouchersToReattach(tx, check)
     const { count } = await tx.check.updateMany({
       where: { id: check.id, status: 'CANCELLED' },
       data: {
         status: 'SIGNED', cancelledById: null, cancelledAt: null, cancelReason: null,
         signedById: null, signedAt: null, portalSyncStatus: 'NOT_APPLICABLE',
+        ...(reattach.length ? { apvNumbers: [...new Set([...check.apvNumbers, ...reattach])].sort() } : {}),
       },
     })
     if (count === 0) {
@@ -1281,9 +1490,43 @@ export async function restoreCancelled(
         previousCancelledById: check.cancelledById,
         previousCancelledAt: check.cancelledAt?.toISOString() ?? null,
         previousCancelReason: check.cancelReason,
+        ...(reattach.length ? { apvNumbersReattached: reattach } : {}),
       },
-      remarks: args.reason,
+      remarks: args.reason + (reattach.length ? ` Re-attached to ${reattach.join(', ')}.` : ''),
     })
     return tx.check.findUniqueOrThrow({ where: { id: check.id } })
   })
+}
+
+/**
+ * The vouchers the latest `cancelled` audit row of this cheque says were
+ * detached, minus any a live or RELEASED cheque of the same company carries
+ * now, minus any the cheque already has. Sorted.
+ */
+async function vouchersToReattach(
+  tx: Prisma.TransactionClient, check: { id: string; companyId: string; apvNumbers: string[] },
+): Promise<string[]> {
+  const row = await tx.auditLog.findFirst({
+    where: { checkId: check.id, action: 'cancelled' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { details: true },
+  })
+  const details = row?.details
+  const detached = details && typeof details === 'object' && !Array.isArray(details)
+    ? (details as { apvNumbersDetached?: unknown }).apvNumbersDetached
+    : undefined
+  if (!Array.isArray(detached)) return []
+  const wanted = [...new Set(detached.filter((v): v is string => typeof v === 'string' && v.length > 0))]
+    .filter((v) => !check.apvNumbers.includes(v))
+  if (wanted.length === 0) return []
+  const taken = await tx.check.findMany({
+    where: {
+      companyId: check.companyId, id: { not: check.id },
+      status: { in: [...LIVE_STATUSES, 'RELEASED'] },
+      apvNumbers: { hasSome: wanted },
+    },
+    select: { apvNumbers: true },
+  })
+  const held = new Set(taken.flatMap((c) => c.apvNumbers))
+  return wanted.filter((v) => !held.has(v)).sort()
 }

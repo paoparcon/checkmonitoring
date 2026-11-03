@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { previewClearingAction, confirmClearingAction, type ClearingPreviewResult } from '@/app/clearing/actions'
 import type { BulkActionResult } from '@/lib/bulk-run'
 import type { PreviewVerdict } from '@/lib/clearing-preview'
+import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
+import { dateValue } from '@/lib/table-kit/match'
 
 const VERDICT: Record<PreviewVerdict, { words: string; tone: string }> = {
   WILL_CLEAR: { words: 'WILL BE CLEARED', tone: 'text-success-ink' },
@@ -108,46 +110,52 @@ export function ClearingPaste({ maxLines }: { maxLines: number }) {
       )}
 
       {preview?.ok && (
-        <div className="overflow-x-auto rounded-xl bg-white ring-1 ring-hairline">
-          <table className="w-full text-sm">
-            <thead className="text-[11px] font-semibold tracking-widest text-slate-400">
-              <tr>
-                <th className="px-4 py-2 text-left">LINE</th>
-                <th className="px-4 py-2 text-left">CHECK</th>
-                <th className="px-4 py-2 text-left">PAYEE</th>
-                <th className="px-4 py-2 text-left">DATE</th>
-                <th className="px-4 py-2 text-left">BANK REF</th>
-                <th className="px-4 py-2 text-left">WHAT CONFIRM DOES</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-hairline">
-              {preview.rows.map((r) => (
-                <tr key={r.line}>
-                  <td className="px-4 py-2 tabular-nums text-slate-500">{r.line}</td>
-                  <td className="px-4 py-2 tabular-nums">
+        <KitTable
+          tableId="clearing-paste"
+          frameClassName="overflow-x-auto rounded-xl bg-white ring-1 ring-hairline"
+          cellClassName="px-4 py-2"
+          columns={[
+            { key: 'line', label: 'LINE', kind: 'amount', className: 'tabular-nums text-slate-500' },
+            { key: 'check', label: 'CHECK', kind: 'text', locked: true, className: 'tabular-nums' },
+            { key: 'payee', label: 'PAYEE', kind: 'text', className: 'text-slate-700' },
+            { key: 'date', label: 'DATE', kind: 'date' },
+            { key: 'bankRef', label: 'BANK REF', kind: 'text' },
+            { key: 'verdict', label: 'WHAT CONFIRM DOES', kind: 'text', className: 'font-medium' },
+          ]}
+          rows={[
+            ...preview.rows.map((r): KitRow => ({
+              key: `r${r.line}`,
+              values: {
+                line: String(r.line), check: r.checkNumber, payee: r.payeeName, date: dateValue(r.clearedDate),
+                bankRef: r.crNumber, verdict: `${VERDICT[r.verdict].words}${r.detail ? ` · ${r.detail}` : ''}`,
+              },
+              cells: {
+                line: r.line,
+                check: (
+                  <>
                     {r.checkId
                       ? <Link prefetch={false} href={`/checks/${r.checkId}`} className="underline underline-offset-2">{r.checkNumber}</Link>
                       : r.checkNumber}
                     {r.companyCode && <span className="ml-2 text-xs text-slate-500">{r.companyCode}</span>}
-                  </td>
-                  <td className="px-4 py-2 text-slate-700">{r.payeeName ?? '—'}</td>
-                  <td className="px-4 py-2">{fmtDate(r.clearedDate)}</td>
-                  <td className="px-4 py-2">{r.crNumber ?? '—'}</td>
-                  <td className={`px-4 py-2 font-medium ${VERDICT[r.verdict].tone}`}>
-                    {VERDICT[r.verdict].words}{r.detail ? ` · ${r.detail}` : ''}
-                  </td>
-                </tr>
-              ))}
-              {preview.errors.map((e) => (
-                <tr key={`e${e.line}`}>
-                  <td className="px-4 py-2 tabular-nums text-slate-500">{e.line}</td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-500" colSpan={4}>{e.raw}</td>
-                  <td className="px-4 py-2 font-medium text-danger-ink">NOT READ · {e.message}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  </>
+                ),
+                payee: r.payeeName ?? '—',
+                date: fmtDate(r.clearedDate),
+                bankRef: r.crNumber ?? '—',
+                verdict: <span className={VERDICT[r.verdict].tone}>{VERDICT[r.verdict].words}{r.detail ? ` · ${r.detail}` : ''}</span>,
+              },
+            })),
+            ...preview.errors.map((e): KitRow => ({
+              key: `e${e.line}`,
+              values: { line: String(e.line), check: e.raw, payee: null, date: null, bankRef: null, verdict: `NOT READ · ${e.message}` },
+              cells: {
+                line: e.line,
+                check: <span className="font-mono text-xs text-slate-500">{e.raw}</span>,
+                verdict: <span className="text-danger-ink">NOT READ · {e.message}</span>,
+              },
+            })),
+          ]}
+        />
       )}
     </div>
   )

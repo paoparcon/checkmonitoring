@@ -75,10 +75,13 @@ function fakeFeed(rows: readonly AcumaticaRow[], failWith?: Error) {
       rest = rest.replace(from[0], '')
     }
 
-    const method = /PaymentMethod eq '([^']+)'/.exec(rest)
-    if (method) {
-      out = out.filter((r) => String(r.PaymentMethod ?? '').trim() === method[1])
-      rest = rest.replace(method[0], '')
+    // One method, or a parenthesised `or` of several — the shape the feed
+    // accepts (measured 2026-10-23: CHK-or-CASH answered 943 = 942 + 1 rows).
+    const methods = /[(]?PaymentMethod eq '([^']+)'(?: or PaymentMethod eq '([^']+)')*[)]?/.exec(rest)
+    if (methods) {
+      const allowed = [...methods[0].matchAll(/eq '([^']+)'/g)].map((m) => m[1])
+      out = out.filter((r) => allowed.includes(String(r.PaymentMethod ?? '').trim()))
+      rest = rest.replace(methods[0], '')
     }
 
     const leftover = rest.replace(/\band\b/g, '').trim()
@@ -301,7 +304,7 @@ describe('runSync — the incremental window', () => {
     // that was deliberately trimmed out of production.
     expect(run.calls[0].opts?.filter).toBe(
       "LastModifiedOn ge datetime'2026-09-03T20:00:00' and " +
-      "PaymentDate ge datetime'2026-01-01T00:00:00' and PaymentMethod eq 'CHK'",
+      "PaymentDate ge datetime'2026-01-01T00:00:00' and (PaymentMethod eq 'CHK' or PaymentMethod eq 'CASH')",
     )
   })
 
@@ -314,7 +317,7 @@ describe('runSync — the incremental window', () => {
     // and cannot finish inside a serverless request — it did exactly that, and
     // 12,530 out-of-scope records had to be deleted afterwards.
     expect(run.calls[0].opts?.filter).toBe(
-      "PaymentDate ge datetime'2026-01-01T00:00:00' and PaymentMethod eq 'CHK'",
+      "PaymentDate ge datetime'2026-01-01T00:00:00' and (PaymentMethod eq 'CHK' or PaymentMethod eq 'CASH')",
     )
   })
 
@@ -828,9 +831,9 @@ describe('runSync — a check whose reference is a memo', () => {
 
   it('never even fetches a non-check payment, because the feed filter excludes it', async () => {
     // Was 'imports a non-cheque payment normally' until 2026-09-04. DEBIT ADV
-    // and CASH payments have no physical document, so a cheque monitoring
+    // and wire (TT) payments have no physical document, so a check monitoring
     // system has no use for them — Finance ruling, after a full sync imported
-    // 1,696 of them. They are now excluded by PaymentMethod eq 'CHK' in the
+    // 1,696 of them. They are excluded by the PaymentMethod clause of the
     // feed query, so they are never fetched, never mapped and never written.
     //
     // mapPayment still computes isCheque from the same field plus the
@@ -852,6 +855,23 @@ describe('runSync — a check whose reference is a memo', () => {
     await seedBothTenantsST()
     await sync([feedRow()]).result
     expect((await testDb.check.findFirstOrThrow()).isCheque).toBe(true)
+  })
+
+  it('fetches a CASH payment and holds it as a check — a check payable to cash is still a check', async () => {
+    // User ruling 2026-10-23: every AP voucher is paid by check; CASH is the
+    // method for one payable to cash or to be encashed. CV-ST021234
+    // (6000354949, BPI-S-8879, 19 Oct) was never fetched under CHK-only and so
+    // never reached the portal — the complaint that led here.
+    await seedBothTenantsST()
+    const run = sync([
+      feedRow({ PaymentMethod: 'CASH', PaymentRef: '6000354949', ReferenceNbr: 'CV-ST021234' }),
+    ])
+    const result = await run.result
+    expect(result.fetched).toBe(1)
+    expect(result.imported).toBe(1)
+    const c = await testDb.check.findFirstOrThrow()
+    expect(c.checkNumber).toBe('6000354949')
+    expect(c.isCheque).toBe(true)
   })
 })
 

@@ -2,6 +2,9 @@ import type { StagedReason } from '@prisma/client'
 import { formatMoney } from '@/lib/money'
 import type { BillPreview, UnmatchedBillReason } from '@/lib/import/bills'
 import type { ImportPreview, StagedPreviewRow } from '@/lib/import/preview'
+import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
+import type { KitColumn } from '@/lib/table-kit/types'
+import { dateValue } from '@/lib/table-kit/match'
 
 /**
  * The reconciliation report, shown BEFORE anything is written.
@@ -30,6 +33,9 @@ const REASON_LABEL: Readonly<Record<StagedReason, string>> = {
 const fmtDate = (d: Date | null) =>
   d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
+const distinct = (xs: (string | null)[]) =>
+  [...new Set(xs.filter((x): x is string => Boolean(x)))].sort().map((v) => ({ value: v, label: v }))
+
 function Figure({ label, value, tone }: { label: string; value: string; tone: 'good' | 'warn' }) {
   const skin = tone === 'good'
     ? 'bg-success-bg ring-success-ink/20 text-success-ink'
@@ -44,50 +50,53 @@ function Figure({ label, value, tone }: { label: string; value: string; tone: 'g
 
 function StagedGroup({ reason, rows }: { reason: StagedReason; rows: StagedPreviewRow[] }) {
   if (rows.length === 0) return null
+  const stagedColumns: KitColumn[] = [
+    { key: 'sheet', label: 'SHEET', kind: 'enum', options: distinct(rows.map((r) => r.sheet)), className: 'text-slate-600' },
+    { key: 'row', label: 'ROW', kind: 'amount', align: 'right', className: 'tabular-nums text-slate-600' },
+    { key: 'checkNumber', label: 'CHECK NUMBER', kind: 'text', locked: true, className: 'font-medium' },
+    { key: 'payee', label: 'PAYEE', kind: 'text' },
+    { key: 'checkDate', label: 'CHECK DATE', kind: 'date', className: 'text-slate-600' },
+    { key: 'amount', label: 'AMOUNT', kind: 'amount', align: 'right', className: 'tabular-nums' },
+    { key: 'cashAccount', label: 'CASH ACCOUNT', kind: 'text', className: 'text-slate-600' },
+    { key: 'checkBook', label: 'CHECK BOOK', kind: 'text', className: 'text-slate-600' },
+    { key: 'companies', label: 'COMPANIES CLAIMED', kind: 'text', className: 'text-slate-600' },
+    { key: 'implied', label: 'REGISTER IMPLIES', kind: 'enum', options: distinct(rows.map((r) => r.impliedStatus ?? 'NOT RULED ON')), className: 'text-slate-600' },
+  ]
   return (
     <details className="rounded-2xl bg-white ring-1 ring-hairline">
       <summary className="cursor-pointer px-6 py-4 text-sm font-medium">
         {n(rows.length)} · {REASON_LABEL[reason]}
       </summary>
       <div className="overflow-x-auto border-t border-slate-100">
-        <table className="w-full text-sm">
-          <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-            <tr>
-              <th className="px-4 py-3">SHEET</th>
-              <th className="px-4 py-3 text-right">ROW</th>
-              <th className="px-4 py-3">CHECK NUMBER</th>
-              <th className="px-4 py-3">PAYEE</th>
-              <th className="px-4 py-3">CHECK DATE</th>
-              <th className="px-4 py-3 text-right">AMOUNT</th>
-              <th className="px-4 py-3">CASH ACCOUNT</th>
-              <th className="px-4 py-3">CHECK BOOK</th>
-              <th className="px-4 py-3">COMPANIES CLAIMED</th>
-              <th className="px-4 py-3">REGISTER IMPLIES</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.slice(0, ROWS_SHOWN).map((r) => (
-              <tr key={`${r.sheet}#${r.row}`} className="border-b border-slate-100 last:border-0">
-                <td className="px-4 py-3 text-slate-600">{r.sheet}</td>
-                <td className="px-4 py-3 text-right tabular-nums text-slate-600">{r.row}</td>
-                {/* For a NO_CHECK_NUMBER row this shows what the cell actually
-                    held, which is what a human replaces with the real number. */}
-                <td className="px-4 py-3 font-medium">{r.checkNumber ?? r.statedCheckRef ?? '—'}</td>
-                <td className="px-4 py-3">{r.payeeName ?? '—'}</td>
-                <td className="px-4 py-3 text-slate-600">{fmtDate(r.checkDate)}</td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  {formatMoney(r.amount, r.currency ?? 'PHP')}
-                </td>
-                <td className="px-4 py-3 text-slate-600">{r.cashAccountCode ?? '—'}</td>
-                <td className="px-4 py-3 text-slate-600">{r.checkBookCode ?? '—'}</td>
-                <td className="px-4 py-3 text-slate-600">
-                  {r.conflictingCompanies.length ? r.conflictingCompanies.join(' / ') : r.companyCode ?? '—'}
-                </td>
-                <td className="px-4 py-3 text-slate-600">{r.impliedStatus ?? 'NOT RULED ON'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <KitTable
+          tableId="import-rows"
+          frameClassName=""
+          capped={rows.length > ROWS_SHOWN}
+          columns={stagedColumns}
+          rows={rows.slice(0, ROWS_SHOWN).map((r): KitRow => ({
+            key: `${r.sheet}#${r.row}`,
+            values: {
+              sheet: r.sheet, row: String(r.row), checkNumber: r.checkNumber ?? r.statedCheckRef, payee: r.payeeName,
+              checkDate: dateValue(r.checkDate), amount: r.amount, cashAccount: r.cashAccountCode, checkBook: r.checkBookCode,
+              companies: r.conflictingCompanies.length ? r.conflictingCompanies.join(' / ') : r.companyCode,
+              implied: r.impliedStatus ?? 'NOT RULED ON',
+            },
+            cells: {
+              sheet: r.sheet,
+              row: r.row,
+              /* For a NO_CHECK_NUMBER row this shows what the cell actually
+                 held, which is what a human replaces with the real number. */
+              checkNumber: r.checkNumber ?? r.statedCheckRef ?? '—',
+              payee: r.payeeName ?? '—',
+              checkDate: fmtDate(r.checkDate),
+              amount: formatMoney(r.amount, r.currency ?? 'PHP'),
+              cashAccount: r.cashAccountCode ?? '—',
+              checkBook: r.checkBookCode ?? '—',
+              companies: r.conflictingCompanies.length ? r.conflictingCompanies.join(' / ') : r.companyCode ?? '—',
+              implied: r.impliedStatus ?? 'NOT RULED ON',
+            },
+          }))}
+        />
         {rows.length > ROWS_SHOWN && (
           <p className="px-4 py-3 text-sm text-slate-500">
             SHOWING {n(ROWS_SHOWN)} OF {n(rows.length)}. Every one of them is kept — after the
@@ -150,28 +159,32 @@ export function RegisterPreviewReport({ preview }: { preview: ImportPreview }) {
           3 September 2026 settled each
         </summary>
         <div className="overflow-x-auto border-t border-slate-100">
-          <table className="w-full text-sm">
-            <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-              <tr>
-                <th className="px-4 py-3">CHECK NUMBER</th>
-                <th className="px-4 py-3">SHEETS</th>
-                <th className="px-4 py-3">THE REGISTER IMPLIES</th>
-                <th className="px-4 py-3">RESOLVED TO</th>
-                <th className="px-4 py-3">IMPORTED AS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {preview.contradictions.slice(0, ROWS_SHOWN).map((c) => (
-                <tr key={c.checkNumber} className="border-b border-slate-100 last:border-0">
-                  <td className="px-4 py-3 font-medium">{c.checkNumber}</td>
-                  <td className="px-4 py-3 text-slate-600">{c.sheets.join(', ')}</td>
-                  <td className="px-4 py-3 text-slate-600">{c.implied.join(' and ')}</td>
-                  <td className="px-4 py-3">{c.resolvedFrom ?? '—'}</td>
-                  <td className="px-4 py-3">{c.status}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <KitTable
+            tableId="import-contradictions"
+            frameClassName=""
+            capped={preview.contradictions.length > ROWS_SHOWN}
+            columns={[
+              { key: 'checkNumber', label: 'CHECK NUMBER', kind: 'text', locked: true, className: 'font-medium' },
+              { key: 'sheets', label: 'SHEETS', kind: 'text', className: 'text-slate-600' },
+              { key: 'implied', label: 'THE REGISTER IMPLIES', kind: 'text', className: 'text-slate-600' },
+              { key: 'resolvedFrom', label: 'RESOLVED TO', kind: 'text' },
+              { key: 'status', label: 'IMPORTED AS', kind: 'enum', options: distinct(preview.contradictions.map((c) => c.status)) },
+            ]}
+            rows={preview.contradictions.slice(0, ROWS_SHOWN).map((c): KitRow => ({
+              key: c.checkNumber,
+              values: {
+                checkNumber: c.checkNumber, sheets: c.sheets.join(', '), implied: c.implied.join(' and '),
+                resolvedFrom: c.resolvedFrom, status: c.status,
+              },
+              cells: {
+                checkNumber: c.checkNumber,
+                sheets: c.sheets.join(', '),
+                implied: c.implied.join(' and '),
+                resolvedFrom: c.resolvedFrom ?? '—',
+                status: c.status,
+              },
+            }))}
+          />
         </div>
       </details>
 
@@ -181,32 +194,36 @@ export function RegisterPreviewReport({ preview }: { preview: ImportPreview }) {
           COMPANIES — the cash account wins, and the register needs correcting
         </summary>
         <div className="overflow-x-auto border-t border-slate-100">
-          <table className="w-full text-sm">
-            <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-              <tr>
-                <th className="px-4 py-3">SHEET</th>
-                <th className="px-4 py-3 text-right">ROW</th>
-                <th className="px-4 py-3">CHECK NUMBER</th>
-                <th className="px-4 py-3">CASH ACCOUNT</th>
-                <th className="px-4 py-3">CHECK BOOK</th>
-                <th className="px-4 py-3">IMPORTED AS</th>
-                <th className="px-4 py-3">THE CHECK BOOK SAID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {preview.companyConflicts.slice(0, ROWS_SHOWN).map((c) => (
-                <tr key={`${c.sheet}#${c.row}`} className="border-b border-slate-100 last:border-0">
-                  <td className="px-4 py-3 text-slate-600">{c.sheet}</td>
-                  <td className="px-4 py-3 text-right tabular-nums text-slate-600">{c.row}</td>
-                  <td className="px-4 py-3 font-medium">{c.checkNumber}</td>
-                  <td className="px-4 py-3">{c.cashAccountLabel ?? '—'}</td>
-                  <td className="px-4 py-3">{c.checkBook ?? '—'}</td>
-                  <td className="px-4 py-3">{c.resolved}</td>
-                  <td className="px-4 py-3 text-slate-600">{c.conflictedWith}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <KitTable
+            tableId="import-company-conflicts"
+            frameClassName=""
+            capped={preview.companyConflicts.length > ROWS_SHOWN}
+            columns={[
+              { key: 'sheet', label: 'SHEET', kind: 'enum', options: distinct(preview.companyConflicts.map((c) => c.sheet)), className: 'text-slate-600' },
+              { key: 'row', label: 'ROW', kind: 'amount', align: 'right', className: 'tabular-nums text-slate-600' },
+              { key: 'checkNumber', label: 'CHECK NUMBER', kind: 'text', locked: true, className: 'font-medium' },
+              { key: 'cashAccount', label: 'CASH ACCOUNT', kind: 'text' },
+              { key: 'checkBook', label: 'CHECK BOOK', kind: 'text' },
+              { key: 'resolved', label: 'IMPORTED AS', kind: 'text' },
+              { key: 'conflictedWith', label: 'THE CHECK BOOK SAID', kind: 'text', className: 'text-slate-600' },
+            ]}
+            rows={preview.companyConflicts.slice(0, ROWS_SHOWN).map((c): KitRow => ({
+              key: `${c.sheet}#${c.row}`,
+              values: {
+                sheet: c.sheet, row: String(c.row), checkNumber: c.checkNumber, cashAccount: c.cashAccountLabel,
+                checkBook: c.checkBook, resolved: c.resolved, conflictedWith: c.conflictedWith,
+              },
+              cells: {
+                sheet: c.sheet,
+                row: c.row,
+                checkNumber: c.checkNumber,
+                cashAccount: c.cashAccountLabel ?? '—',
+                checkBook: c.checkBook ?? '—',
+                resolved: c.resolved,
+                conflictedWith: c.conflictedWith,
+              },
+            }))}
+          />
         </div>
       </details>
 
@@ -335,36 +352,38 @@ export function BillPreviewReport({ preview }: { preview: BillPreview }) {
             {n(preview.unmatched.length)} · BILLS WITH NO CHECK TO ATTACH TO
           </summary>
           <div className="overflow-x-auto border-t border-slate-100">
-            <table className="w-full text-sm">
-              <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-                <tr>
-                  {/* The sheet, not only the row: two sheets carry a row 6. */}
-                  <th className="px-4 py-3">SHEET</th>
-                  <th className="px-4 py-3 text-right">ROW</th>
-                  <th className="px-4 py-3">CHECK NUMBER</th>
-                  <th className="px-4 py-3">WHAT THE CELL SAID</th>
-                  <th className="px-4 py-3">APV</th>
-                  <th className="px-4 py-3">WHY</th>
-                  <th className="px-4 py-3">COMPANIES</th>
-                </tr>
-              </thead>
-              <tbody>
-                {preview.unmatched.map((u) => (
-                  <tr key={`${u.sheet}#${u.row}`} className="border-b border-slate-100 last:border-0">
-                    <td className="px-4 py-3 text-slate-600">{u.sheet}</td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-600">{u.row}</td>
-                    {/* Null when the cell held no cheque number at all. An em
-                        dash rather than an empty cell, which is
-                        indistinguishable from a rendering fault. */}
-                    <td className="px-4 py-3 font-medium">{u.checkNumber ?? '—'}</td>
-                    <td className="px-4 py-3 text-slate-600">{u.statedCheckRef ?? '—'}</td>
-                    <td className="px-4 py-3">{u.apvNumber}</td>
-                    <td className="px-4 py-3 text-slate-600">{UNMATCHED_BILL_WHY[u.reason]}</td>
-                    <td className="px-4 py-3 text-slate-600">{u.companies.join(' / ') || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <KitTable
+              tableId="import-unmatched"
+              frameClassName=""
+              columns={[
+                { key: 'sheet', label: 'SHEET', kind: 'enum', options: distinct(preview.unmatched.map((u) => u.sheet)), className: 'text-slate-600' },
+                { key: 'row', label: 'ROW', kind: 'amount', align: 'right', className: 'tabular-nums text-slate-600' },
+                { key: 'checkNumber', label: 'CHECK NUMBER', kind: 'text', locked: true, className: 'font-medium' },
+                { key: 'stated', label: 'WHAT THE CELL SAID', kind: 'text', className: 'text-slate-600' },
+                { key: 'apv', label: 'APV', kind: 'text' },
+                { key: 'why', label: 'WHY', kind: 'text', className: 'text-slate-600' },
+                { key: 'companies', label: 'COMPANIES', kind: 'text', className: 'text-slate-600' },
+              ]}
+              rows={preview.unmatched.map((u): KitRow => ({
+                key: `${u.sheet}#${u.row}`,
+                values: {
+                  sheet: u.sheet, row: String(u.row), checkNumber: u.checkNumber, stated: u.statedCheckRef,
+                  apv: u.apvNumber, why: UNMATCHED_BILL_WHY[u.reason], companies: u.companies.join(' / ') || null,
+                },
+                cells: {
+                  sheet: u.sheet,
+                  row: u.row,
+                  /* Null when the cell held no check number at all. An em
+                     dash rather than an empty cell, which is
+                     indistinguishable from a rendering fault. */
+                  checkNumber: u.checkNumber ?? '—',
+                  stated: u.statedCheckRef ?? '—',
+                  apv: u.apvNumber,
+                  why: UNMATCHED_BILL_WHY[u.reason],
+                  companies: u.companies.join(' / ') || '—',
+                },
+              }))}
+            />
           </div>
         </details>
       )}

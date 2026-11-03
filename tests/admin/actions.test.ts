@@ -112,13 +112,12 @@ const registerFile = () =>
   })
 
 describe('syncNowAction', () => {
-  it('refuses a Finance user with a result rather than a redirect', async () => {
+  it('runs for a Finance user, not only an admin (2026-10-15)', async () => {
     const { syncNowAction } = await import('@/app/admin/actions')
     currentUser.role = 'FINANCE_USER'
     const result = await syncNowAction(fd({ tenant: 'GOLIVE' }))
-    expect(result.ok).toBe(false)
-    expect(result.ok === false && result.message).toMatch(/Finance Admin/)
-    expect(await testDb.syncRun.count()).toBe(0)
+    expect(result.ok).toBe(true)
+    expect(await testDb.syncRun.count({ where: { tenant: 'GOLIVE', trigger: 'MANUAL' } })).toBe(1)
   })
 
   it('refuses a tenant it does not recognise', async () => {

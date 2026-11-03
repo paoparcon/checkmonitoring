@@ -284,6 +284,14 @@ describe('resolveDashboardQuery', () => {
       expect(signed.refused).toBe(false)
     })
 
+    it('applies several ticked STATUS boxes on ALL CHECKS as a set', () => {
+      const r = resolveDashboardQuery({ scope: 'all', 'f.status': 'SIGNED,RELEASED' }, options)
+      expect(r.filters.status).toBeUndefined()
+      expect(r.filters.statusIn).toEqual(['SIGNED', 'RELEASED'])
+      expect(r.selection.base).toEqual({ 'f.status': 'SIGNED,RELEASED' })
+      expect(r.refused).toBe(false)
+    })
+
     it('carries company, bank and the release range in columnValues for the filter row', () => {
       const r = resolveDashboardQuery({ status: 'RELEASED', company: 'co-stk', cashAccount: 'ca-bpi', releasedTo: '2026-09-30' }, options)
       expect(r.columnValues).toEqual({ company: 'co-stk', cashAccount: 'ca-bpi', releasedTo: '2026-09-30' })

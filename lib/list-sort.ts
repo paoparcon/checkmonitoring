@@ -43,7 +43,7 @@ export function isAppSorted(key: SortKey): key is AppSortKey {
 export const SORT_COOKIE = 'cm_sort'
 export const SORT_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
-const isSortKey = (v: unknown): v is SortKey =>
+export const isSortKey = (v: unknown): v is SortKey =>
   typeof v === 'string' && (SORT_KEYS as readonly string[]).includes(v)
 const isSortDir = (v: unknown): v is SortDir => v === 'asc' || v === 'desc'
 
@@ -79,17 +79,6 @@ export function readCookie(header: string | null | undefined, name: string): str
     if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim()
   }
   return undefined
-}
-
-/**
- * The header cycle: ascending, descending, back to the default (`null`).
- * `active` is the sort the URL or the cookie put in force — null under the
- * default, so the first click on CHECK DATE sorts it ascending rather than
- * computing "descending → default" and doing nothing.
- */
-export function nextSort(active: SortSpec | null, key: SortKey): SortSpec | null {
-  if (!active || active.key !== key) return { key, dir: 'asc' }
-  return active.dir === 'asc' ? { key, dir: 'desc' } : null
 }
 
 export function sameSort(a: SortSpec, b: SortSpec): boolean {

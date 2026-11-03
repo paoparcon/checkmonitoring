@@ -1,15 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import {
   RECEIPT_TYPES, isReceiptType, checkReceipt, normaliseReceipt, hasReceipt,
-  checkReceiptAmount, checkReceiptFile, MAX_RECEIPT_FILE_BYTES,
+  checkReceiptAmount, checkReceiptFile, MAX_RECEIPT_FILE_BYTES, PORTAL_RECEIPT_TYPES, portalAcceptsReceiptType,
 } from '@/lib/domain/receipt'
 
 // Pure. No database, no clock — every way a receipt can be typed wrong is
 // answerable here, which is why the guard lives outside `actions.ts`.
 
 describe('the receipt types', () => {
-  it('is exactly OR and CR — the two pieces of paper a supplier hands over', () => {
-    expect([...RECEIPT_TYPES]).toEqual(['OR', 'CR'])
+  it('is OR, CR, AR, PR, SI and OTHERS — the papers a supplier hands over', () => {
+    expect([...RECEIPT_TYPES]).toEqual(['OR', 'CR', 'AR', 'PR', 'SI', 'OTHERS'])
+    expect(isReceiptType('AR') && isReceiptType('PR') && isReceiptType('SI')).toBe(true)
+    expect(isReceiptType('XX')).toBe(false)
+  })
+
+  it('tells the portal only about the kinds it accepts (OR and CR)', () => {
+    expect(PORTAL_RECEIPT_TYPES).toEqual(['OR', 'CR'])
+    expect(portalAcceptsReceiptType('CR')).toBe(true)
+    for (const t of ['AR', 'PR', 'SI', 'OTHERS', null, undefined, '']) expect(portalAcceptsReceiptType(t), String(t)).toBe(false)
   })
 
   it('recognises its own values and nothing else', () => {

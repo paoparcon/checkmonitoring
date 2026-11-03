@@ -26,11 +26,14 @@ export async function retryPortalEventAction(formData: FormData): Promise<AdminA
   return { ok: true }
 }
 
+// Every Finance user (user request 2026-10-15): it only sends what is already
+// queued - the same delivery every Finance action kicks. RETRY stays admin-only:
+// it resets an event that parked for a human to look at.
 export async function deliverPortalNowAction(): Promise<AdminActionResult> {
-  const user = await requireUser()
-  if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY }
+  await requireUser()
   const out = await kickPortalDelivery(prisma, { budgetMs: 25_000 })
   revalidatePath('/admin/portal')
+  revalidatePath('/')
   if ('skipped' in out) return { ok: false, message: out.skipped }
   if (out.error) return { ok: false, message: out.error }
   // A refused token stops the run after parking one event (final review

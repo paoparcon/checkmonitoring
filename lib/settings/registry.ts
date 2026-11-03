@@ -11,7 +11,7 @@ import {
   DEFAULT_WINDOW_MINUTES as WINDOW_MINUTES,
   DEFAULT_EMAIL_FREE_FAILURES as EMAIL_FREE_FAILURES,
   DEFAULT_IP_FREE_FAILURES as IP_FREE_FAILURES,
-  DEFAULT_AUTO_SIGN_MONDAY_ENABLED as AUTO_SIGN_MONDAY_ENABLED,
+  DEFAULT_SIGNUP_IP_PER_HOUR as SIGNUP_IP_PER_HOUR,
 } from './defaults'
 import { DEFAULT_CATEGORIES, isCategory } from './categories'
 
@@ -19,7 +19,7 @@ import { DEFAULT_CATEGORIES, isCategory } from './categories'
 export { DEFAULT_CATEGORIES, isCategory }
 
 /**
- * THE ELEVEN KNOBS, DECLARED ONCE.
+ * THE TWELVE KNOBS, DECLARED ONCE.
  *
  * Each default is the constant the code already exports, so the paragraph of
  * reasoning beside each constant stays where it was written and the `Setting`
@@ -35,13 +35,13 @@ export { DEFAULT_CATEGORIES, isCategory }
  * Pure. Imports only constants.
  */
 
-export type SettingGroup = 'SYNC' | 'CAPS' | 'LOGIN' | 'WORKFLOW' | 'CATEGORIES'
+export type SettingGroup = 'SYNC' | 'CAPS' | 'LOGIN' | 'CATEGORIES'
 
 export type IntKey =
   | 'sync.staleAfterHours' | 'sync.abandonedAfterMinutes' | 'sync.inProgressMinutes'
   | 'caps.bulkSelection' | 'caps.exportRows' | 'caps.voucherScreenRows'
   | 'login.windowMinutes' | 'login.emailFreeFailures' | 'login.ipFreeFailures'
-  | 'autoSign.mondayEnabled'
+  | 'signup.ipPerHour'
 export type SettingKey = IntKey | 'categories'
 
 export type IntSettingDef = {
@@ -82,9 +82,9 @@ export const SETTINGS: readonly SettingDef[] = [
   { kind: 'int', key: 'login.ipFreeFailures', group: 'LOGIN', label: 'FREE FAILURES PER ADDRESS BEFORE A LOCK', unit: 'failures',
     help: 'Counted across every account one client address tries. Higher than the email allowance because one address may be a whole office.',
     default: IP_FREE_FAILURES, min: 10, max: 100 },
-  { kind: 'int', key: 'autoSign.mondayEnabled', group: 'WORKFLOW', label: "AUTO-SIGN MONDAY'S ACUMATICA CHECKS ON TUESDAY", unit: '1 = on, 0 = off',
-    help: 'At 12:00 every Tuesday, an Acumatica check first read on the Monday and still at SIGNATURE PENDING is signed. Every other pending check waits for SIGN ALL.',
-    default: AUTO_SIGN_MONDAY_ENABLED, min: 0, max: 1 },
+  { kind: 'int', key: 'signup.ipPerHour', group: 'LOGIN', label: 'REGISTRATIONS PER ADDRESS PER HOUR', unit: 'accounts',
+    help: 'How many accounts one client address may create on the sign-up page in a rolling hour. Every submission counts, accepted or refused.',
+    default: SIGNUP_IP_PER_HOUR, min: 1, max: 100 },
   { kind: 'list', key: 'categories', group: 'CATEGORIES', label: 'CATEGORIES',
     help: 'What a check or a planned outflow may be filed under. One per line. Anything else is refused on the form.',
     default: DEFAULT_CATEGORIES },

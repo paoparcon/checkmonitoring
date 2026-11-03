@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { testDb, resetDb } from '../helpers/db'
-import { makeCheck } from '../helpers/factory'
+import { makeCheck, makeUser } from '../helpers/factory'
 import { deliverPortalEvents, kindMatchesStatus, RETRY_DELAYS_MS, MAX_ATTEMPTS, UNMATCHED_MAX_ATTEMPTS } from '@/lib/sync/portal-outbox'
 import type { PortalClient, PortalDeliveryResult, PortalEventBody } from '@/lib/integrations/portal/client'
 
@@ -138,15 +138,26 @@ describe('deliverPortalEvents', () => {
     }
   })
 
-  it('never sends an INTERNAL check: the event parks without a request', async () => {
-    const check = await makeCheck({ status: 'RELEASED', eligibility: 'INTERNAL', apvNumbers: ['AP-1'] })
+  it('sends an INTERNAL RELEASED flagged internal and leaves the check with no portal state (spec 2026-10-19)', async () => {
+    const check = await makeCheck({ status: 'RELEASED', eligibility: 'INTERNAL', apvNumbers: ['AP-1'], releasedAt: NOW })
     const ev = await queue(check.id, 'RELEASED', NOW)
+    const client = fakeClient(() => ok())
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+    expect(client.sent).toHaveLength(1)
+    expect(client.sent[0]).toMatchObject({ kind: 'RELEASED', internal: true })
+    expect((await testDb.portalEvent.findUniqueOrThrow({ where: { id: ev.id } })).status).toBe('SYNCED')
+    // check_internal_never_routes_to_portal: delivery state lives on the event only.
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+    expect(after.portalSyncStatus).toBe('NOT_APPLICABLE'); expect(after.portalDomain).toBeNull()
+  })
+
+  it('still parks an INTERNAL MARK_AVAILABLE without a request', async () => {
+    const check = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'INTERNAL', apvNumbers: ['AP-1'], availablePickupDate: NOW })
+    const ev = await queue(check.id, 'MARK_AVAILABLE', NOW)
     const client = fakeClient(() => ok())
     await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
     expect(client.sent).toHaveLength(0)
     expect((await testDb.portalEvent.findUniqueOrThrow({ where: { id: ev.id } })).status).toBe('PARKED')
-    // An INTERNAL cheque never carries portal state (DB constraint check_internal_never_routes_to_portal).
-    expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).portalSyncStatus).toBe('NOT_APPLICABLE')
   })
 
   it('a payload missing its required date parks without a request (never retried)', async () => {
@@ -577,5 +588,67 @@ describe('kindMatchesStatus', () => {
     expect(allowed('RELEASED')).toEqual(['RELEASED'])
     expect(allowed('REVERT')).toEqual(['GENERATED', 'SIGNATURE_PENDING', 'SIGNED'])
     expect(allowed('CANCELLED')).toEqual(['CANCELLED', 'VOIDED'])
+  })
+})
+
+describe('deliverPortalEvents: a parked event notifies the admins', () => {
+  it('writes one PORTAL_PARKED per active admin, once per event', async () => {
+    const admin = await makeUser('FINANCE_ADMIN')
+    await makeUser('FINANCE_USER')
+    const check = await releasedCheck('AP-1')
+    const ev = await queue(check.id, 'RELEASED', NOW)
+    const client = fakeClient(() => ({ status: 400, body: null }))
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+
+    const rows = await testDb.notification.findMany()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      userId: admin.id, kind: 'PORTAL_PARKED', link: '/admin/portal', checkId: check.id, dedupeKey: `parked:${ev.id}`,
+    })
+    expect(rows[0].message).toContain(`check ${check.checkNumber}`)
+
+    // Re-queued by RETRY and parked again: no second notification for the same event.
+    await testDb.portalEvent.update({ where: { id: ev.id }, data: { status: 'PENDING', nextAttemptAt: LATER } })
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+    expect(await testDb.notification.count()).toBe(1)
+  })
+
+  it('a FAILED delivery that will retry notifies nobody', async () => {
+    await makeUser('FINANCE_ADMIN')
+    const check = await releasedCheck('AP-1')
+    await queue(check.id, 'RELEASED', NOW)
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client: fakeClient(() => ({ status: 503, body: null })) })
+    expect(await testDb.notification.count()).toBe(0)
+  })
+})
+
+describe('deliverPortalEvents: an unmatched INTERNAL event (ruling 2026-10-19)', () => {
+  it('retries while attempts remain, then closes SYNCED quietly on the last one: no parked notice', async () => {
+    await makeUser('FINANCE_ADMIN')
+    const check = await makeCheck({ status: 'RELEASED', eligibility: 'INTERNAL', apvNumbers: ['AP-1'], releasedAt: NOW })
+    const early = await queue(check.id, 'RELEASED', NOW, { attempts: UNMATCHED_MAX_ATTEMPTS - 2 })
+    const client = fakeClient(() => ok({ results: [], unmatched: ['AP-1'] }))
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+    let after = await testDb.portalEvent.findUniqueOrThrow({ where: { id: early.id } })
+    expect(after.status).toBe('FAILED')   // a bill that arrives late is still matched
+
+    await testDb.portalEvent.update({ where: { id: early.id }, data: { nextAttemptAt: LATER } })
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+    after = await testDb.portalEvent.findUniqueOrThrow({ where: { id: early.id } })
+    expect(after.status).toBe('SYNCED'); expect(after.attempts).toBe(UNMATCHED_MAX_ATTEMPTS)
+    expect(after.lastError).toBe('unmatched (internal): AP-1')
+    expect(await testDb.notification.count()).toBe(0)
+    const c = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+    expect(c.portalSyncStatus).toBe('NOT_APPLICABLE')
+    expect(await testDb.auditLog.count({ where: { checkId: check.id, action: 'portal_event_synced' } })).toBe(1)
+  })
+
+  it('a SUPPLIER check unmatched on its last attempt still parks and notifies', async () => {
+    await makeUser('FINANCE_ADMIN')
+    const check = await releasedCheck('AP-1')
+    const ev = await queue(check.id, 'RELEASED', NOW, { attempts: UNMATCHED_MAX_ATTEMPTS - 1 })
+    await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client: fakeClient(() => ok({ results: [], unmatched: ['AP-1'] })) })
+    expect((await testDb.portalEvent.findUniqueOrThrow({ where: { id: ev.id } })).status).toBe('PARKED')
+    expect(await testDb.notification.count()).toBe(1)
   })
 })

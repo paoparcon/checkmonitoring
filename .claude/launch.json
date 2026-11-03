@@ -4,20 +4,14 @@
     {
       "name": "check-monitoring-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev"
-      ],
+      "runtimeArgs": ["run", "dev"],
       "port": 3000
     },
     {
       "name": "check-monitoring-dev-testdb",
       "runtimeExecutable": "node",
-      "runtimeArgs": [
-        "--env-file=.env",
-        "scripts/dev-testdb.mjs"
-      ],
-      "port": 3001
+      "runtimeArgs": ["scripts/dev-test-db.mjs", "--port", "3100"],
+      "port": 3100
     }
   ]
 }

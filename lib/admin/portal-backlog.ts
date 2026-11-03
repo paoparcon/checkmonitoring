@@ -52,6 +52,13 @@ export async function summariseBacklog(db: Db) {
  * Only a routed cheque with at least one APV number (portalApvs) is queued:
  * the portal matches on APV, so a CANCELLED event for a cheque without one
  * would park forever.
+ *
+ * SUPERSEDED 2026-10-29 — DO NOT RUN `--queue-cancelled` AGAIN. The user ruled
+ * that a cancelled cheque is detached from its AP bills and the portal is not
+ * told (`detachFromBills`, lib/domain/actions.ts): a CANCELLED event cancels
+ * the BILL's row in the portal, which refused the re-issued cheque's RELEASED.
+ * Kept as the record of the 2026-09-26 backlog; after
+ * `scripts/detach-cancelled-apvs.ts` it finds nothing to queue.
  */
 export async function queueCancelledForStale(db: Db, args: { now: Date; apply: boolean }) {
   const candidates = await db.check.findMany({
@@ -131,7 +138,6 @@ export const REPORT_RELEASES_FROM = new Date('2026-09-01T00:00:00Z')
 export async function queueReleasedForStale(db: Db, args: { now: Date; apply: boolean; limit?: number }) {
   const candidates = await db.check.findMany({
     where: {
-      eligibility: { not: 'INTERNAL' },
       status: 'RELEASED',
       isCheque: true,
       portalEvents: { none: { kind: 'RELEASED' } },
@@ -149,7 +155,10 @@ export async function queueReleasedForStale(db: Db, args: { now: Date; apply: bo
       apvNumbers: true, bills: { select: { apvNumber: true } },
     },
   })
-  const routed = candidates.filter((c) => portalRoute(c.eligibility as Eligibility) !== null && portalApvs(c).length > 0)
+  // An INTERNAL release goes too, flagged internal at delivery (ruling 2026-10-19,
+  // portal spec 2026-10-19-cm-internal-release-quiet); it still needs an APV.
+  const routed = candidates.filter((c) =>
+    (portalRoute(c.eligibility as Eligibility) !== null || c.eligibility === 'INTERNAL') && portalApvs(c).length > 0)
   const cheques = routed.filter((c) => c.releasedAt || c.statedReleaseDate)
   const noDate = routed.filter((c) => !c.releasedAt && !c.statedReleaseDate)
   if (!args.apply) return { found: cheques.length, queued: 0, cheques, noDate }
@@ -171,13 +180,14 @@ export async function queueReleasedForStale(db: Db, args: { now: Date; apply: bo
           nextAttemptAt: args.now,
         },
       })
-      await tx.check.update({
-        where: { id: c.id },
-        data: { portalSyncStatus: 'PENDING', portalDomain: portalRoute(c.eligibility as Eligibility) },
-      })
+      const route = portalRoute(c.eligibility as Eligibility)
+      // check_internal_never_routes_to_portal: an INTERNAL check carries no portal state.
+      if (route !== null) {
+        await tx.check.update({ where: { id: c.id }, data: { portalSyncStatus: 'PENDING', portalDomain: route } })
+      }
       await writeAudit(tx, {
         checkId: c.id, actorType: 'SYSTEM', action: 'portal_event_backfilled',
-        details: { eventId: ev.id, kind: 'RELEASED', checkStatus: c.status, reason: 'released by the register catch-up, which queues no portal event' },
+        details: { eventId: ev.id, kind: 'RELEASED', checkStatus: c.status, reason: c.eligibility === 'INTERNAL' ? 'INTERNAL release, sent quietly so the portal stops aging the bill (ruling 2026-10-19)' : 'released by the register catch-up, which queues no portal event' },
       })
       return true
     })

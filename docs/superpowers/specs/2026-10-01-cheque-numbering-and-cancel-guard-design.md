@@ -629,7 +629,25 @@ Both reverse decisions above.
   remark and a whole-run tick filed as 3 UNSAVED CHANGES, saved in one press ("Saved 3."), survived
   a reload, and wrote three `inventory_note_recorded` rows, the held one with its `checkId`.
 
-### H8. Out of scope
+### H8. Merged onto the table kit, same day
+
+`feature/check-inventory` was cut from a 9 October base, and master had since put every
+NUMBERING table on the table kit (13 October, spec `2026-10-13-table-kit-design.md`). Deploying the
+branch as it stood put a codebase 127 commits behind master on production for two hours
+(07:01–09:1x Manila, 3 November) — the dashboard threw `Value 'OTHERS' not found in enum
+'ReceiptType'` because the database already held receipt types that build did not know.
+Master was merged in and the inventory re-done on the kit: `NumberingEntriesTable` is a
+`KitTable` (`tableId` `numbering-inventory`) whose columns are the five check columns plus
+INVENTORY · TICK AND REMARKS — a text column whose filter runs over `TICKED` / `UNTICKED` and the
+remark's words, never sorted. A held check, a STAGED line and a MISSING number are data rows, so
+they stay while the table is filtered or sorted (STATUS contains MISSING is the worksheet of
+listed gaps); a long run is a kit **band** (`components/MissingRunRows.tsx`, `MissingRunBand`),
+which opens on a click into one line per number inside the band and, like every band, hides while
+a filter or sort is in force — the table says so. The SUMMARY table (`numbering-books-inventory`)
+gains TICKED. `MissingNumberRow` is gone; `lib/numbering/*`, the actions, the form and the file
+are unchanged by the merge. New `tableId`s, because a saved layout lists only the columns it knew.
+
+### H9. Out of scope
 
 A bulk "tick all"; a note on a range Finance types by hand; reading the inventory back into
 Acumatica.

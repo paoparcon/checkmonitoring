@@ -6,14 +6,14 @@ import { prisma } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
 import { DomainError } from '@/lib/domain/errors'
 import { isNextControlFlowError } from '@/lib/next-errors'
-import { changeUserRole, createUser, setUserActive, setUserPassword } from '@/lib/admin/users'
+import { approveUser, changeUserRole, createUser, rejectUser, setUserActive, setUserPassword } from '@/lib/admin/users'
 import type { AdminActionResult } from '@/app/admin/actions'
 
 /**
- * The four user-administration actions (spec §12: "manage users" is
+ * The six user-administration actions (spec §12: "manage users" is
  * FINANCE_ADMIN only).
  *
- * **All four refuse a FINANCE_USER by RETURNING a result, never by
+ * **All six refuse a FINANCE_USER by RETURNING a result, never by
  * redirecting.** `requireAdmin` redirects, Next implements a redirect by
  * throwing, and `run()` below would catch that throw and report it as
  * "Something went wrong. Please try again." on a page the user is not entitled
@@ -61,6 +61,8 @@ async function run(fn: () => Promise<unknown>): Promise<AdminActionResult> {
   try {
     await fn()
     revalidatePath('/admin/users')
+    // The USERS tab badge (pending count) lives in the admin layout.
+    revalidatePath('/admin', 'layout')
     return { ok: true }
   } catch (e) {
     if (e instanceof DomainError) return { ok: false, message: e.message }
@@ -122,4 +124,37 @@ export async function setUserPasswordAction(formData: FormData): Promise<AdminAc
   return run(() => setUserPassword(prisma, {
     userId: str(formData, 'userId'), password: rawPassword(formData), actorId: user.id,
   }))
+}
+
+/**
+ * The two halves of self-registration's approval step (spec 2026-10-09).
+ * Same contract as the four above: a Finance user gets a RESULT, the role is
+ * parsed before anything runs, and nothing but `{ ok: true }` comes back.
+ *
+ * `pendingSince` is the registration moment the admin's page displayed. When
+ * present and readable it goes to `approveUser`, which refuses if the account
+ * was re-registered since; when absent or unreadable the conditional write
+ * inside `approveUser` still protects.
+ */
+export async function approveUserAction(formData: FormData): Promise<AdminActionResult> {
+  const user = await requireUser()
+  if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY }
+
+  const role = roleSchema.safeParse(str(formData, 'role'))
+  if (!role.success) return { ok: false, message: 'Choose a role: Finance User or Finance Admin.' }
+
+  const seen = str(formData, 'pendingSince')
+  const seenDate = seen ? new Date(seen) : null
+  const seenPendingSince = seenDate && !Number.isNaN(seenDate.getTime()) ? seenDate : undefined
+
+  return run(() => approveUser(prisma, {
+    userId: str(formData, 'userId'), role: role.data, actorId: user.id, seenPendingSince,
+  }))
+}
+
+export async function rejectUserAction(formData: FormData): Promise<AdminActionResult> {
+  const user = await requireUser()
+  if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY }
+
+  return run(() => rejectUser(prisma, { userId: str(formData, 'userId'), actorId: user.id }))
 }

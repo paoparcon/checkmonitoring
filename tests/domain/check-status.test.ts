@@ -56,6 +56,8 @@ describe('release ladder transitions', () => {
 
   it('forbids skipping the signature step', () => {
     expect(canTransition('GENERATED', 'READY_FOR_RELEASE')).toBe(false)
+    // Signing straight from GENERATED is allowed (releaseDirectly, 2026-10-16).
+    expect(canTransition('GENERATED', 'SIGNED')).toBe(true)
   })
 
   it('assertTransition throws a coded DomainError on an illegal move', () => {

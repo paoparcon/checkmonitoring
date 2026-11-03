@@ -19,6 +19,11 @@ describe('filterHref', () => {
     expect(filterHref([['q', 'ACME'], ['company', 'c1']])).toBe('/?q=ACME&company=c1')
   })
 
+  it('builds the URL for the page the form is on, so every filter page can submit softly', () => {
+    expect(filterHref([['bank', 'BPI'], ['company', '']], '/recon')).toBe('/recon?bank=BPI')
+    expect(filterHref([['company', '']], '/admin/audit')).toBe('/admin/audit')
+  })
+
   it('keeps the order the form gives, so the URL is stable across submits', () => {
     expect(filterHref([['company', 'c1'], ['q', 'ACME']])).toBe('/?company=c1&q=ACME')
   })

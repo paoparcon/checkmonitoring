@@ -1,3 +1,4 @@
+import { FilterForm } from '@/components/FilterForm'
 import Link from 'next/link'
 import { requireUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
@@ -92,7 +93,7 @@ export default async function VouchersPage({
         back={{ href: '/', label: '← DASHBOARD' }}
       />
 
-      <form className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline" method="get">
+      <FilterForm className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline">
         <label className="sr-only" htmlFor="voucher-q">SEARCH VOUCHER</label>
         <input
           id="voucher-q"
@@ -123,7 +124,7 @@ export default async function VouchersPage({
             RESET
           </Link>
         )}
-      </form>
+      </FilterForm>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-1">
@@ -177,7 +178,7 @@ export default async function VouchersPage({
             {describeEmptyVoucherState(q, status)}
           </EmptyState>
         )
-        : <VoucherTable rows={rows} />}
+        : <VoucherTable rows={rows} capped={matching.length > rows.length} />}
 
       <Panel title="WHEN THE CHECK NUMBER IS BLANK">
         <p className="text-sm leading-relaxed text-slate-600">

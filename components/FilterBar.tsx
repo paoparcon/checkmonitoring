@@ -1,7 +1,7 @@
 import { ELIGIBILITIES } from '@/lib/queries'
 import type { SortSpec } from '@/lib/list-sort'
 import { LIST_FILTER_FORM } from '@/lib/column-filters'
-import { FilterAutoSubmit } from './FilterAutoSubmit'
+import { FilterForm } from './FilterForm'
 import { ResetLink } from './ResetLink'
 
 /** The APPLY button's id, so the enhancement can find and hide it. */
@@ -9,8 +9,8 @@ const APPLY_ID = 'filter-apply'
 
 /**
  * The dashboard's filter bar: SEARCH · ELIGIBILITY · INCOMPLETE · RESET. Every
- * other filter is a box in the table's filter row (components/ColumnFilterCell.tsx),
- * joined to this form by `form="list-filters"` — a native submit still sends it.
+ * other filter is set from the table's header menus (components/CheckTable.tsx),
+ * carried into this form by hidden `form="list-filters"` inputs — a native submit still sends them.
  *
  * A plain `<form method="get">`, deliberately, and still one. Every control
  * writes a URL parameter, which is what makes a filtered view linkable,
@@ -20,8 +20,8 @@ const APPLY_ID = 'filter-apply'
  *
  * ── AUTO-SUBMIT, WITHOUT LOSING THAT ──────────────────────────────────────
  * The client asked for the APPLY button to go: the dropdowns should submit on
- * change and the search box should debounce. That is `FilterAutoSubmit`, an
- * enhancement mounted below.
+ * change and the search box should debounce. That is `FilterForm` (`auto`), an
+ * enhancement that is the form itself.
  *
  * The button is still in the markup. It is hidden by the enhancement on mount,
  * so a reader with a working bundle never sees it, and a reader whose bundle
@@ -70,22 +70,17 @@ export function FilterBar({
   const field = 'h-10 rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy'
 
   return (
-    // Keyed on the NON-TEXT values only. React does not re-apply `defaultValue`
-    // to a mounted control, and the page's own incomplete links ("Show them" /
-    // "Back to the cheques with amounts") are soft navigations that leave this
-    // form mounted — without a key the INCOMPLETE ONLY box kept its old state
-    // and the next dropdown change silently submitted it, undoing the toggle.
-    // `q` is deliberately NOT in the key: `FilterAutoSubmit`
-    // depends on the DOM surviving each debounced submit — that is what keeps
-    // the caret in the search box — and a key carrying `q` remounted the form on
-    // every keystroke's submit and threw the reader out (caught in review,
-    // 2026-09-29). RESET below is a full navigation, which is how the text
-    // boxes get their defaults re-applied.
-    <form
+    // Not keyed on the values: a key built from them remounted the whole bar —
+    // the filter row's boxes included — on every change the reader made, which
+    // was the blinking (2026-10-12). `FilterForm` remounts only when the URL
+    // changed from somewhere else (Back, a card, "Show them"), the one case
+    // where `defaultValue` has to be re-applied. RESET is still a full
+    // navigation.
+    <FilterForm
       id={LIST_FILTER_FORM}
-      key={`${status}|${showAll}|${eligibility}|${incomplete}`}
       className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline"
-      method="get"
+      auto
+      applyButtonId={APPLY_ID}
     >
       {/* The VIEW survives a search. These hidden fields are the whole
           reason the status dropdown could be removed safely: a GET submit sends
@@ -135,7 +130,7 @@ export function FilterBar({
         INCOMPLETE ONLY
       </label>
 
-      {/* Present for the no-script path, hidden by FilterAutoSubmit on mount.
+      {/* Present for the no-script path, hidden by FilterForm on mount.
           See the note at the top of this file. */}
       <button
         id={APPLY_ID}
@@ -160,7 +155,6 @@ export function FilterBar({
         <ResetLink href={clearHref} />
       )}
 
-      <FilterAutoSubmit applyButtonId={APPLY_ID} />
-    </form>
+    </FilterForm>
   )
 }

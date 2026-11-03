@@ -201,3 +201,22 @@ describe('AcumaticaBill', () => {
     expect(row.updatedAt).toBeInstanceOf(Date)
   })
 })
+
+describe('AcumaticaBillTerms', () => {
+  const APV = `TEST-SCHEMA-TERMS-${Date.now()}`
+  afterAll(async () => {
+    await prisma.acumaticaBillTerms.deleteMany({ where: { apvNumber: APV } })
+  })
+
+  it('is keyed by the APV alone, and both values may be absent', async () => {
+    await prisma.acumaticaBillTerms.create({ data: { apvNumber: APV, tenant: 'GOLIVE' } })
+    await expect(prisma.acumaticaBillTerms.create({
+      data: { apvNumber: APV, tenant: 'MANUFACTURING', termsCode: '30D' },
+    })).rejects.toThrow()
+    const row = await prisma.acumaticaBillTerms.findUniqueOrThrow({ where: { apvNumber: APV } })
+    expect(row.dueDate).toBeNull()
+    expect(row.termsCode).toBeNull()
+    expect(row.lastModifiedOn).toBeNull()
+    expect(row.updatedAt).toBeInstanceOf(Date)
+  })
+})

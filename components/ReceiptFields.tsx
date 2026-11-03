@@ -123,7 +123,7 @@ export function ReceiptFields({
         // reference as an OR — would make a guess indistinguishable from an
         // answer on a record about money that has already moved.
         <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-          Choose OR or CR. A receipt reference cannot be recorded without saying which kind of
+          Choose the receipt type. A receipt reference cannot be recorded without saying which kind of
           receipt it is.
         </p>
       )}

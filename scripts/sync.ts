@@ -35,12 +35,12 @@
  *   npx.cmd tsx scripts/sync.ts GOLIVE --bills --full      # ignore the BILLS watermark
  *
  * THE PO READ (`--bill-refs`). Acumatica's AP-Bills and Adjustments, mirrored
- * into AcumaticaBill (lib/sync/bill-refs.ts): each Bill dated 2024 or later whose VendorRef
- * names a real PO, keyed by APV; a bill whose ref no longer does is deleted.
+ * into AcumaticaBill and AcumaticaBillTerms (due date and terms, AGING) (lib/sync/bill-refs.ts): each Bill dated 2024 or later whose VendorRef
+ * names a real PO, keyed by APV; a bill whose ref no longer does is deleted from AcumaticaBill only; AcumaticaBillTerms rows are never deleted.
  * Reference data — no Check column, no audit row per bill. The cron runs it
  * incrementally once a tenant has a BILL_REFS watermark; the FIRST read, and
  * any `--full` re-read, is this script's job. Before writing it snapshots the
- * whole AcumaticaBill table to snapshots/bill-refs-<tenant>-<timestamp>.json.
+ * whole AcumaticaBill and AcumaticaBillTerms tables to snapshots/bill-refs-<tenant>-<timestamp>.json.
  *
  *   npx.cmd tsx scripts/sync.ts GOLIVE --bill-refs --dry-run   # read the feed, write nothing
  *   npx.cmd tsx scripts/sync.ts GOLIVE --bill-refs             # snapshot, then mirror
@@ -244,6 +244,8 @@ async function bills(t: AcumaticaTenant) {
   console.log(`  vouchers added                ${res.vouchersAdded.toLocaleString()}`)
   console.log(`  cheques changed               ${res.chequesChanged.toLocaleString()}`)
   console.log(`  payments not held here        ${res.notHeld.toLocaleString()}`)
+  console.log(`  cheque cancelled/voided here  ${res.cancelledHere.toLocaleString()} (not linked)`)
+  console.log(`  no-APV checks looked up       ${res.lookedUp.toLocaleString()} (${res.linkedByLookup.toLocaleString()} linked)`)
   console.log(`  errors                        ${res.errors.toLocaleString()}`)
   console.log(`  next watermark                ${res.watermark ? res.watermark.toISOString() : '(unchanged)'}\n`)
   // A failed cheque write holds the watermark (lib/sync/bills.ts) so its
@@ -275,9 +277,10 @@ async function billRefs(t: AcumaticaTenant) {
     })
     const inScope = rows.map((r) => mapBillRef(r)).filter((r): r is BillRef => r !== null)
     const withPo = inScope.filter((b) => b.poNumbers.length > 0).length
+    const withDue = inScope.filter((b) => b.dueDate !== null).length
     console.log(
       `\nDRY RUN — the feed returns ${rows.length.toLocaleString()} rows: ${inScope.length.toLocaleString()} ` +
-      `bills dated 2024 or later, ${withPo.toLocaleString()} naming a PO. Nothing was written.\n`,
+      `bills dated 2024 or later, ${withPo.toLocaleString()} naming a PO, ${withDue.toLocaleString()} with a due date. Nothing was written.\n`,
     )
     return
   }
@@ -286,12 +289,13 @@ async function billRefs(t: AcumaticaTenant) {
   // a run can rewrite or delete any row of this tenant's.
   const now = new Date()
   const before = await db.acumaticaBill.findMany({ orderBy: { apvNumber: 'asc' } })
+  const termsBefore = await db.acumaticaBillTerms.findMany({ orderBy: { apvNumber: 'asc' } })
   await mkdir(join(process.cwd(), 'snapshots'), { recursive: true })
   const snap = join(
     process.cwd(), 'snapshots', `bill-refs-${t}-${now.toISOString().replace(/[:.]/g, '-')}.json`,
   )
-  await writeFile(snap, JSON.stringify({ takenAt: now.toISOString(), tenant: t, rows: before }, null, 2))
-  console.log(`SNAPSHOT    ${snap} (${before.length.toLocaleString()} bills)`)
+  await writeFile(snap, JSON.stringify({ takenAt: now.toISOString(), tenant: t, rows: before, terms: termsBefore }, null, 2))
+  console.log(`SNAPSHOT    ${snap} (${before.length.toLocaleString()} bills, ${termsBefore.length.toLocaleString()} terms)`)
 
   const started = Date.now()
   const res = await runBillRefsSync(db, { client: clientFor(t), tenant: t, since: watermark, now, trigger: 'MANUAL' })
@@ -303,6 +307,7 @@ async function billRefs(t: AcumaticaTenant) {
   console.log(`  rows written                  ${res.upserted.toLocaleString()}`)
   console.log(`  rows deleted (PO gone)        ${res.deleted.toLocaleString()}`)
   console.log(`  ref but no PO                 ${res.noPo.toLocaleString()}`)
+  console.log(`  terms rows written            ${res.termsWritten.toLocaleString()}`)
   console.log(`  errors                        ${res.errors.toLocaleString()}`)
   console.log(`  next watermark                ${res.watermark ? res.watermark.toISOString() : '(unchanged)'}\n`)
   if (res.errors > 0) {

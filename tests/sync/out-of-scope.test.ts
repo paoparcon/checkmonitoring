@@ -51,9 +51,12 @@ describe('refreshOutOfScope', () => {
     expect(client.calls).toHaveLength(1)
   })
 
-  it('re-reads each by its reference and follows Acumatica: now CASH, so no longer a check; status untouched', async () => {
+  it('re-reads each by its reference and follows Acumatica: now a wire (TT), so no longer a check; status untouched', async () => {
+    // Was CASH until 2026-10-23, when the user ruled a CASH payment is a check
+    // payable to cash and the feed began reading CASH too. A payment leaves the
+    // scoped feed now only by becoming a non-check method (TT, DEBIT ADV, BT).
     const c = await heldCheque('CV-OUT', 'PCF26-0244')
-    const client = fakeClient([], [payment({ ReferenceNbr: 'CV-OUT', PaymentRef: 'PCF26-0244', PaymentMethod: 'CASH' })])
+    const client = fakeClient([], [payment({ ReferenceNbr: 'CV-OUT', PaymentRef: 'PCF26-0244', PaymentMethod: 'TT' })])
 
     const res = await refreshOutOfScope(testDb, { client, tenant: 'GOLIVE', now: NOW, apply: true })
     expect(res.updated).toEqual(['CV-OUT'])

@@ -309,3 +309,16 @@ describe('revertSignatureAction', () => {
     expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).status).toBe('SIGNATURE_PENDING')
   })
 })
+
+describe('readyForReleaseAction: notifications', () => {
+  it('notifies the other users, naming the check', async () => {
+    const { readyForReleaseAction } = await import('@/app/checks/actions')
+    const other = await makeUser('FINANCE_USER')
+    const check = await makeCheck({ status: 'SIGNED' })
+    const result = await readyForReleaseAction(fd({ checkId: check.id, availablePickupDate: '2026-09-03' }))
+    expect(result.ok).toBe(true)
+    const rows = await testDb.notification.findMany()
+    expect(rows.map((r) => r.userId)).toEqual([other.id])
+    expect(rows[0].message).toBe(`Finance User marked check ${check.checkNumber} READY FOR RELEASE: ₱197,715.42`)
+  })
+})

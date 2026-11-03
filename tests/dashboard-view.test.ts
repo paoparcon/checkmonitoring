@@ -3,7 +3,7 @@ import {
   isCardSelected, cardHref, incompleteHref, clearFiltersHref, describeView, viewStatusFilter,
   releaseConfirmHref, releaseCancelHref, signAllConfirmHref, signAllCancelHref, TODAYS_RELEASE_ANCHOR,
   exportHref, EXPORT_PATH, dashboardHref, printHref,
-  dashboardScreen, totalsHref, sortHref, sortLinks, signAllOffered,
+  dashboardScreen, totalsHref, signAllOffered,
   type DashboardSelection,
 } from '@/lib/dashboard-view'
 import { LIVE_STATUSES } from '@/lib/domain/check-status'
@@ -460,32 +460,8 @@ describe('the sort in the URL', () => {
     expect(totalsHref(SORTED)).toBe('/?company=c1&cashAccount=a1&eligibility=ELIGIBLE')
   })
 
-  it('writes the next sort, or none for the default — and stays on the list', () => {
-    expect(sortHref(SORTED, { key: 'payeeName', dir: 'desc' }))
-      .toBe('/?q=ACME&company=c1&cashAccount=a1&eligibility=ELIGIBLE&status=SIGNED&sort=payeeName&dir=desc')
-    expect(sortHref({ ...NOTHING, live: true }, null)).toBe('/?scope=live')
-    expect(sortHref(NOTHING, { key: 'amount', dir: 'asc' })).toBe('/?scope=live&sort=amount&dir=asc')
-  })
-
   it('opens the LIST on its own, and so does any f.* filter', () => {
     expect(dashboardScreen({ ...NOTHING, sort: { key: 'amount', dir: 'asc' } })).toBe('LIST')
     expect(dashboardScreen({ ...NOTHING, base: { company: 'c1', 'f.payee': 'henkel' } })).toBe('LIST')
-  })
-})
-
-describe('sortLinks — one per header', () => {
-  const sel: DashboardSelection = { ...NOTHING, status: 'SIGNED' }
-
-  it('offers ascending on a fresh column, and the cycle on the active one', () => {
-    const links = sortLinks(sel, { key: 'amount', dir: 'desc' })
-    expect(links.amount).toEqual({ href: '/?status=SIGNED', next: null })
-    expect(links.payeeName).toEqual({ href: '/?status=SIGNED&sort=payeeName&dir=asc', next: { key: 'payeeName', dir: 'asc' } })
-    expect(sortLinks(sel, { key: 'amount', dir: 'asc' }).amount.next).toEqual({ key: 'amount', dir: 'desc' })
-  })
-
-  it('has no link for ACTION, and sorts CHECK DATE ascending under the default', () => {
-    const links = sortLinks(sel, null)
-    expect(Object.keys(links)).not.toContain('action')
-    expect(links.checkDate.next).toEqual({ key: 'checkDate', dir: 'asc' })
   })
 })

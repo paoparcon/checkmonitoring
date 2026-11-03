@@ -24,13 +24,28 @@ import type { GuardResult } from './check-status'
  * and the answer is a column.
  */
 
-export const RECEIPT_TYPES = ['OR', 'CR'] as const
+export const RECEIPT_TYPES = ['OR', 'CR', 'AR', 'PR', 'SI', 'OTHERS'] as const
 export type ReceiptType = (typeof RECEIPT_TYPES)[number]
 
-/** What the two letters stand for, spelled out wherever a user has to choose. */
+/** What the letters stand for, spelled out wherever a user has to choose. */
 export const RECEIPT_TYPE_LABELS: Record<ReceiptType, string> = {
   OR: 'OFFICIAL RECEIPT',
   CR: 'COLLECTION RECEIPT',
+  AR: 'ACKNOWLEDGEMENT RECEIPT',
+  PR: 'PROVISIONAL RECEIPT',
+  SI: 'SALES INVOICE',
+  OTHERS: 'OTHERS',
+}
+
+/**
+ * The kinds the Supplier Portal accepts: its RECEIPT endpoint rejects anything
+ * but OR or CR ("receiptType must be OR or CR"). An AR, PR, SI or OTHERS is recorded
+ * here and queues no RECEIPT event — it could only park on /admin/portal — until
+ * the portal learns it; then widening this list is the whole change.
+ */
+export const PORTAL_RECEIPT_TYPES: readonly ReceiptType[] = ['OR', 'CR']
+export function portalAcceptsReceiptType(value: string | null | undefined): boolean {
+  return (PORTAL_RECEIPT_TYPES as readonly (string | null | undefined)[]).includes(value)
 }
 
 export function isReceiptType(value: unknown): value is ReceiptType {
@@ -73,7 +88,8 @@ export function checkReceipt(input: ReceiptInput): GuardResult {
       ok: false,
       code: 'RECEIPT_TYPE_REQUIRED',
       message:
-        'Choose whether this reference is an Official Receipt (OR) or a Collection Receipt (CR). ' +
+        'Choose which kind of receipt this reference is: Official Receipt (OR), Collection Receipt (CR), ' +
+        'Acknowledgement Receipt (AR), Provisional Receipt (PR) or Sales Invoice (SI). ' +
         'A receipt reference cannot be recorded without saying which kind of receipt it is.',
     }
   }

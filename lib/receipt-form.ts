@@ -102,7 +102,7 @@ export function readRowReceipts(formData: FormData, checkIds: readonly string[])
     if (orNumber === '') continue
     const raw = str(formData, ROW_RECEIPT_TYPE + id)
     if (raw === '') {
-      return { ok: false, message: 'Choose OR or CR for every receipt reference you typed. Nothing was saved.' }
+      return { ok: false, message: 'Choose the receipt type (OR, CR, AR, PR, SI or OTHERS) for every reference you typed. Nothing was saved.' }
     }
     const parsed = receiptTypeSchema.safeParse(raw)
     if (!parsed.success) return { ok: false, message: 'Invalid receipt type.' }

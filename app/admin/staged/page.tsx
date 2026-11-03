@@ -1,3 +1,4 @@
+import { FilterForm } from '@/components/FilterForm'
 import type { CheckStatus, StagedReason } from '@prisma/client'
 import { requireAdmin } from '@/lib/auth'
 import { prisma } from '@/lib/db'
@@ -7,6 +8,9 @@ import {
 } from '@/lib/admin/staged-queue'
 import { formatMoney } from '@/lib/money'
 import { EmptyState } from '@/components/EmptyState'
+import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
+import type { KitColumn } from '@/lib/table-kit/types'
+import { dateValue } from '@/lib/table-kit/match'
 
 /**
  * The staged queue: rows the importer could not write, kept whole.
@@ -31,6 +35,9 @@ const FIELD =
 
 const fmtDate = (d: Date | null) =>
   d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+
+const distinct = (vals: string[]) => [...new Set(vals)].sort().map((v) => ({ value: v, label: v }))
+const underscored = (v: string) => v.replace(/_/g, ' ')
 
 const SCOPES: readonly StagedScope[] = ['LIVE', 'CLOSED', 'ALL']
 const REASONS: readonly StagedReason[] = ['NO_COMPANY', 'AMBIGUOUS_COMPANY', 'NO_CHECK_NUMBER', 'SHARED_NUMBER']
@@ -88,6 +95,91 @@ export default async function StagedPage({
     listStagedBills(prisma),
   ])
 
+  const checkColumns: KitColumn[] = [
+    { key: 'checkNumber', label: 'CHECK NUMBER', kind: 'text', locked: true, className: 'font-medium' },
+    { key: 'payee', label: 'PAYEE', kind: 'text' },
+    { key: 'checkDate', label: 'CHECK DATE', kind: 'date', className: 'text-slate-600' },
+    { key: 'amount', label: 'AMOUNT', kind: 'amount', align: 'right', className: 'tabular-nums' },
+    { key: 'reason', label: 'WHY IT IS HERE', kind: 'enum', options: distinct(rows.map((r) => underscored(r.reason))), className: 'text-slate-600' },
+    { key: 'implied', label: 'REGISTER IMPLIES', kind: 'enum', options: distinct(rows.map((r) => underscored(r.impliedStatus))) },
+    { key: 'cashAccount', label: 'CASH ACCOUNT', kind: 'text', className: 'text-slate-600' },
+    { key: 'checkBook', label: 'CHECK BOOK', kind: 'text', className: 'text-slate-600' },
+    { key: 'companies', label: 'COMPANIES CLAIMED', kind: 'text', className: 'text-slate-600' },
+    { key: 'source', label: 'SOURCE', kind: 'text', className: 'text-slate-600' },
+  ]
+  const checkRows: KitRow[] = rows.map((r) => {
+    const companies = r.conflictingCompanies.length ? r.conflictingCompanies.join(' / ') : r.companyCode
+    const source = r.source === 'WORKBOOK'
+      ? `${r.sourceSheet} row ${r.sourceRow}`
+      : `Acumatica ${r.acumaticaTenant} ${r.acumaticaRef}`
+    return {
+      key: r.id,
+      className: 'border-b border-slate-100 last:border-0 odd:bg-white even:bg-ground hover:bg-navy-bg',
+      values: {
+        checkNumber: r.checkNumber ?? r.statedCheckRef, payee: r.payeeName, checkDate: dateValue(r.checkDate),
+        amount: r.amount === null ? null : r.amount.toString(),
+        reason: underscored(r.reason), implied: underscored(r.impliedStatus),
+        cashAccount: r.cashAccountCode, checkBook: r.checkBookCode, companies, source,
+      },
+      cells: {
+        // For a NO_CHECK_NUMBER row the check number is null and this shows what
+        // the cell actually held, which is what a human replaces with the real
+        // number. It is never promoted into `checkNumber`.
+        checkNumber: r.checkNumber ?? r.statedCheckRef ?? '—',
+        payee: r.payeeName ?? '—',
+        checkDate: fmtDate(r.checkDate),
+        amount: formatMoney(r.amount, r.currency ?? 'PHP'),
+        reason: underscored(r.reason),
+        implied: underscored(r.impliedStatus),
+        cashAccount: r.cashAccountCode ?? '—',
+        checkBook: r.checkBookCode ?? '—',
+        companies: companies ?? '—',
+        source: (
+          <>
+            {source}
+            {r.promotedCheckId && (
+              <span className="ml-2 rounded bg-success-bg px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-success-ink">
+                PLACED
+              </span>
+            )}
+          </>
+        ),
+      },
+    }
+  })
+  const billColumns: KitColumn[] = [
+    { key: 'cell', label: 'CELL', kind: 'text', locked: true, className: 'text-slate-600' },
+    { key: 'voucher', label: 'VOUCHER', kind: 'text', className: 'font-medium' },
+    { key: 'po', label: 'PO NUMBER', kind: 'text', className: 'text-slate-600' },
+    { key: 'checkNumber', label: 'CHECK NUMBER', kind: 'text' },
+    { key: 'said', label: 'WHAT THE CELL SAID', kind: 'text', className: 'text-slate-600' },
+    { key: 'reason', label: 'WHY IT IS HERE', kind: 'enum', options: distinct(billRows.map((b) => underscored(b.reason))), className: 'text-slate-600' },
+    { key: 'companies', label: 'COMPANIES CLAIMED', kind: 'text', className: 'text-slate-600' },
+  ]
+  const billKitRows: KitRow[] = billRows.map((b) => {
+    const cell = `${b.sourceSheet} row ${b.sourceRow}`
+    const companies = b.companies.length ? b.companies.join(' / ') : null
+    return {
+      key: b.id,
+      className: 'border-b border-slate-100 last:border-0 odd:bg-white even:bg-ground hover:bg-navy-bg',
+      values: {
+        cell, voucher: b.apvNumber, po: b.poNumber, checkNumber: b.checkNumber, said: b.statedCheckRef,
+        reason: underscored(b.reason), companies,
+      },
+      cells: {
+        cell,
+        voucher: b.apvNumber ?? '—',
+        po: b.poNumber ?? '—',
+        checkNumber: b.checkNumber ?? '—',
+        // Verbatim, and never promoted into the column beside it. This is what a
+        // human replaces with the real number.
+        said: b.statedCheckRef ?? '—',
+        reason: underscored(b.reason),
+        companies: companies ?? '—',
+      },
+    }
+  })
+
   return (
     <div className="space-y-6">
       {/* Eight since 2026-10-06 (SHARED NUMBER). Seven, not six, since 2026-09-07: the approval workbook's refused rows
@@ -123,7 +215,7 @@ export default async function StagedPage({
           a plain `method="get"` form, so every filter is in the URL and a
           narrowed queue stays linkable. There is no auto-submit enhancement
           here and the APPLY button is therefore real and stays visible. */}
-      <form className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline" method="get">
+      <FilterForm className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline">
         <input
           name="q" defaultValue={params.q ?? ''}
           placeholder="SEARCH CHECK NO., WHAT THE CELL SAID, OR PAYEE"
@@ -148,7 +240,7 @@ export default async function StagedPage({
         >
           APPLY
         </button>
-      </form>
+      </FilterForm>
 
       {matching > rows.length && (
         <p className="rounded-lg bg-warning-bg px-4 py-2 text-sm text-warning-ink">
@@ -174,57 +266,7 @@ export default async function StagedPage({
           </EmptyState>
         )
       ) : (
-        <div className="overflow-x-auto rounded-2xl bg-white ring-1 ring-hairline">
-          <table className="w-full text-sm">
-            <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-              <tr>
-                <th className="px-4 py-3">CHECK NUMBER</th>
-                <th className="px-4 py-3">PAYEE</th>
-                <th className="px-4 py-3">CHECK DATE</th>
-                <th className="px-4 py-3 text-right">AMOUNT</th>
-                <th className="px-4 py-3">WHY IT IS HERE</th>
-                <th className="px-4 py-3">REGISTER IMPLIES</th>
-                <th className="px-4 py-3">CASH ACCOUNT</th>
-                <th className="px-4 py-3">CHECK BOOK</th>
-                <th className="px-4 py-3">COMPANIES CLAIMED</th>
-                <th className="px-4 py-3">SOURCE</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-b border-slate-100 last:border-0 odd:bg-white even:bg-ground hover:bg-navy-bg">
-                  {/* For a NO_CHECK_NUMBER row the cheque number is null and
-                      this shows what the cell actually held — which is what a
-                      human replaces with the real number. It is never promoted
-                      into `checkNumber`. */}
-                  <td className="px-4 py-3 font-medium">{r.checkNumber ?? r.statedCheckRef ?? '—'}</td>
-                  <td className="px-4 py-3">{r.payeeName ?? '—'}</td>
-                  <td className="px-4 py-3 text-slate-600">{fmtDate(r.checkDate)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    {formatMoney(r.amount, r.currency ?? 'PHP')}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{r.reason.replace(/_/g, ' ')}</td>
-                  <td className="px-4 py-3">{r.impliedStatus.replace(/_/g, ' ')}</td>
-                  <td className="px-4 py-3 text-slate-600">{r.cashAccountCode ?? '—'}</td>
-                  <td className="px-4 py-3 text-slate-600">{r.checkBookCode ?? '—'}</td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {r.conflictingCompanies.length ? r.conflictingCompanies.join(' / ') : r.companyCode ?? '—'}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {r.source === 'WORKBOOK'
-                      ? `${r.sourceSheet} row ${r.sourceRow}`
-                      : `Acumatica ${r.acumaticaTenant} ${r.acumaticaRef}`}
-                    {r.promotedCheckId && (
-                      <span className="ml-2 rounded bg-success-bg px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-success-ink">
-                        PLACED
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <KitTable tableId="staged-checks" columns={checkColumns} rows={checkRows} capped={matching > rows.length} />
       )}
 
       {/* The approval-for-release workbook's refused rows.
@@ -256,41 +298,7 @@ export default async function StagedPage({
               the voucher can find it. Nothing is deleted, and re-importing the workbook clears a
               row that has since attached.
             </p>
-            <div className="overflow-x-auto rounded-2xl bg-white ring-1 ring-hairline">
-              <table className="w-full text-sm">
-                <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
-                  <tr>
-                    <th className="px-4 py-3">CELL</th>
-                    <th className="px-4 py-3">VOUCHER</th>
-                    <th className="px-4 py-3">PO NUMBER</th>
-                    <th className="px-4 py-3">CHECK NUMBER</th>
-                    <th className="px-4 py-3">WHAT THE CELL SAID</th>
-                    <th className="px-4 py-3">WHY IT IS HERE</th>
-                    <th className="px-4 py-3">COMPANIES CLAIMED</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {billRows.map((b) => (
-                    <tr key={b.id} className="border-b border-slate-100 last:border-0 odd:bg-white even:bg-ground hover:bg-navy-bg">
-                      <td className="px-4 py-3 text-slate-600">
-                        {b.sourceSheet} row {b.sourceRow}
-                      </td>
-                      <td className="px-4 py-3 font-medium">{b.apvNumber ?? '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{b.poNumber ?? '—'}</td>
-                      <td className="px-4 py-3">{b.checkNumber ?? '—'}</td>
-                      {/* Verbatim, and never promoted into the column beside
-                          it. This is what a human replaces with the real
-                          number. */}
-                      <td className="px-4 py-3 text-slate-600">{b.statedCheckRef ?? '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{b.reason.replace(/_/g, ' ')}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {b.companies.length ? b.companies.join(' / ') : '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <KitTable tableId="staged-bills" columns={billColumns} rows={billKitRows} capped={billSummary.total > billRows.length} />
           </>
         )}
       </section>

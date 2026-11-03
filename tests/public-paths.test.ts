@@ -25,6 +25,13 @@ describe('isPublicPath', () => {
     expect(isPublicPath('/welcome')).toBe(true)
   })
 
+  it('lets the sign-up page through, and only exactly it', () => {
+    expect(isPublicPath('/signup')).toBe(true)
+    expect(isPublicPath('/signupx')).toBe(false)
+    expect(isPublicPath('/signup/')).toBe(false)
+    expect(isPublicPath('/signup/anything')).toBe(false)
+  })
+
   it('does not widen /login or /welcome to their neighbours', () => {
     expect(isPublicPath('/loginhelp')).toBe(false)
     expect(isPublicPath('/login/')).toBe(false)

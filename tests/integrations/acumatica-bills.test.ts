@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  BILL_FEED_COLUMNS, billsSinceFilter, billsInScopeFilter, mapBillApplication,
+  BILL_FEED_COLUMNS, billsSinceFilter, billsInScopeFilter, mapBillApplication, billsForPaymentFilter,
 } from '@/lib/integrations/acumatica/bills'
 
 const golive = (o: Record<string, unknown> = {}) => ({
@@ -36,6 +36,14 @@ describe('mapBillApplication', () => {
     expect(mapBillApplication(mfg(), 'MANUFACTURING')).toEqual({
       paymentRef: 'CV-MF000123', voucher: 'A1PP-AP-000014', lastModifiedOn: new Date('2026-09-29T08:15:00Z'),
     })
+  })
+
+  it('billsForPaymentFilter asks for ONE payment by the tenant’s own column, quotes doubled', () => {
+    // The direct lookup of 2026-10-26 (a held check with no APV). The Go-Live
+    // column name is a 500 on MANUFACTURING, so each tenant gets its own.
+    expect(billsForPaymentFilter('GOLIVE', 'CV-HF000161')).toBe("AdjgRefNbr eq 'CV-HF000161'")
+    expect(billsForPaymentFilter('MANUFACTURING', 'CV-MF000123')).toBe("ReferenceNbr eq 'CV-MF000123'")
+    expect(billsForPaymentFilter('GOLIVE', "O'BRIEN")).toBe("AdjgRefNbr eq 'O''BRIEN'")
   })
 
   it('keeps only CHK paying a Bill', () => {

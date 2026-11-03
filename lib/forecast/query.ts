@@ -65,7 +65,7 @@ function populationWhere(filters: ForecastFilters): Prisma.CheckWhereInput {
  * Live statuses only — a released cheque has left the counter, and with
  * clearing never recorded (measured 2026-09-11: `clearingStatus = NONE` on all
  * 9,594) its fate is unknowable here; a cancelled or voided one will never
- * leave. Real cheques only: a DEBIT ADV or CASH payment has no paper to
+ * leave. Real checks only: a DEBIT ADV or TT payment has no paper to
  * present. And only cheques with a recorded amount, consistent with every
  * other output since the ruling of 2026-09-06 — the page states the exclusion
  * and its count.

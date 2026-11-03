@@ -3,11 +3,11 @@ import { testDb, resetDb } from '../helpers/db'
 import { makeCheck } from '../helpers/factory'
 import {
   runBillsSync, lastBillsWatermark, runScheduledBillsSync,
-  BILLS_MODE, VOUCHER_LINKED_ACTION, NO_BILLS_WATERMARK_MESSAGE,
+  BILLS_MODE, VOUCHER_LINKED_ACTION, NO_BILLS_WATERMARK_MESSAGE, DIRECT_LOOKUP_LIMIT,
 } from '@/lib/sync/bills'
 import { SyncInProgressError, SYNC_OVERLAP_MINUTES } from '@/lib/sync/run'
 import {
-  BILLS_FEED, billsSinceFilter, billsInScopeFilter,
+  BILLS_FEED, billsSinceFilter, billsInScopeFilter, billsForPaymentFilter,
 } from '@/lib/integrations/acumatica/bills'
 import type {
   AcumaticaClient, AcumaticaRow, FetchAllOptions, PageOptions,
@@ -93,6 +93,28 @@ describe('runBillsSync — linking vouchers', () => {
     expect((audits[0].details as { vouchers: string[] }).vouchers).toEqual(['AP-ST000001', 'AP-ST000002'])
     expect(result.vouchersAdded).toBe(2)
     expect(result.chequesChanged).toBe(1)
+  })
+
+  it('never links a CANCELLED or VOIDED cheque, counts it, and says so in the run message (ruling 2026-10-29)', async () => {
+    const voided = await heldCheque('CV-ST012345', { status: 'VOIDED', apvNumbers: [] })
+    const cancelled = await heldCheque('CV-ST012346', { status: 'CANCELLED', apvNumbers: [] })
+    const live = await heldCheque('CV-ST012347', { status: 'SIGNED', apvNumbers: [] })
+    const result = await bills([
+      billRow({ AdjgRefNbr: 'CV-ST012345', AdjdRefNbr: 'AP-ST000001' }),
+      billRow({ AdjgRefNbr: 'CV-ST012346', AdjdRefNbr: 'AP-ST000002' }),
+      billRow({ AdjgRefNbr: 'CV-ST012347', AdjdRefNbr: 'AP-ST000001' }),
+    ], { since: new Date('2026-09-29T00:00:00Z') }).result
+
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: voided.id } })).apvNumbers).toEqual([])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: cancelled.id } })).apvNumbers).toEqual([])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: live.id } })).apvNumbers).toEqual(['AP-ST000001'])
+    expect(result.cancelledHere).toBe(2)
+    expect(result.vouchersAdded).toBe(1)
+    expect(result.errors).toBe(0)
+    expect(result.watermark).not.toBeNull()
+    expect(await testDb.auditLog.count({ where: { action: VOUCHER_LINKED_ACTION } })).toBe(1)
+    const run = await testDb.syncRun.findFirstOrThrow({ where: { id: result.syncRunId } })
+    expect(run.message).toContain('2 payment(s) whose check is cancelled or voided here were not linked')
   })
 
   it('keeps vouchers already present and never removes one; a second identical run writes nothing', async () => {
@@ -404,5 +426,184 @@ describe('runScheduledBillsSync', () => {
       tenant: 'GOLIVE', now: NOW, client: () => fakeBillsFeed([]).client,
     })
     expect(outcome.outcome).toBe('IN_PROGRESS')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A held check with no APV is looked up DIRECTLY, by its payment reference.
+//
+// Why (2026-10-26): CV-HF000161 (6000354602, HAMFI) was released on 23 October
+// and its RELEASED event parked — "no APV numbers". Acumatica had applied it to
+// AP-HF002206 on 5 October 23:08; a manual full BILLS read at 01:23 on the 6th
+// saw that application and moved the watermark to 23:14, and the payment sync
+// only created the check at 04:00. Every incremental read since started after
+// the application, so the link was never written. The user's ruling: "this
+// should not happen again". The watermark cannot know which not-held payments
+// will be held later, so the run no longer depends on it for this: every
+// scheduled run also asks the inquiry, one request per check, about each held
+// Acumatica check that still has no APV. Bounded, add-only, self-healing
+// whatever the cause.
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake that honours the one filter the lookup uses — `<paymentRef> eq '…'` —
+ * and answers the feed read with `feedRows` otherwise.
+ */
+function fakeFeedWithLookups(
+  feedRows: readonly AcumaticaRow[],
+  lookups: Record<string, readonly AcumaticaRow[]>,
+  opts: { failLookups?: boolean } = {},
+) {
+  const calls: FeedCall[] = []
+  const client: AcumaticaClient = {
+    async fetchAll(feed: string, o?: FetchAllOptions): Promise<AcumaticaRow[]> {
+      calls.push({ feed, opts: o })
+      if (feed !== BILLS_FEED) throw new Error(`unexpected feed ${feed}`)
+      const m = /^(\w+) eq '([^']+)'$/.exec(o?.filter ?? '')
+      if (m && (m[1] === 'AdjgRefNbr' || m[1] === 'ReferenceNbr')) {
+        if (opts.failLookups) throw new Error('inquiry answered 500')
+        return [...(lookups[m[2]] ?? [])]
+      }
+      return [...feedRows]
+    },
+    async fetchPage(): Promise<AcumaticaRow[]> {
+      throw new Error('runBillsSync must page through fetchAll, not fetchPage')
+    },
+  }
+  return { client, calls }
+}
+
+/** A check this system holds from Acumatica, with no APV yet. */
+async function apvless(
+  paymentRef: string,
+  extra: Parameters<typeof makeCheck>[0] & { tenant?: 'GOLIVE' | 'MANUFACTURING' } = {},
+) {
+  const { tenant = 'GOLIVE', ...rest } = extra
+  const c = await makeCheck(rest)
+  return testDb.check.update({
+    where: { id: c.id },
+    data: { acumaticaPaymentId: paymentRef, acumaticaTenant: tenant },
+  })
+}
+
+const lookupFilters = (calls: readonly FeedCall[]) =>
+  calls.slice(1).map((c) => c.opts?.filter)
+
+describe('runBillsSync — a held check with no APV is looked up directly', () => {
+  const SINCE = new Date('2026-10-06T01:14:00Z') // past the application, as on 6 October
+
+  it('asks the inquiry about the check by its payment reference and links what it answers', async () => {
+    const c = await apvless('CV-HF000161', { checkNumber: '6000354602' })
+    const { client, calls } = fakeFeedWithLookups([], {
+      'CV-HF000161': [billRow({ AdjgRefNbr: 'CV-HF000161', AdjdRefNbr: 'AP-HF002206', LastModifiedOn: '2026-10-05T23:08:19' })],
+    })
+    const result = await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+
+    expect(lookupFilters(calls)).toEqual([billsForPaymentFilter('GOLIVE', 'CV-HF000161')])
+    expect(billsForPaymentFilter('GOLIVE', 'CV-HF000161')).toBe("AdjgRefNbr eq 'CV-HF000161'")
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).apvNumbers).toEqual(['AP-HF002206'])
+    expect(result.lookedUp).toBe(1)
+    expect(result.linkedByLookup).toBe(1)
+    expect(result.vouchersAdded).toBe(1)
+    expect(result.chequesChanged).toBe(1)
+    expect(result.errors).toBe(0)
+
+    const audits = await testDb.auditLog.findMany({ where: { action: VOUCHER_LINKED_ACTION } })
+    expect(audits).toHaveLength(1)
+    expect(audits[0].checkId).toBe(c.id)
+    expect((audits[0].details as { lookup?: boolean }).lookup).toBe(true)
+  })
+
+  it('uses the tenant’s own column name — a Go-Live name is a 500 on MANUFACTURING', async () => {
+    const c = await apvless('CV-MF000123', { tenant: 'MANUFACTURING', checkNumber: '1791400001' })
+    const { client, calls } = fakeFeedWithLookups([], {
+      'CV-MF000123': [{
+        AdjgDocType: 'CHK', ReferenceNbr: 'CV-MF000123', DocumentType: 'Bill',
+        ReferenceNbr_2: 'A1PP-AP-000014', APAdjust_lastModifiedDateTime: '2026-10-05T23:08:19',
+      }],
+    })
+    await runBillsSync(testDb, { client, tenant: 'MANUFACTURING', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+    expect(lookupFilters(calls)).toEqual(["ReferenceNbr eq 'CV-MF000123'"])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).apvNumbers).toEqual(['A1PP-AP-000014'])
+  })
+
+  it('looks up only what needs it: not a linked check, a non-check, a voided or cancelled one, another tenant’s, or one the feed just linked', async () => {
+    await apvless('CV-LINKED', { checkNumber: '6000400001', apvNumbers: ['AP-ST000009'] })
+    await apvless('CV-NOTCHEQUE', { checkNumber: 'Oct interest', isCheque: false })
+    await apvless('CV-VOIDED', { checkNumber: '6000400003', status: 'VOIDED' })
+    await apvless('CV-CANCELLED', { checkNumber: '6000400004', status: 'CANCELLED' })
+    await apvless('CV-OTHER', { checkNumber: '6000400005', tenant: 'MANUFACTURING' })
+    const fed = await apvless('CV-ST012345', { checkNumber: '6000400006' })
+    const needs = await apvless('CV-NEEDS', { checkNumber: '6000400007', status: 'RELEASED' })
+
+    const { client, calls } = fakeFeedWithLookups([billRow()], { 'CV-NEEDS': [billRow({ AdjgRefNbr: 'CV-NEEDS', AdjdRefNbr: 'AP-ST000777' })] })
+    const result = await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+
+    expect(lookupFilters(calls)).toEqual([billsForPaymentFilter('GOLIVE', 'CV-NEEDS')])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: fed.id } })).apvNumbers).toEqual(['AP-ST000001'])
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: needs.id } })).apvNumbers).toEqual(['AP-ST000777'])
+    expect(result.lookedUp).toBe(1)
+    expect(result.linkedByLookup).toBe(1)
+  })
+
+  it('a lookup the inquiry answers with no application links nothing and is not an error', async () => {
+    const c = await apvless('CV-UNAPPLIED', { checkNumber: '6000400010' })
+    const { client } = fakeFeedWithLookups([billRow()], { 'CV-UNAPPLIED': [] })
+    const result = await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+    expect(result.lookedUp).toBe(1)
+    expect(result.linkedByLookup).toBe(0)
+    expect(result.errors).toBe(0)
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).apvNumbers).toEqual([])
+    expect(await testDb.auditLog.count({ where: { action: VOUCHER_LINKED_ACTION } })).toBe(0)
+  })
+
+  it('only the application of THAT payment is taken from the answer, whatever else the inquiry returns', async () => {
+    const c = await apvless('CV-MINE', { checkNumber: '6000400011' })
+    const { client } = fakeFeedWithLookups([], {
+      'CV-MINE': [
+        billRow({ AdjgRefNbr: 'CV-SOMEONE-ELSE', AdjdRefNbr: 'AP-ST000888' }),
+        billRow({ AdjgRefNbr: 'CV-MINE', AdjdRefNbr: 'AP-ST000999' }),
+        billRow({ AdjgRefNbr: 'CV-MINE', AdjdRefNbr: 'DM-ST000001', AdjdDocType: 'Debit Adj.' }),
+      ],
+    })
+    await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).apvNumbers).toEqual(['AP-ST000999'])
+  })
+
+  it('a failed lookup is counted and named, and the feed watermark still moves', async () => {
+    await apvless('CV-FAILS', { checkNumber: '6000400012' })
+    const { client } = fakeFeedWithLookups([billRow({ LastModifiedOn: '2026-10-06T03:00:00' })], {}, { failLookups: true })
+    const result = await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+    expect(result.lookedUp).toBe(1)
+    expect(result.linkedByLookup).toBe(0)
+    expect(result.errors).toBe(1)
+    // The feed read itself succeeded; a lookup failure must not hold it back,
+    // because the next run looks the check up again anyway.
+    expect(result.watermark).toEqual(new Date(new Date('2026-10-06T03:00:00Z').getTime() - SYNC_OVERLAP_MINUTES * 60_000))
+    const run = await testDb.syncRun.findUniqueOrThrow({ where: { id: result.syncRunId } })
+    expect(run.message).toContain('CV-FAILS')
+    expect(run.errors).toBe(1)
+  })
+
+  it('looks up at most DIRECT_LOOKUP_LIMIT checks per run, oldest first, so the cron’s budget holds', async () => {
+    const refs: string[] = []
+    for (let i = 0; i < DIRECT_LOOKUP_LIMIT + 2; i++) {
+      const ref = `CV-MANY${String(i).padStart(3, '0')}`
+      refs.push(ref)
+      await apvless(ref, { checkNumber: String(6000500000 + i) })
+    }
+    const { client, calls } = fakeFeedWithLookups([], {})
+    const result = await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: SINCE, now: NOW, trigger: 'SCHEDULED' })
+    expect(result.lookedUp).toBe(DIRECT_LOOKUP_LIMIT)
+    expect(lookupFilters(calls)).toHaveLength(DIRECT_LOOKUP_LIMIT)
+    expect(lookupFilters(calls)[0]).toBe(billsForPaymentFilter('GOLIVE', refs[0]))
+  })
+
+  it('a first read (no watermark) looks nothing up — the whole year’s applications were just read', async () => {
+    await apvless('CV-FIRST', { checkNumber: '6000400013' })
+    const { client, calls } = fakeFeedWithLookups([], { 'CV-FIRST': [billRow({ AdjgRefNbr: 'CV-FIRST' })] })
+    const result = await runBillsSync(testDb, { client, tenant: 'GOLIVE', since: null, now: NOW, trigger: 'MANUAL' })
+    expect(calls).toHaveLength(1)
+    expect(result.lookedUp).toBe(0)
   })
 })

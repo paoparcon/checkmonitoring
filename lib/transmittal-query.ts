@@ -10,7 +10,7 @@ export const TRANSMITTAL_PICK_LIMIT = 25_000
 
 /**
  * The checks a transmittal can list, in the picker's row shape: real checks
- * (DEBIT ADV and CASH are not) with a recorded amount, in check-number order.
+ * (DEBIT ADV and TT are not) with a recorded amount, in check-number order.
  * One definition for the page (SIGNATURE PENDING + SIGNED) and for the route
  * that loads RELEASED on demand, so the two cannot drift.
  */

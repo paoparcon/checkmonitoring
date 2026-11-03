@@ -26,6 +26,9 @@ import { SYNC_OVERLAP_MINUTES, SyncInProgressError, type SyncTrigger } from '@/l
  * 2026-10-06). A bill whose VendorRef is now blank has its row deleted (this
  * tenant's only).
  *
+ * Once the write phase is reached the run's message opens `due dates: N bills
+ * written` (AGING's terms writes, visible on /admin/sync), problems after ` | `.
+ *
  * Reference data, not a record: no AuditLog row per bill (rule 7 untouched);
  * the run's own SyncRun row is the trace. Never touches `Check` (rule 4) and
  * never writes a PortalEvent. Acumatica is read through `fetchAll` only (rule 3).
@@ -34,6 +37,8 @@ import { SYNC_OVERLAP_MINUTES, SyncInProgressError, type SyncTrigger } from '@/l
  * transaction is opened. A failed batch is an error and HOLDS the watermark,
  * so the next run reads those bills again; re-writing an unchanged bill is a
  * no-op (the upsert's IS DISTINCT FROM guard).
+ *
+ * Since 2026-10-15 it also writes every in-scope bill's DueDate and Terms to AcumaticaBillTerms (AGING), blank Vendor Ref included, never deleted.
  *
  * A first read (no watermark) is a terminal job, never the cron.
  */
@@ -70,6 +75,8 @@ export type BillRefsRunResult = {
   deleted: number
   /** Distinct bills with a non-empty VendorRef that names no PO (kept; shown as a reference). */
   noPo: number
+  /** AcumaticaBillTerms rows actually written (inserted, or changed). AGING, 2026-10-15. */
+  termsWritten: number
   errors: number
   watermark: Date | null
 }
@@ -109,10 +116,11 @@ export async function runBillRefsSync(db: Db, args: BillRefsSyncArgs): Promise<B
   let upserted = 0
   let deleted = 0
   let noPo = 0
+  let termsWritten = 0
   let errors = 0
   const problems: string[] = []
 
-  const finish = async (watermark: Date | null): Promise<void> => {
+  const finish = async (watermark: Date | null, wrote: boolean): Promise<void> => {
     await db.syncRun.update({
       where: { id: run.id },
       data: {
@@ -122,7 +130,9 @@ export async function runBillRefsSync(db: Db, args: BillRefsSyncArgs): Promise<B
         staged: noPo,
         errors,
         watermark,
-        message: problems.length > 0 ? summarise(problems) : null,
+        message: wrote
+          ? [`due dates: ${termsWritten.toLocaleString('en-US')} bills written`, ...(problems.length > 0 ? [summarise(problems)] : [])].join(' | ')
+          : problems.length > 0 ? summarise(problems) : null,
       },
     })
   }
@@ -140,7 +150,7 @@ export async function runBillRefsSync(db: Db, args: BillRefsSyncArgs): Promise<B
     // Nothing was read, so the watermark must not move.
     errors = 1
     problems.push(describe(error))
-    await finish(null)
+    await finish(null, false)
     throw error
   }
 
@@ -200,6 +210,20 @@ export async function runBillRefsSync(db: Db, args: BillRefsSyncArgs): Promise<B
     }
   }
 
+  // AGING (2026-10-15): every in-scope bill's due date and terms, blank Vendor
+  // Ref or not, into their own table. Never deleted. A failed batch holds the
+  // watermark like any other.
+  const allRefs = [...byApv.values()]
+  for (let i = 0; i < allRefs.length; i += WRITE_BATCH) {
+    const batch = allRefs.slice(i, i + WRITE_BATCH)
+    try {
+      termsWritten += await upsertTermsBatch(db, tenant, batch)
+    } catch (error) {
+      errors++
+      problems.push(`terms ${batch[0].apvNumber}…${batch[batch.length - 1].apvNumber}: ${describe(error)}`)
+    }
+  }
+
   // HELD when any batch failed: the previous watermark stays, so the failed
   // bills are re-read next run (an incremental read only looks forward).
   const watermark =
@@ -207,9 +231,9 @@ export async function runBillRefsSync(db: Db, args: BillRefsSyncArgs): Promise<B
       ? null
       : new Date(maxSeen.getTime() - SYNC_OVERLAP_MINUTES * 60_000)
 
-  await finish(watermark)
+  await finish(watermark, true)
 
-  return { syncRunId: run.id, tenant, fetched, ignored, withPo, upserted, deleted, noPo, errors, watermark }
+  return { syncRunId: run.id, tenant, fetched, ignored, withPo, upserted, deleted, noPo, termsWritten, errors, watermark }
 }
 
 /**
@@ -246,6 +270,32 @@ async function upsertBatch(db: Db, tenant: AcumaticaTenant, batch: readonly Bill
            IS DISTINCT FROM (EXCLUDED."tenant", EXCLUDED."vendorRef", EXCLUDED."poNumbers", EXCLUDED."lastModifiedOn")`)
 }
 
+/** `upsertBatch`'s shape for AcumaticaBillTerms: one statement, a no-op for an unchanged bill. */
+async function upsertTermsBatch(db: Db, tenant: AcumaticaTenant, batch: readonly BillRef[]): Promise<number> {
+  const payload = JSON.stringify(batch.map((b) => ({
+    apvNumber: b.apvNumber,
+    tenant,
+    dueDate: b.dueDate?.toISOString() ?? null,
+    termsCode: b.termsCode,
+    status: b.status,
+    lastModifiedOn: b.lastModifiedOn?.toISOString() ?? null,
+  })))
+  return db.$executeRaw(Prisma.sql`
+    INSERT INTO "AcumaticaBillTerms" ("apvNumber", "tenant", "dueDate", "termsCode", "status", "lastModifiedOn", "updatedAt")
+    SELECT x."apvNumber", x."tenant", x."dueDate", x."termsCode", x."status", x."lastModifiedOn", (now() AT TIME ZONE 'UTC')
+      FROM jsonb_to_recordset(${payload}::jsonb)
+        AS x("apvNumber" text, "tenant" text, "dueDate" timestamp(3), "termsCode" text, "status" text, "lastModifiedOn" timestamp(3))
+    ON CONFLICT ("apvNumber") DO UPDATE
+       SET "tenant" = EXCLUDED."tenant",
+           "dueDate" = EXCLUDED."dueDate",
+           "termsCode" = EXCLUDED."termsCode",
+           "status" = EXCLUDED."status",
+           "lastModifiedOn" = EXCLUDED."lastModifiedOn",
+           "updatedAt" = EXCLUDED."updatedAt"
+     WHERE ("AcumaticaBillTerms"."tenant", "AcumaticaBillTerms"."dueDate", "AcumaticaBillTerms"."termsCode", "AcumaticaBillTerms"."status", "AcumaticaBillTerms"."lastModifiedOn")
+           IS DISTINCT FROM (EXCLUDED."tenant", EXCLUDED."dueDate", EXCLUDED."termsCode", EXCLUDED."status", EXCLUDED."lastModifiedOn")`)
+}
+
 function describe(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error)
   return text.length > MAX_PROBLEM_LENGTH ? `${text.slice(0, MAX_PROBLEM_LENGTH)}…` : text
@@ -276,6 +326,7 @@ export type ScheduledBillRefsOutcome =
       upserted: number
       deleted: number
       noPo: number
+      termsWritten: number
       errors: number
     }
   | { tenant: AcumaticaTenant; outcome: 'REFUSED_NO_WATERMARK'; syncRunId: string }
@@ -350,7 +401,7 @@ export async function runScheduledBillRefsSync(
     return {
       tenant, outcome: 'RAN', syncRunId: result.syncRunId,
       fetched: result.fetched, ignored: result.ignored, upserted: result.upserted,
-      deleted: result.deleted, noPo: result.noPo, errors: result.errors,
+      deleted: result.deleted, noPo: result.noPo, termsWritten: result.termsWritten, errors: result.errors,
     }
   } catch (error) {
     if (error instanceof SyncInProgressError) {

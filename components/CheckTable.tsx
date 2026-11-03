@@ -1,25 +1,42 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { formatMoney } from '@/lib/money'
 import { RECEIPT_TYPES } from '@/lib/domain/receipt'
 import {
   isTickable, takesReceipt, draftTypeMissing, EMPTY_DRAFT, type ReceiptDraft,
 } from '@/lib/row-receipts'
-import {
-  COLUMN_KEYS, COLUMN_LABELS, ALWAYS_ON, DEFAULT_COLUMNS, COLUMN_STORAGE_KEY,
-  parseColumnPreference, serialiseColumnPreference, columnControls,
-  type ColumnKey,
-} from '@/lib/table-columns'
-import type { SortKey, SortSpec } from '@/lib/list-sort'
-import type { SortLink } from '@/lib/dashboard-view'
+import { COLUMN_LABELS, type ColumnKey } from '@/lib/table-columns'
+import { isSortKey, type SortKey, type SortSpec } from '@/lib/list-sort'
+import { LIST_FILTER_FORM } from '@/lib/column-filters'
+import type { FilterOptions } from '@/lib/queries'
+import type { CheckTableRow } from '@/lib/queries'
+import { bindingError, bindingParams, needleToParams, paramsToNeedle } from '@/lib/table-kit/url-binding'
+import { MAIN_LIST_BINDINGS, MAIN_LIST_TABLE_ID, legacyMainList, mainListColumns } from '@/lib/table-kit/main-list'
+import { setWidth, visibleColumns, widthStyle } from '@/lib/table-kit/layout'
 import { writeSortCookie } from './sort-cookie'
 import { StatusPill } from './StatusPill'
 import { BulkActionBar } from './BulkActionBar'
-import { ColumnFilterCell, type FilterRowState } from './ColumnFilterCell'
-import type { CheckTableRow } from '@/lib/queries'
+import { useTableLayout } from './table-kit/useTableLayout'
+import { useUrlUpdate } from './table-kit/useUrlUpdate'
+import { KitHeaderRow } from './table-kit/KitHeaderRow'
+import { FilterChips } from './table-kit/FilterChips'
+import { ColumnConfigButton } from './table-kit/ColumnConfigDialog'
+
+/** The list's filters as the server read them (spec 2026-10-13 §3). */
+export type FilterRowState = {
+  options: FilterOptions
+  /** Each parameter's value as typed (company and bank as ids). */
+  values: Readonly<Record<string, string>>
+  /** Parameter → message, for the values the server could not read. */
+  errors: Readonly<Record<string, string>>
+  /** STATUS filters on ALL CHECKS only. */
+  showStatus: boolean
+  /** DATE RELEASED filters on RELEASED and ALL CHECKS only. */
+  showReleasedRange: boolean
+}
 
 const fmtDate = (d: Date | null) =>
   d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
@@ -40,55 +57,18 @@ const selectable = isTickable
 /** Every column but ACTION, which is pinned last and rendered after OR / CR. */
 type DataColumn = Exclude<ColumnKey, 'action'>
 
-const isAlwaysOn = (k: ColumnKey) => (ALWAYS_ON as readonly ColumnKey[]).includes(k)
-
-const headerClass = (key: DataColumn) => (key === 'amount' ? 'px-2 py-2 text-right' : 'px-2 py-2')
-
-/**
- * A sortable header: asc → desc → default (spec C1). The link is built on the
- * server (`sortLinks`); the click writes or deletes the `cm_sort` cookie before
- * the navigation so the next render — and the next visit — use it.
- */
-function SortHeader({ column, sort, link }: { column: DataColumn; sort: SortSpec; link: SortLink }) {
-  const active = sort.key === column ? sort.dir : null
-  return (
-    <th
-      className={headerClass(column)}
-      aria-sort={active === 'asc' ? 'ascending' : active === 'desc' ? 'descending' : 'none'}
-    >
-      <Link
-        prefetch={false}
-        scroll={false}
-        href={link.href}
-        onClick={(e) => {
-          // Ctrl/cmd/shift/alt or middle click opens a new tab or window: this
-          // page does not navigate, so its remembered sort must not change.
-          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
-          writeSortCookie(link.next)
-        }}
-        className="inline-flex items-center gap-1 hover:text-slate-900"
-      >
-        {COLUMN_LABELS[column]}
-        <span aria-hidden className={active ? 'text-navy' : 'text-slate-300'}>
-          {active === 'asc' ? '▲' : active === 'desc' ? '▼' : '↕'}
-        </span>
-      </Link>
-    </th>
-  )
-}
-
 /** One data cell. The markup of each case is the cell the table rendered before part C. */
-function DataCell({ column, r }: { column: DataColumn; r: CheckTableRow }) {
+function DataCell({ column, r, width }: { column: DataColumn; r: CheckTableRow; width?: number }) {
   switch (column) {
     case 'checkNumber':
-      return <td className="px-2 py-2 font-medium">{r.checkNumber}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 font-medium">{r.checkNumber}</td>
     case 'apvNumbers':
-      return <td className="px-2 py-2 text-slate-600">{r.apvNumbers.length ? r.apvNumbers.join(', ') : '—'}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">{r.apvNumbers.length ? r.apvNumbers.join(', ') : '—'}</td>
     case 'poNumbers':
-      return <td className="px-2 py-2 text-slate-600">{r.poNumbers.length ? r.poNumbers.join(', ') : '—'}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">{r.poNumbers.length ? r.poNumbers.join(', ') : '—'}</td>
     case 'payeeName':
       return (
-        <td className="px-2 py-2">
+        <td style={widthStyle(width)} className="px-2 py-2">
           {/* An em dash, not the bare null React would render as nothing:
               153 register rows have no payee, and an empty cell reads as a
               rendering bug rather than as a fact about the cheque. Matches
@@ -102,38 +82,38 @@ function DataCell({ column, r }: { column: DataColumn; r: CheckTableRow }) {
         </td>
       )
     case 'companyCode':
-      return <td className="px-2 py-2 text-slate-600">{r.companyCode}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">{r.companyCode}</td>
     case 'bank':
       // The cash account code, because "BPI STK" is the label Finance uses;
       // the bank code is the title, for the reader who knows the institution
       // but not the account. An em dash where no cash account is recorded —
       // the column is nullable.
-      return <td className="px-2 py-2 text-slate-600" title={r.bankCode ?? undefined}>{r.cashAccountCode ?? '—'}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600" title={r.bankCode ?? undefined}>{r.cashAccountCode ?? '—'}</td>
     case 'checkDate':
-      return <td className="px-2 py-2 text-slate-600">{fmtDate(r.checkDate)}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">{fmtDate(r.checkDate)}</td>
     case 'amount':
       // Right-aligned and tabular, so the decimal points line up down the
       // column and an eight-figure amount is visibly an eight-figure amount.
-      return <td className="px-2 py-2 text-right font-medium tabular-nums">{formatMoney(r.amount, r.currency)}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-right font-medium tabular-nums">{formatMoney(r.amount, r.currency)}</td>
     case 'status':
       // STALED: Finance's word for a cheque past its presentment life (ruling
       // 2026-10-06). It stays CANCELLED; the tag says why.
       return (
-        <td className="px-2 py-2">
+        <td style={widthStyle(width)} className="px-2 py-2">
           <StatusPill status={r.status} />
           {r.isStale && <span className="ml-1 text-[10px] font-semibold tracking-widest text-amber-700">STALED</span>}
         </td>
       )
     case 'availablePickupDate':
-      return <td className="px-2 py-2 text-slate-600">{fmtDate(r.availablePickupDate)}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">{fmtDate(r.availablePickupDate)}</td>
     case 'scheduledPickupDate':
-      return <td className="px-2 py-2 text-slate-600">{fmtDate(r.scheduledPickupDate)}</td>
+      return <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">{fmtDate(r.scheduledPickupDate)}</td>
     case 'releasedAt':
       // The app's own timestamp when it has one; otherwise the day the retired
       // register stated, tagged so nobody reads a spreadsheet date as a release
       // this system recorded.
       return (
-        <td className="px-2 py-2 text-slate-600">
+        <td style={widthStyle(width)} className="px-2 py-2 text-slate-600">
           {r.releasedAt
             ? fmtDate(r.releasedAt)
             : r.statedReleaseDate
@@ -149,18 +129,18 @@ function DataCell({ column, r }: { column: DataColumn; r: CheckTableRow }) {
 }
 
 export function CheckTable({
-  rows, canRelease, bulkCap, sort, sortLinks, filters,
+  rows, canRelease, bulkCap, sort, filters,
 }: {
   rows: CheckTableRow[]
   canRelease: boolean
   bulkCap: number
   /** The order in force (URL, cookie or default) — which header shows an arrow. */
   sort: SortSpec
-  sortLinks: Readonly<Record<SortKey, SortLink>>
-  /** The filter row's state, from the server: values to render back, refusals, which boxes apply. */
+  /** The filters as the server read them: values, refusals, which columns may filter. */
   filters: FilterRowState
 }) {
   const router = useRouter()
+  const search = useSearchParams()
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   // Keyed by check id. A row's draft is read back on release and on SAVE
   // RECEIPTS (`lib/row-receipts.ts`'s `receiptEntries`), which is what lets a
@@ -168,47 +148,44 @@ export function CheckTable({
   // owner, the row it was typed in.
   const [drafts, setDrafts] = useState<Record<string, ReceiptDraft>>({})
 
-  /**
-   * The viewer's columns, IN ORDER (part C3).
-   *
-   * Starts at the default and is corrected in an effect, never read during
-   * render. `localStorage` does not exist on the server, so reading it in the
-   * initial state would break the server render outright; and reading it lazily
-   * on the client would make the first paint differ from the server's and
-   * hydrate mismatched. Defaulting to the FULL set means a fresh browser, a
-   * slow one, and one with site data blocked all show a working table rather
-   * than a flash of nothing.
-   */
-  const [preference, setPreference] = useState<readonly ColumnKey[]>(DEFAULT_COLUMNS)
+  const columns = useMemo(
+    () => mainListColumns({ options: filters.options, showStatus: filters.showStatus, showReleasedRange: filters.showReleasedRange }),
+    [filters.options, filters.showStatus, filters.showReleasedRange],
+  )
+  const { layout, preview, save, reset } = useTableLayout(MAIN_LIST_TABLE_ID, columns, legacyMainList)
+  // The menu changes only parameters nothing else on the page draws uncontrolled
+  // (the hidden inputs below are controlled), so the filter bar is not remounted.
+  const navigate = useUrlUpdate({ markOwn: true })
+  // On NEEDS ACTION (no `status`, no `scope`) every change also writes
+  // `scope=live`, as the filter bar's hidden field do: clearing
+  // the last filter or sort must not land on `/` or `/?company=…`, which are
+  // the TOTALS screen (`dashboardScreen`).
+  const update = (updates: Readonly<Record<string, string>>) =>
+    navigate(!search.get('status') && !search.get('scope') ? { ...updates, scope: 'live' } : updates)
 
-  useEffect(() => {
-    try {
-      const stored = parseColumnPreference(window.localStorage.getItem(COLUMN_STORAGE_KEY))
-      // Null means no usable preference — absent, empty or corrupt — and the
-      // full table already on screen is the right answer to that.
-      if (stored) setPreference(stored)
-    } catch {
-      // A private window, or a browser set to block site data, throws on the
-      // accessor itself. A display preference is never worth an error boundary.
-    }
-  }, [])
-
+  // Needles read back from the server's values — the URL stays the one truth.
+  const needles: Record<string, string> = {}
+  const errors: Record<string, string> = {}
+  for (const c of columns) {
+    const b = MAIN_LIST_BINDINGS[c.key as SortKey]
+    needles[c.key] = paramsToNeedle(b, filters.values)
+    const e = bindingError(b, filters.errors)
+    if (e) errors[c.key] = e
+  }
+  const filtered = Object.keys(needles).filter((k) => needles[k] !== '')
   // A column with a filter in force is never hidden (part C2).
-  // Shown: the preference plus the filtered columns. Edited and saved: the
-  // preference alone — see columnControls.
-  const columns = columnControls(preference, filters.filteredColumns)
-  const visible = columns.visible
-  const shown = visible.filter((k): k is DataColumn => k !== 'action')
-  const hidden = COLUMN_KEYS.filter((k): k is DataColumn => k !== 'action' && !visible.includes(k))
+  const visibleKitColumns = visibleColumns(columns, layout, filtered)
+  const shown = visibleKitColumns.map((c) => c.key as DataColumn)
 
-  const persist = (next: readonly ColumnKey[]) => {
-    setPreference(next)
-    try {
-      window.localStorage.setItem(COLUMN_STORAGE_KEY, serialiseColumnPreference(next))
-    } catch {
-      // The choice still applies to this session; it simply will not be
-      // remembered. Nothing here is worth failing the page over.
-    }
+  const applyFilter = (key: string, needle: string) => update(needleToParams(MAIN_LIST_BINDINGS[key as SortKey], needle))
+  // The menu's Sort Ascending / Descending, or neither (null). The cookie is
+  // written before the navigation, as the old header links did, so the server
+  // render that follows — and the next visit — use it.
+  const applySort = (key: string, dir: 'asc' | 'desc' | null) => {
+    if (!isSortKey(key)) return
+    const next: SortSpec | null = dir ? { key, dir } : null
+    writeSortCookie(next)
+    update(next ? { sort: next.key, dir: next.dir } : { sort: '', dir: '' })
   }
 
   const selectableRows = rows.filter(selectable)
@@ -252,57 +229,26 @@ export function CheckTable({
 
   const open = (id: string) => router.push(`/checks/${id}`)
 
-  const arrow = 'h-6 w-6 rounded border border-hairline text-[10px] leading-none text-slate-600 disabled:opacity-30'
-
-  /**
-   * The column chooser: show/hide, and ◀ ▶ to move (part C3). Outside the
-   * table, for the reason it always was: a reader who narrowed the table to
-   * three columns must be able to widen it again.
-   */
-  const picker = (
-    <details className="rounded-2xl bg-white p-3 ring-1 ring-hairline">
-      <summary className="cursor-pointer select-none text-xs font-medium tracking-wide text-slate-600">
-        COLUMNS ({visible.length} OF {COLUMN_KEYS.length})
-      </summary>
-      <ol className="mt-3 space-y-1 border-t border-slate-100 pt-3">
-        {shown.map((key) => (
-          <li key={key} className="flex items-center gap-2 text-xs tracking-wide text-slate-700">
-            <button type="button" className={arrow} aria-label={`Move ${COLUMN_LABELS[key]} left`}
-              disabled={!columns.canMove(key, -1)} onClick={() => persist(columns.move(key, -1))}>◀</button>
-            <button type="button" className={arrow} aria-label={`Move ${COLUMN_LABELS[key]} right`}
-              disabled={!columns.canMove(key, 1)} onClick={() => persist(columns.move(key, 1))}>▶</button>
-            {isAlwaysOn(key) ? (
-              <span>{COLUMN_LABELS[key]} <span className="text-slate-400">(ALWAYS SHOWN)</span></span>
-            ) : (
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox" checked onChange={() => persist(columns.toggle(key))}
-                  disabled={filters.filteredColumns.includes(key)}
-                  title={filters.filteredColumns.includes(key) ? 'FILTERED — CLEAR ITS FILTER TO HIDE IT' : undefined}
-                />
-                {COLUMN_LABELS[key]}
-              </label>
-            )}
-          </li>
-        ))}
-        {hidden.map((key) => (
-          <li key={key} className="flex items-center gap-2 pl-16 text-xs tracking-wide text-slate-500">
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={false} onChange={() => persist(columns.toggle(key))} />
-              {COLUMN_LABELS[key]}
-            </label>
-          </li>
-        ))}
-      </ol>
-      <p className="mt-2 text-xs text-slate-500">
-        ◀ ▶ MOVE A COLUMN. ACTION IS ALWAYS LAST. THE ORDER IS REMEMBERED IN THIS BROWSER AND USED BY EXPORT EXCEL.
-      </p>
-    </details>
-  )
-
   return (
     <div className="space-y-3">
-      {picker}
+      {/* ⚙ CUSTOMIZE COLUMNS and the chips. Outside the table, as the old
+          COLUMNS chooser was: a reader who narrowed the table to three columns
+          must be able to widen it again. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <ColumnConfigButton columns={columns} layout={layout} onSave={save} onReset={reset} />
+        <FilterChips
+          columns={columns} filters={needles} errors={errors}
+          onClear={(k) => applyFilter(k, '')}
+          onClearAll={() => update(Object.fromEntries(
+            columns.flatMap((c) => bindingParams(MAIN_LIST_BINDINGS[c.key as SortKey])).map((p) => [p, '']),
+          ))}
+        />
+        {/* The filter bar's form submits these, so a search typed in the bar keeps the
+            column filters (they used to ride on the filter row's boxes, `form=`-joined). */}
+        {Object.entries(filters.values)
+          .filter(([name]) => columns.some((c) => bindingParams(MAIN_LIST_BINDINGS[c.key as SortKey]).includes(name)))
+          .map(([name, value]) => <input key={name} type="hidden" form={LIST_FILTER_FORM} name={name} value={value} />)}
+      </div>
 
       {/* Scrolls in BOTH directions, and the vertical scroll is what makes the
           sticky header work: a sticky element pins to its nearest SCROLLING
@@ -317,36 +263,28 @@ export function CheckTable({
               inset shadow rather than a border, because a border on a sticky
               header scrolls away with the cell box in some browsers. */}
           <thead className="sticky top-0 z-10 bg-white text-left text-xs tracking-wide text-slate-500 shadow-[inset_0_-1px_0_#E5E7EB]">
-            <tr>
-              <th className="px-2 py-2">
-                <input
-                  type="checkbox" checked={allSelected} onChange={toggleAll}
-                  disabled={selectableRows.length === 0}
-                  aria-label="Select every actionable check on this page"
-                />
-              </th>
-              {shown.map((key) => <SortHeader key={key} column={key} sort={sort} link={sortLinks[key]} />)}
-              <th className="px-2 py-2">OR / CR</th>
-              <th className="px-2 py-2">{COLUMN_LABELS.action}</th>
-            </tr>
-            {/* THE FILTER ROW (part C2). Keyed on the dropdown values for the
-                reason FilterBar's form is: a soft navigation that changes them
-                from elsewhere leaves a mounted <select> showing the old one. */}
-            <tr key={`${filters.values.company ?? ''}|${filters.values.cashAccount ?? ''}|${filters.values['f.status'] ?? ''}`} className="align-top">
-              <th className="px-2 pb-2" />
-              {shown.map((key) => (
-                <th key={key} className="px-2 pb-2 font-normal">
-                  <ColumnFilterCell column={key} state={filters} />
+            <KitHeaderRow
+              columns={visibleKitColumns} widths={layout.widths} sort={sort} filters={needles} errors={errors}
+              cellClassName="px-2 py-2"
+              onSort={applySort} onFilter={applyFilter}
+              onResize={(key, w) => preview(setWidth(layout, key, w))}
+              onResizeEnd={(key, w) => save(setWidth(layout, key, w))}
+              leading={
+                <th className="px-2 py-2">
+                  <input
+                    type="checkbox" checked={allSelected} onChange={toggleAll}
+                    disabled={selectableRows.length === 0}
+                    aria-label="Select every actionable check on this page"
+                  />
                 </th>
-              ))}
-              <th className="px-2 pb-2" />
-              <th className="px-2 pb-2" />
-            </tr>
+              }
+              trailing={<><th className="px-2 py-2">OR / CR</th><th className="px-2 py-2">{COLUMN_LABELS.action}</th></>}
+            />
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              // Kept inside the table (part C2): the headers — and, from the
-              // filter row, the boxes — must survive a filter that matches nothing.
+              // Kept inside the table (part C2): the headers — and their filter
+              // menus — must survive a filter that matches nothing.
               <tr>
                 <td colSpan={shown.length + 3} className="p-8 text-center text-sm text-slate-500">
                   NO CHECKS MATCH THESE FILTERS.
@@ -392,7 +330,7 @@ export function CheckTable({
                     <span className="sr-only">Not actionable</span>
                   )}
                 </td>
-                {shown.map((key) => <DataCell key={key} column={key} r={r} />)}
+                {shown.map((key) => <DataCell key={key} column={key} r={r} width={layout.widths[key]} />)}
                 {/* The supplier's receipt. A ticked row that can carry one gets
                     its own box, which is what lets a batch carry receipts safely:
                     every reference has exactly one cheque. Keys and clicks stop
@@ -413,7 +351,7 @@ export function CheckTable({
                         onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: { ...(d[r.id] ?? EMPTY_DRAFT), receiptType: e.target.value as ReceiptDraft['receiptType'] } }))}
                         className={`rounded-lg border px-2 py-1 text-sm ${draftTypeMissing(drafts[r.id] ?? EMPTY_DRAFT) ? 'border-amber-500' : 'border-slate-300'}`}
                       >
-                        <option value="">OR / CR</option>
+                        <option value="">TYPE</option>
                         {RECEIPT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                       </select>
                       <input

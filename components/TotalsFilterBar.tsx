@@ -3,7 +3,7 @@ import { ELIGIBILITIES } from '@/lib/queries'
 import type { FilterOptions } from '@/lib/queries'
 import { bankLabel } from '@/lib/export/report'
 import type { StatusOption } from '@/lib/status-options'
-import { FilterAutoSubmit } from './FilterAutoSubmit'
+import { FilterForm } from './FilterForm'
 import { StatusSelect } from './StatusSelect'
 
 const APPLY_ID = 'totals-filter-apply'
@@ -19,7 +19,7 @@ const APPLY_ID = 'totals-filter-apply'
  * screen narrows, and nothing opens the list.
  *
  * No search box here. The search form beneath the cards stays a plain submit,
- * because `FilterAutoSubmit` would navigate to the list after 400 ms of typing
+ * because `FilterForm` would navigate to the list after 400 ms of typing
  * and lose the caret; it carries these three as hidden fields instead.
  *
  * The bank label comes from `bankLabel`, which the list's bar and the export
@@ -43,13 +43,14 @@ export function TotalsFilterBar({
 
   return (
     <section className="space-y-2">
-      {/* Keyed on the values in force: React does not re-apply `defaultValue`
-          to a select that is already mounted, so after a client-side navigation
-          (RESET, a card, BACK TO TOTALS) the form must remount to show them. */}
-      <form
-        key={`${companyId}|${cashAccountId}|${eligibility}`}
+      {/* Not keyed on the values: that remounted the bar on every dropdown the
+          reader changed, which was the blinking (2026-10-12). `FilterForm`
+          remounts only when the URL changed from elsewhere (RESET, a card, BACK
+          TO TOTALS), where `defaultValue` has to be re-applied. */}
+      <FilterForm
         className="flex flex-wrap items-center gap-2 rounded-2xl bg-white p-3 ring-1 ring-hairline"
-        method="get"
+        auto
+        applyButtonId={APPLY_ID}
       >
         <StatusSelect options={statusOptions} />
 
@@ -87,8 +88,7 @@ export function TotalsFilterBar({
           </Link>
         )}
 
-        <FilterAutoSubmit applyButtonId={APPLY_ID} />
-      </form>
+      </FilterForm>
 
       {/* A narrowed screen that did not say so would read as the whole
           company's figures. Stated once, under the bar; the incomplete

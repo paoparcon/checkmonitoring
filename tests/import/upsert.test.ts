@@ -17,14 +17,15 @@ beforeEach(resetDb)
 
 // The import is the path most likely to grow a stray PortalEvent by accident:
 // it touches every cheque in the register and it runs unattended. Publishing
-// to the supplier portal is a Finance action, never an import consequence — the
-// one sanctioned exception is CANCELLED, queued through `voidCheck` when
-// Acumatica reports a portal-routed cheque voided (task 2026-09-26, plan
-// `portal-outbox-delivery`; see the `upsertCheck — voiding` tests below, which
-// assert that event directly). So this is asserted after EVERY test in the
-// file rather than in one test that a later author could forget to extend.
+// to the supplier portal is a Finance action, never an import consequence.
+// Until 2026-10-29 the one exception was CANCELLED, queued through `voidCheck`
+// when Acumatica reported a portal-routed cheque voided; the user then ruled
+// that a cancelled cheque is detached from its AP bills and the portal is not
+// told (see the `upsertCheck — voiding` tests below). So NO event at all is
+// asserted after EVERY test in the file rather than in one test that a later
+// author could forget to extend.
 afterEach(async () => {
-  expect(await testDb.portalEvent.count({ where: { kind: { not: 'CANCELLED' } } })).toBe(0)
+  expect(await testDb.portalEvent.count()).toBe(0)
 })
 
 async function seedCompany(code = 'STK', name = 'Starkson Packaging Inc.') {
@@ -761,13 +762,28 @@ describe('upsertCheck — voiding', () => {
     const audit = await testDb.auditLog.findFirstOrThrow({ where: { action: 'voided' } })
     expect(audit.actorType).toBe('SYSTEM')
 
-    // The row's payee (HENKEL) is a SUPPLIER, so the void queues the same
-    // CANCELLED outbox event `cancelCheck` does — the portal must stop showing
-    // a cheque the ERP says no longer exists, whichever side declared it gone.
-    const event = await testDb.portalEvent.findFirstOrThrow({ where: { checkId: check.id } })
-    expect(event.kind).toBe('CANCELLED')
-    expect(event.payload).toEqual({ action: 'CANCELLED', checkNumber: check.checkNumber })
-    expect(check.portalSyncStatus).toBe('PENDING')
+    // The row's payee (HENKEL) is a SUPPLIER, and still nothing is queued
+    // (user ruling 2026-10-29): the void detaches the cheque from the voucher
+    // the row carried, so the portal has no APV to match it on and the bill
+    // belongs to whichever live cheque pays it now.
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
+    expect(check.portalSyncStatus).toBe('NOT_APPLICABLE')
+    expect(check.apvNumbers).toEqual([])
+    expect(audit.details).toMatchObject({ portalNotified: false, apvNumbersDetached: ['APV-ST-009911'] })
+  })
+
+  it('a re-import of a voided check does not re-link the voucher the void detached', async () => {
+    await seedCompany()
+    const voidedRow = row({
+      source: 'ACUMATICA', voided: true, sourceSheet: null, sourceRow: null,
+      acumaticaDocType: 'Voided Payment', acumaticaStatus: 'Closed',
+    })
+    await upsert(voidedRow)
+    // The register's row for the same cheque, naming the voucher again.
+    await upsert(row({ apvNumbers: ['APV-ST-009911', 'APV-ST-009912'] }))
+    const check = await testDb.check.findFirstOrThrow()
+    expect(check.status).toBe('VOIDED')
+    expect(check.apvNumbers).toEqual([])
   })
 
   it('a check created already voided, with no APV, queues no portal event (spec 2026-10-01 §A1)', async () => {
@@ -793,8 +809,6 @@ describe('upsertCheck — voiding', () => {
     const check = await testDb.check.findFirstOrThrow()
     expect(check.status).toBe('VOIDED')
     expect(await testDb.auditLog.count({ where: { action: 'voided' } })).toBe(1)
-    // The transition happens once, so the event is queued once too.
-    expect(await testDb.portalEvent.count({ where: { checkId: check.id, kind: 'CANCELLED' } })).toBe(1)
   })
 
   it('records a void it cannot apply instead of throwing the import away', async () => {

@@ -112,15 +112,13 @@ describe('queueReleasedForStale', () => {
     const register = await makeCheck({ status: 'RELEASED', payeeName: 'FILMEX', apvNumbers: ['AP-A1034346'], statedReleaseDate: new Date('2026-09-30T00:00:00Z') })
     await mkEvent(register.id, 'MARK_AVAILABLE', new Date('2026-09-26'), 'SYNCED')
     // Not candidates: already told RELEASED; never told available; no APV;
-    // INTERNAL; still ready; released with no day to send.
+    // still ready; released with no day to send.
     const told = await makeCheck({ status: 'RELEASED', releasedAt: new Date('2026-10-01T02:00:00Z') })
     await mkEvent(told.id, 'MARK_AVAILABLE', new Date('2026-09-26'), 'SYNCED')
     await mkEvent(told.id, 'RELEASED', new Date('2026-10-01'), 'SYNCED')
     await makeCheck({ status: 'RELEASED', statedReleaseDate: new Date('2026-09-30T00:00:00Z') })
     const noApv = await makeCheck({ status: 'RELEASED', apvNumbers: [], statedReleaseDate: new Date('2026-09-30T00:00:00Z') })
     await mkEvent(noApv.id, 'MARK_AVAILABLE', new Date('2026-09-26'), 'SYNCED')
-    const internal = await makeCheck({ status: 'RELEASED', eligibility: 'INTERNAL', statedReleaseDate: new Date('2026-09-30T00:00:00Z') })
-    await mkEvent(internal.id, 'MARK_AVAILABLE', new Date('2026-09-26'), 'SYNCED')
     const ready = await makeCheck({ status: 'READY_FOR_RELEASE' })
     await mkEvent(ready.id, 'MARK_AVAILABLE', new Date('2026-09-26'), 'SYNCED')
     const noDay = await makeCheck({ status: 'RELEASED', apvNumbers: ['AP-ST000201'] })
@@ -169,6 +167,17 @@ describe('queueReleasedForStale', () => {
     expect(r).toMatchObject({ found: 1, queued: 1 })
     expect(r.cheques.map((c) => c.id)).toEqual([never.id])
     expect(await testDb.portalEvent.count({ where: { checkId: never.id, kind: 'RELEASED', status: 'PENDING' } })).toBe(1)
+  })
+
+  it('queues an INTERNAL release with an APV (ruling 2026-10-19) and writes no portal state on the check', async () => {
+    const internal = await makeCheck({ status: 'RELEASED', eligibility: 'INTERNAL', apvNumbers: ['AP-ST044602'], statedReleaseDate: new Date('2026-10-05T00:00:00Z') })
+    const oldInternal = await makeCheck({ status: 'RELEASED', eligibility: 'INTERNAL', apvNumbers: ['AP-ST040001'], statedReleaseDate: new Date('2026-08-20T00:00:00Z') })
+    const r = await queueReleasedForStale(testDb, { now: NOW, apply: true })
+    expect(r.cheques.map((c) => c.id)).toContain(internal.id)
+    expect(r.cheques.map((c) => c.id)).not.toContain(oldInternal.id)
+    expect((await testDb.portalEvent.findFirstOrThrow({ where: { checkId: internal.id } })).kind).toBe('RELEASED')
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: internal.id } })
+    expect(after.portalSyncStatus).toBe('NOT_APPLICABLE'); expect(after.portalDomain).toBeNull()
   })
 
   it('queues at most `limit` per run, newest release first, and the next run takes the rest', async () => {

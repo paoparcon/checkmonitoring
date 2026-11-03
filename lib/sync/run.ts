@@ -185,7 +185,7 @@ export type SyncRunResult = {
  *
  *     no filter              41,998 rows   21s
  *     PaymentDate >= 2026    15,542 rows    7s
- *     2026 + CHK             11,417 rows    5s
+ *     2026 + CHK             11,417 rows    5s   (CHK or CASH since 2026-10-23)
  *
  * The reduction is what makes SYNC NOW usable at all — a serverless request
  * cannot finish 42,000 rows and Vercel kills it partway.
@@ -197,12 +197,22 @@ export type SyncRunResult = {
 export const SYNC_FROM_DATE = '2026-01-01T00:00:00'
 
 /**
- * `PaymentMethod eq 'CHK'` is applied by the FEED, not after mapping, so
- * non-cheques are never fetched. `mapPayment` still computes `isCheque` from
+ * The payment-method clause is applied by the FEED, not after mapping, so
+ * non-checks are never fetched. `mapPayment` still computes `isCheque` from
  * the same field plus the China-branch rule — that second check is not
  * redundant, it is what protects a row arriving by any other path.
+ *
+ * `CHK` only until 2026-10-23; `CASH` since, on the user's ruling that every
+ * AP voucher is paid by a physical check and CASH means one payable to cash
+ * (see `CHEQUE_PAYMENT_METHODS` in `integrations/acumatica/map.ts`). The two
+ * must agree: a method the feed fetches that the map calls a non-check would
+ * import as money with no SIGN button, and one the map accepts that the feed
+ * never asks for is the 2026-10-19 defect — a check absent from the portal.
+ * Measured read-only the same day: the `AP-Checks and Payments` inquiry
+ * accepts this parenthesised `or` (943 rows = 942 CHK + 1 CASH for October),
+ * unlike the bills inquiry, where an `or` of `eq` filters is a 500.
  */
-const CHEQUES_ONLY = "PaymentMethod eq 'CHK'"
+const CHEQUES_ONLY = "(PaymentMethod eq 'CHK' or PaymentMethod eq 'CASH')"
 const IN_SCOPE = `PaymentDate ge datetime'${SYNC_FROM_DATE}'`
 
 /**

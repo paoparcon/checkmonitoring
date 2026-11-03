@@ -24,10 +24,10 @@ const fmt = (d: Date) =>
  *
  * Since the register was retired, the sync is the only way a cheque arrives.
  * This line is what makes a sync nobody ran visible: on the once-a-day plan
- * the cron is the mechanism and this is the check on it. Shown to everyone;
- * the fix is offered only to an admin, because only an admin can press it.
+ * the cron is the mechanism and this is the check on it. Shown to everyone,
+ * and since 2026-10-15 every Finance user has SYNC NOW beneath it.
  */
-export function SyncStatusLine({ staleness, isAdmin }: { staleness: Staleness; isAdmin: boolean }) {
+export function SyncStatusLine({ staleness }: { staleness: Staleness }) {
   const parts = staleness.tenants.map(
     (t) => `${TENANT_LABEL[t.tenant] ?? t.tenant} ${t.lastReadAt ? fmt(t.lastReadAt) : 'never'}`,
   )
@@ -62,14 +62,7 @@ export function SyncStatusLine({ staleness, isAdmin }: { staleness: Staleness; i
         Acumatica has not been read cleanly since then, so checks generated since may be missing —{' '}
         <Link href="/admin/sync" className="underline underline-offset-2">/admin/sync</Link> shows
         what the last attempt reported. {parts.join(' · ')}.{' '}
-        {isAdmin ? (
-          <>
-            Press SYNC NOW on the{' '}
-            <Link href="/admin/sync" className="underline underline-offset-2">administration page</Link>.
-          </>
-        ) : (
-          'Ask an administrator to run SYNC NOW.'
-        )}
+        Press SYNC NOW below.
       </p>
     </div>
   )

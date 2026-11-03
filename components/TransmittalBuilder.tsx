@@ -89,8 +89,7 @@ export function TransmittalBuilder({
       <section className="print-hide space-y-3 rounded-2xl bg-white p-4 ring-1 ring-hairline">
         <p className="text-sm leading-relaxed text-slate-600">
           Tick the checks to put on the transmittal. The list holds checks at SIGNATURE PENDING or SIGNED with a
-          recorded amount; choose RELEASED in the status dropdown to list those instead. Filter under any column
-          header, and use COLUMNS to show, hide and reorder them. Fill in the sheet below, then press PRINT — choose{' '}
+          recorded amount; choose RELEASED in the status dropdown to list those instead. Click a column header to sort or filter it, and use ⚙ CUSTOMIZE COLUMNS to show, hide and reorder columns; drag a header’s edge to resize. Fill in the sheet below, then press PRINT — choose{' '}
           <strong>Save as PDF</strong> in the print window to keep a copy. Nothing here changes a check’s status.
         </p>
         <TransmittalPicker

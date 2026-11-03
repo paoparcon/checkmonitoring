@@ -3,18 +3,20 @@
 import { useState } from 'react'
 import { INVENTORY_EXPAND_PAGE, listRun } from '@/lib/numbering/inventory'
 import { InventoryNoteCell, type InventoryNoteView } from '@/components/InventoryNoteCell'
-import { MissingNumberRow } from '@/components/MissingNumberRow'
-import { MissingPill, TH } from '@/components/numbering-cells'
+import { MissingPill } from '@/components/numbering-cells'
 
 /**
- * A MISSING run too long to list by default (spec §H, second pass): one amber
- * line with the run's own tick and remark, which OPENS on a click into one row
- * per number — INVENTORY_EXPAND_PAGE at a time, SHOW MORE for the next page —
- * and closes on another. Numbers are listed in the browser from `from` and
- * `to` (BigInt; a run can be billions, so nothing is listed until asked);
- * each gets the note recorded on it, keyed by canonical number.
+ * A MISSING run too long to list by default (spec §H, second pass), as a band
+ * of the table kit: one amber line with the run's own tick and remark, which
+ * OPENS on a click into one line per number — INVENTORY_EXPAND_PAGE at a time,
+ * SHOW NEXT for the next page — and closes on another. Numbers are listed in
+ * the browser from `from` and `to` (BigInt; a run can be billions, so nothing
+ * is listed until asked); each gets the note recorded on it, keyed by canonical
+ * number. A band spans the table, so the opened numbers are lines of their
+ * own, not table rows — and the kit hides bands while a filter or sort is in
+ * force, which the table says.
  */
-export function MissingRunRows({
+export function MissingRunBand({
   checkBookId, from, to, count, label, runNote, stale, notes,
 }: {
   checkBookId: string
@@ -38,9 +40,9 @@ export function MissingRunRows({
   const canonical = (n: string) => BigInt(n).toString()
 
   return (
-    <>
-      <tr className="border-b border-amber-200 bg-amber-50">
-        <td colSpan={4} className={`${TH} font-semibold tabular-nums text-amber-800`}>
+    <div>
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-2 px-4 py-3">
+        <div className="min-w-0 flex-1 font-semibold tabular-nums text-amber-800">
           <button
             type="button"
             onClick={() => setOpen((o) => !o)}
@@ -52,29 +54,38 @@ export function MissingRunRows({
             <span className="font-normal text-amber-800/70">· {open ? 'CLICK TO CLOSE' : 'CLICK TO LIST EACH NUMBER'}</span>
           </button>
           {!open && <span className="ml-2 font-normal text-amber-800/70">one tick and one remark for the whole run</span>}
-        </td>
-        <td className={TH}><MissingPill /></td>
-        <td className={`${TH} py-2`}>
+        </div>
+        <div><MissingPill /></div>
+        <div>
           <InventoryNoteCell checkBookId={checkBookId} checkNumber={from} runTo={to} note={runNote} label={`${from} – ${to}`} />
           {stale && (
             <p className="mt-1 text-[11px] text-amber-800">
               Recorded on the run {stale.from} – {stale.to}; the run has since changed. Tick or remark again to confirm it for {from} – {to}.
             </p>
           )}
-        </td>
-      </tr>
-      {shown.map((number) => <MissingNumberRow key={number} checkBookId={checkBookId} number={number} note={notes[canonical(number)] ?? null} />)}
-      {open && left > BigInt(0) && (
-        <tr className="border-b border-amber-200 bg-amber-50/60">
-          <td colSpan={6} className={`${TH} text-sm text-amber-800`}>
-            <button type="button" onClick={() => setPages((p) => p + 1)} className="font-semibold underline underline-offset-2">
-              SHOW NEXT {fmt(left < BigInt(INVENTORY_EXPAND_PAGE) ? left : BigInt(INVENTORY_EXPAND_PAGE))}
-            </button>
-            <span className="ml-2 text-amber-800/70">{fmt(left)} of {fmt(total)} not yet listed</span>
-            <button type="button" onClick={() => { setOpen(false); setPages(1) }} className="ml-4 underline underline-offset-2">CLOSE</button>
-          </td>
-        </tr>
+        </div>
+      </div>
+      {shown.length > 0 && (
+        <ul className="divide-y divide-amber-200 border-t border-amber-200">
+          {shown.map((number) => (
+            <li key={number} className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2">
+              <span className="w-32 font-semibold tabular-nums text-amber-800">{number}</span>
+              <span className="min-w-0 flex-1 text-amber-800/60">NO CHECK IN THIS SYSTEM</span>
+              <MissingPill />
+              <InventoryNoteCell checkBookId={checkBookId} checkNumber={number} note={notes[canonical(number)] ?? null} label={number} />
+            </li>
+          ))}
+        </ul>
       )}
-    </>
+      {open && left > BigInt(0) && (
+        <div className="border-t border-amber-200 bg-amber-50/60 px-4 py-3 text-sm text-amber-800">
+          <button type="button" onClick={() => setPages((p) => p + 1)} className="font-semibold underline underline-offset-2">
+            SHOW NEXT {fmt(left < BigInt(INVENTORY_EXPAND_PAGE) ? left : BigInt(INVENTORY_EXPAND_PAGE))}
+          </button>
+          <span className="ml-2 text-amber-800/70">{fmt(left)} of {fmt(total)} not yet listed</span>
+          <button type="button" onClick={() => { setOpen(false); setPages(1) }} className="ml-4 underline underline-offset-2">CLOSE</button>
+        </div>
+      )}
+    </div>
   )
 }

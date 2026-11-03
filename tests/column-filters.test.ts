@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   F_PARAMS, FILTER_MESSAGES, COLUMN_FILTER_PARAMS, parseAmountBound, parseColumnFilters,
-  describeColumnFilters, columnParamsOf, describeRefusal, activeFilterColumns,
+  describeColumnFilters, columnParamsOf, describeRefusal,
 } from '@/lib/column-filters'
 import { SORT_KEYS } from '@/lib/list-sort'
 
@@ -59,11 +59,27 @@ describe('parseColumnFilters', () => {
   })
 
   it('reads STATUS only where it applies, and refuses an unknown one there', () => {
-    expect(parseColumnFilters(read({ 'f.status': 'SIGNED' }), { statusApplies: true }).status).toBe('SIGNED')
+    expect(parseColumnFilters(read({ 'f.status': 'SIGNED' }), { statusApplies: true }).status).toEqual(['SIGNED'])
     const off = parseColumnFilters(read({ 'f.status': 'SIGNED' }), { statusApplies: false })
     expect(off).toEqual({ filters: {}, status: undefined, values: {}, errors: {} })
     expect(parseColumnFilters(read({ 'f.status': 'PAID' }), { statusApplies: true }).errors)
       .toEqual({ 'f.status': FILTER_MESSAGES.status })
+  })
+
+  it('reads several ticked STATUS boxes, comma separated, once each', () => {
+    const r = parseColumnFilters(read({ 'f.status': 'SIGNED, RELEASED,SIGNED' }), { statusApplies: true })
+    expect(r.status).toEqual(['SIGNED', 'RELEASED'])
+    expect(r.errors).toEqual({})
+  })
+
+  it('refuses the whole STATUS box when one ticked value is not a status', () => {
+    const r = parseColumnFilters(read({ 'f.status': 'SIGNED,PAID' }), { statusApplies: true })
+    expect(r.status).toBeUndefined()
+    expect(r.errors).toEqual({ 'f.status': FILTER_MESSAGES.status })
+  })
+
+  it('describes several statuses in one phrase', () => {
+    expect(describeColumnFilters({ 'f.status': 'SIGNED,READY_FOR_RELEASE' })).toEqual(['STATUS: SIGNED, READY FOR RELEASE'])
   })
 })
 
@@ -95,15 +111,5 @@ describe('columnParamsOf and describeRefusal', () => {
   it('states every refused box', () => {
     expect(describeRefusal({ 'f.amountMin': FILTER_MESSAGES.amount }))
       .toBe(`A FILTER COULD NOT BE READ, SO NOTHING WAS LISTED.\nAMOUNT (MIN): ${FILTER_MESSAGES.amount}`)
-  })
-})
-
-describe('activeFilterColumns', () => {
-  it('names each column with a box in force, in column order', () => {
-    expect(activeFilterColumns({ 'f.payee': 'x', company: 'c1', releasedTo: '2026-09-01', 'f.amountMin': '1' }))
-      .toEqual(['payeeName', 'companyCode', 'amount', 'releasedAt'])
-  })
-  it('ignores the search, the eligibility and an empty value', () => {
-    expect(activeFilterColumns({ q: 'x', eligibility: 'SUPPLIER', 'f.apv': '' })).toEqual([])
   })
 })

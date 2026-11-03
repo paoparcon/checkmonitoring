@@ -31,8 +31,22 @@ describe('autoSign', () => {
     expect(audit).toHaveLength(1)
     expect(audit[0]).toMatchObject({ actorType: 'SYSTEM', userId: null })
     expect(audit[0].details).toMatchObject({
-      from: 'SIGNATURE_PENDING', to: 'SIGNED', rule: 'MONDAY', inAppSince: c.createdAt.toISOString(),
+      from: 'SIGNATURE_PENDING', to: 'SIGNED', rule: 'WEEKLY', runDay: 'TUESDAY', inAppSince: c.createdAt.toISOString(),
     })
+    expect(audit[0].remarks).toBe(
+      `Signed automatically at Tuesday's run: this Acumatica check first reached the app on ` +
+      `${c.createdAt.toISOString()}, before that Tuesday. No one signed it here, so no signing user is recorded.`,
+    )
+  })
+
+  it('signs last Thursday’s check at the next Monday’s run', async () => {
+    const c = await acumaticaPending(new Date('2026-09-24T02:00:00Z'))   // Thu 24 Sep
+    const mondayNoon = new Date('2026-09-28T04:00:00Z')                 // Mon 28 Sep 12:00 Manila
+    expect(await autoSign(testDb, { checkId: c.id, now: mondayNoon })).toMatchObject({ status: 'SIGNED' })
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: c.id, action: AUTO_SIGNED_ACTION } })
+    expect(audit.details).toMatchObject({ rule: 'WEEKLY', runDay: 'MONDAY' })
+    expect(audit.remarks).toContain("Signed automatically at Monday's run")
+    expect(audit.remarks).toContain('before that Monday.')
   })
 
   it('queues no portal event', async () => {

@@ -197,7 +197,9 @@ describe('revertAvailability', () => {
   })
 
   // Regression test for the other half of the bug: an INTERNAL check must
-  // never produce a portal event. This used to be proved by forcing
+  // never produce a supplier-route portal event (ruling 2026-10-19: only its
+  // quiet RELEASED / RELEASE_REVERSED / CANCELLED status events go out, flagged
+  // internal). This used to be proved by forcing
   // portalSyncStatus to 'PENDING' on an INTERNAL check via testDb, but that
   // state is now unreachable: the database's own CHECK constraint
   // (check_internal_never_routes_to_portal) rejects it directly, which is a
@@ -306,15 +308,25 @@ describe('markReleased', () => {
     expect(updated.portalSyncStatus).toBe('PENDING')
   })
 
-  it('queues no portal event when releasing an INTERNAL check', async () => {
+  it('queues a RELEASED event for an INTERNAL check but writes no portal state on it (ruling 2026-10-19)', async () => {
     const user = await makeUser()
-    const check = await makeCheck({ status: 'SIGNED', eligibility: 'INTERNAL' })
+    const check = await makeCheck({ status: 'SIGNED', eligibility: 'INTERNAL', apvNumbers: ['AP-ST044602'] })
     await markReadyForRelease(testDb, { checkId: check.id, userId: user.id, availablePickupDate: PICKUP, now: NOW })
     await markReleased(testDb, { checkId: check.id, userId: user.id, now: NOW })
 
-    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
+    const events = await testDb.portalEvent.findMany({ where: { checkId: check.id } })
+    expect(events.map((e) => e.kind)).toEqual(['RELEASED'])
     const updated = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
     expect(updated.portalSyncStatus).toBe('NOT_APPLICABLE')
+    expect(updated.portalDomain).toBeNull()
+  })
+
+  it('queues nothing for an INTERNAL check with no APV', async () => {
+    const user = await makeUser()
+    const check = await makeCheck({ status: 'SIGNED', eligibility: 'INTERNAL', apvNumbers: [] })
+    await markReadyForRelease(testDb, { checkId: check.id, userId: user.id, availablePickupDate: PICKUP, now: NOW })
+    await markReleased(testDb, { checkId: check.id, userId: user.id, now: NOW })
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(0)
   })
 })
 

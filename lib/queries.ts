@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient, type CheckStatus, type Eligibility } from '@prisma/client'
+import { Prisma, type PrismaClient, type CheckStatus, type Eligibility, type ReceiptType } from '@prisma/client'
 import { LIVE_STATUSES, CLOSED_STATUSES } from './domain/check-status'
 import { ELIGIBILITIES } from './domain/eligibility'
 // Pure URL/view arithmetic, no database — imported so the READY FOR RELEASE
@@ -911,7 +911,7 @@ export type CheckTableRow = {
    * a receipt is never overwritten.
    */
   orNumber: string | null
-  receiptType: 'OR' | 'CR' | null
+  receiptType: ReceiptType | null
   hasReceipt: boolean
 }
 

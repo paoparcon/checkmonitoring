@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { resetDb, testDb } from '../helpers/db'
+import { makeUser } from '../helpers/factory'
 
 /**
  * The scheduled route's guard. `middleware.ts` DOES NOT RUN in this project, so
@@ -240,7 +241,7 @@ describe('GET /api/cron/sync — the voucher read (BILLS)', () => {
   })
 })
 
-describe('GET /api/cron/sync — auto-sign after the syncs', () => {
+describe('GET /api/cron/sync — auto-sign after the syncs (retired, user ruling 2026-10-27)', () => {
   // Tuesday 29 Sep 2026, 12:00 Manila. Only Date is faked so DB timers stay real.
   beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-29T04:00:00Z'), toFake: ['Date'] }) })
   afterEach(() => { vi.useRealTimers() })
@@ -254,24 +255,24 @@ describe('GET /api/cron/sync — auto-sign after the syncs', () => {
     })
   }
 
-  it('signs the due checks and reports it', async () => {
+  it('records DISABLED and leaves the due checks pending', async () => {
     await watermarked('GOLIVE'); await watermarked('MANUFACTURING')
     const c = await duePending()
     const res = await get(`Bearer ${SECRET}`)
     const body = await res.json()
     expect(res.status).toBe(200)
-    expect(body.autoSign).toMatchObject({ outcome: 'OK', signed: 1, enabled: true })
-    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).status).toBe('SIGNED')
+    expect(body.autoSign).toMatchObject({ outcome: 'DISABLED', signed: 0, enabled: false })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).status).toBe('SIGNATURE_PENDING')
   })
 
-  it('still auto-signs when a tenant sync failed', async () => {
+  it('still records the run when a tenant sync failed, and signs nothing', async () => {
     await watermarked('GOLIVE'); await watermarked('MANUFACTURING')
     state.failFor = 'GOLIVE'
     const c = await duePending()
     const res = await get(`Bearer ${SECRET}`)
     expect(res.status).toBe(500)
-    expect((await res.json()).autoSign.outcome).toBe('OK')
-    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).status).toBe('SIGNED')
+    expect((await res.json()).autoSign.outcome).toBe('DISABLED')
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).status).toBe('SIGNATURE_PENDING')
   })
 
   it('answers 500 when auto-sign fails, even though both syncs ran', async () => {
@@ -287,6 +288,26 @@ describe('GET /api/cron/sync — auto-sign after the syncs', () => {
     const res = await get(`Bearer ${SECRET}`)
     const body = await res.json()
     expect(body.portal).toEqual({ skipped: 'PORTAL_BASE_URL is not set' })
+  })
+})
+
+describe('GET /api/cron/sync — auto-sign on a Monday (retired)', () => {
+  // Monday 12 Oct 2026, 12:00 Manila. Only Date is faked so DB timers stay real.
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-10-12T04:00:00Z'), toFake: ['Date'] }) })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('leaves last week’s check pending', async () => {
+    await watermarked('GOLIVE'); await watermarked('MANUFACTURING')
+    const { makeCheck } = await import('../helpers/factory')
+    const made = await makeCheck({ status: 'SIGNATURE_PENDING' })
+    const c = await testDb.check.update({
+      where: { id: made.id },
+      data: { acumaticaPaymentId: `PAY-${made.id}`, acumaticaStatus: 'Balanced', createdAt: new Date('2026-10-08T02:00:00Z') },
+    })
+    const res = await get(`Bearer ${SECRET}`)
+    expect(res.status).toBe(200)
+    expect((await res.json()).autoSign).toMatchObject({ outcome: 'DISABLED', signed: 0, enabled: false })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: c.id } })).status).toBe('SIGNATURE_PENDING')
   })
 })
 
@@ -362,5 +383,47 @@ describe('GET /api/cron/sync — the PO read (BILL_REFS)', () => {
         expect(r.message).toMatch(/^skipped: the run had used \d+ s of its budget before the PO read; the next run catches up$/)
       }
     })
+  })
+})
+
+describe('GET /api/cron/sync — notifications', () => {
+  it('a clean run notifies nobody', async () => {
+    await makeUser('FINANCE_ADMIN')
+    await watermarked('GOLIVE')
+    await watermarked('MANUFACTURING')
+    expect((await get(`Bearer ${SECRET}`)).status).toBe(200)
+    expect(await testDb.notification.count()).toBe(0)
+  })
+
+  it('a FAILED tenant notifies each admin, and only admins', async () => {
+    const admin = await makeUser('FINANCE_ADMIN')
+    await makeUser('FINANCE_USER')
+    await watermarked('GOLIVE')
+    await watermarked('MANUFACTURING')
+    state.failFor = 'GOLIVE'
+    await get(`Bearer ${SECRET}`)
+    const rows = await testDb.notification.findMany({ where: { kind: 'SYNC_FAILED' } })
+    expect(rows.map((r) => r.userId)).toEqual([admin.id])
+    expect(rows[0].message).toMatch(/^Scheduled Acumatica payment read failed for GOLIVE: /)
+  })
+
+  it('a never-read tenant is reported refused every run but stale only once', async () => {
+    await makeUser('FINANCE_ADMIN')
+    await watermarked('GOLIVE')
+    await get(`Bearer ${SECRET}`)
+    await get(`Bearer ${SECRET}`)
+    expect(await testDb.notification.count({ where: { kind: 'SYNC_FAILED' } })).toBe(2)
+    const stale = await testDb.notification.findMany({ where: { kind: 'SYNC_STALE' } })
+    expect(stale.map((r) => r.dedupeKey)).toEqual(['stale:MANUFACTURING:never'])
+  })
+
+  it('an auto-sign FAILED notifies the admins', async () => {
+    await makeUser('FINANCE_ADMIN')
+    await watermarked('GOLIVE')
+    await watermarked('MANUFACTURING')
+    state.failAutoSign = true
+    await get(`Bearer ${SECRET}`)
+    const rows = await testDb.notification.findMany({ where: { kind: 'AUTO_SIGN_FAILED' } })
+    expect(rows.map((r) => r.message)).toEqual(['Auto-sign failed: forced'])
   })
 })

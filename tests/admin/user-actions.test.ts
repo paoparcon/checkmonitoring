@@ -218,10 +218,89 @@ describe('the module as a whole', () => {
   it('exports no action that deletes a user', async () => {
     const mod = await import('@/app/admin/users/actions')
     expect(Object.keys(mod).sort()).toEqual([
+      'approveUserAction',
       'changeUserRoleAction',
       'createUserAction',
+      'rejectUserAction',
       'setUserActiveAction',
       'setUserPasswordAction',
     ])
+  })
+})
+
+describe('approveUserAction and rejectUserAction', () => {
+  async function pendingAccount(email = 'p@rcl.com.ph') {
+    const { registerUser } = await import('@/lib/admin/users')
+    await registerUser(testDb, { email, name: 'Pending Person', password: STRONG })
+    return testDb.user.findUniqueOrThrow({ where: { email } })
+  }
+
+  it('both refuse a Finance user with a result rather than a redirect', async () => {
+    const { approveUserAction, rejectUserAction } = await import('@/app/admin/users/actions')
+    const p = await pendingAccount()
+    currentUser.role = 'FINANCE_USER'
+    for (const result of [
+      await approveUserAction(fd({ userId: p.id, role: 'FINANCE_USER' })),
+      await rejectUserAction(fd({ userId: p.id })),
+    ]) {
+      expect(result.ok).toBe(false)
+      expect(result.ok === false && result.message).toMatch(/Finance Admin/)
+    }
+    const after = await testDb.user.findUniqueOrThrow({ where: { id: p.id } })
+    expect(after.active).toBe(false)
+    expect(after.pendingSince).not.toBeNull()
+  })
+
+  it('approve needs a role', async () => {
+    const { approveUserAction } = await import('@/app/admin/users/actions')
+    const p = await pendingAccount()
+    const result = await approveUserAction(fd({ userId: p.id, role: 'OWNER' }))
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.message).toMatch(/Choose a role/)
+  })
+
+  it('approve activates with the chosen role; reject leaves it deactivated', async () => {
+    const { approveUserAction, rejectUserAction } = await import('@/app/admin/users/actions')
+    const a = await pendingAccount('a@rcl.com.ph')
+    const b = await pendingAccount('b@rcl.com.ph')
+
+    expect(await approveUserAction(fd({
+      userId: a.id, role: 'FINANCE_ADMIN', pendingSince: a.pendingSince!.toISOString(),
+    }))).toEqual({ ok: true })
+    expect(await rejectUserAction(fd({ userId: b.id }))).toEqual({ ok: true })
+
+    expect(await testDb.user.findUniqueOrThrow({ where: { id: a.id } })).toMatchObject({ active: true, role: 'FINANCE_ADMIN', pendingSince: null })
+    expect(await testDb.user.findUniqueOrThrow({ where: { id: b.id } })).toMatchObject({ active: false, pendingSince: null })
+  })
+
+  it('refuses to approve a registration that changed after the page loaded', async () => {
+    const { approveUserAction } = await import('@/app/admin/users/actions')
+    const { registerUser } = await import('@/lib/admin/users')
+    const p = await pendingAccount()
+    const seen = p.pendingSince!.toISOString()
+    // Make sure the second pendingSince cannot collide with the first.
+    await new Promise((r) => setTimeout(r, 20))
+    await registerUser(testDb, { email: 'p@rcl.com.ph', name: 'Someone Else Entirely', password: STRONG })
+
+    const result = await approveUserAction(fd({ userId: p.id, role: 'FINANCE_USER', pendingSince: seen }))
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.message).toMatch(/re-registered/)
+    expect((await testDb.user.findUniqueOrThrow({ where: { id: p.id } })).active).toBe(false)
+  })
+
+  it('treats an unreadable pendingSince as absent: the approval still goes through', async () => {
+    const { approveUserAction } = await import('@/app/admin/users/actions')
+    const p = await pendingAccount()
+    expect(await approveUserAction(fd({ userId: p.id, role: 'FINANCE_USER', pendingSince: 'garbage' }))).toEqual({ ok: true })
+    expect(await testDb.user.findUniqueOrThrow({ where: { id: p.id } })).toMatchObject({ active: true, pendingSince: null })
+  })
+
+  it('reports a domain refusal in its own words', async () => {
+    const { approveUserAction } = await import('@/app/admin/users/actions')
+    const notPending = await testDb.user.create({
+      data: { email: 'n@rcl.com.ph', name: 'Not Pending', passwordHash: 'x', role: 'FINANCE_USER', active: false },
+    })
+    const result = await approveUserAction(fd({ userId: notPending.id, role: 'FINANCE_USER' }))
+    expect(result).toEqual({ ok: false, message: 'Not Pending is not waiting for approval.' })
   })
 })

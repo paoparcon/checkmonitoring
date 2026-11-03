@@ -1,4 +1,5 @@
 import { requireAdmin } from '@/lib/auth'
+import { prisma } from '@/lib/db'
 import { AppHeader } from '@/components/AppHeader'
 import { AdminTabs } from '@/components/AdminTabs'
 
@@ -12,9 +13,12 @@ import { AdminTabs } from '@/components/AdminTabs'
 // `app/admin/actions.ts`.
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const user = await requireAdmin()
+  // The one definition of pending, in SQL: inactive with the flag set
+  // (`isPending`, lib/admin/users.ts). One count per admin page load.
+  const pendingCount = await prisma.user.count({ where: { active: false, pendingSince: { not: null } } })
 
   const tabs = [
-    ['/admin/users', 'USERS'],
+    ['/admin/users', 'USERS', pendingCount],
     ['/admin/sync', 'SYNC'],
     ['/admin/portal', 'PORTAL'],
     ['/admin/import', 'IMPORT'],

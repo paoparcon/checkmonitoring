@@ -39,7 +39,10 @@ export function isTickable(r: RowFacts): boolean {
  * the server.
  */
 export function takesReceipt(r: RowFacts): boolean {
-  return !r.hasReceipt && (r.status === 'READY_FOR_RELEASE' || r.status === 'SCHEDULED' || r.status === 'RELEASED')
+  // Every live rung (client, 2026-10-09 for SIGNED, 2026-10-16 for GENERATED and
+  // SIGNATURE PENDING: handed over without first being marked ready): MARK
+  // RELEASED then signs, readies and releases it in one go (`releaseDirectly`).
+  return !r.hasReceipt && (isLiveStatus(r.status) || r.status === 'RELEASED')
 }
 
 /** The ticked rows SIGN / READY / RELEASE act on: the live ones, as before. */

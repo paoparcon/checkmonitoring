@@ -57,6 +57,7 @@ export async function resetDb() {
     // (lib/sync/bill-refs.ts). Truncated so one file's bills cannot put a PO
     // on another file's cheques.
     await tx.acumaticaBill.deleteMany()
+    await tx.acumaticaBillTerms.deleteMany()
     await tx.cashAccount.deleteMany()
     // Finance's inventory notes hang off a check book and a user (RESTRICT
     // both ways), so they go before either.

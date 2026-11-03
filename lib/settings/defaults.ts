@@ -1,5 +1,5 @@
 /**
- * THE NINE NUMBERS, AS A LEAF.
+ * THE NUMBERS, AS A LEAF.
  *
  * Each threshold's reasoning lives beside the constant that uses it —
  * `STALE_AFTER_HOURS` in lib/sync/staleness.ts, `MAX_BULK_SELECTION` in
@@ -22,5 +22,10 @@ export const DEFAULT_VOUCHER_SCREEN_ROW_LIMIT = 200
 export const DEFAULT_WINDOW_MINUTES = 15
 export const DEFAULT_EMAIL_FREE_FAILURES = 4
 export const DEFAULT_IP_FREE_FAILURES = 20
-/** 1 = Monday's Acumatica cheques auto-sign at Tuesday's 12:00 run; 0 = off. */
-export const DEFAULT_AUTO_SIGN_MONDAY_ENABLED = 1
+
+/**
+ * Registrations one client address may submit on /signup per rolling hour.
+ * Five covers a Finance office behind one NAT signing up on the same morning
+ * with room for a mistyped form; a bot exhausts it in seconds and waits.
+ */
+export const DEFAULT_SIGNUP_IP_PER_HOUR = 5
