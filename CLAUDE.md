@@ -622,6 +622,8 @@ account. Finance posts through PAYROLL on purpose, so this is NOT on TO FIX IN A
 
 **NUMBERING's heading is frozen, INVENTORY filters on TICKED / UNTICKED, and SUMMARY has a TOTAL row (2026-11-03, spec §J, user request).** `KitTable` takes `stickyHead` — the frame becomes `max-h-[80vh] overflow-auto` (`STICKY_FRAME`) and the head `sticky top-0` (`STICKY_HEAD`), because a sticky element pins to its nearest SCROLLING ancestor; a side-scroll-only frame gives it nothing to stick to; the footer pins to the bottom the same way. Only the two NUMBERING tables opt in. INVENTORY is an enum column (TICKED / UNTICKED, exact match) — as a text column "contains TICKED" also matched UNTICKED — and the remark text is its own hidden REMARKS (SEARCH) column under CUSTOMIZE COLUMNS. `numberingTotals` (`lib/numbering-view.ts`, pure, BigInt for MISSING and TICKED) sums every SUMMARY count over the books shown; the page says `TOTAL CHECKS: N HELD IN M CHECK BOOKS`, the table has it as a footer, and the SUMMARY sheet a bold TOTAL row.
 
+**A time shown to Finance is formatted in Manila, by name** (`formatManila`, `lib/manila-format.ts`, 2026-11-03). Every page renders on the server and Vercel's clock is UTC: /admin/portal said "Last push Nov 3, 9:23 AM" for the 5:23 PM push that completed the check list, and the sync, users, print, check, receipt, staged, voucher and import-preview pages, the audit trail and the dashboard workbook's stamp were the same 8 hours behind. A day stored at Manila midnight (`manilaDayStart`) is the evening before in UTC, so an unzoned date-only format is a day early too. Every `toLocaleString('en-PH', …)` in server code now goes through `formatManila` or names `timeZone: 'Asia/Manila'`; a new formatter without the zone repeats the defect, and `tests/manila-format.test.ts` pins the rule. Client components (`CheckTable`) format in the browser, which is already Manila.
+
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`
 mis-tokenises the pipe; `node node_modules/vitest/vitest.mjs run file -t "a|b"` is the same
 runner without the `.cmd` shim and works.
@@ -957,7 +959,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+**2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
 `numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
 `numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
 in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on

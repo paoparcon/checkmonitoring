@@ -9,6 +9,7 @@ import { PendingUserActions } from '@/components/PendingUserActions'
 import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
 import type { KitColumn } from '@/lib/table-kit/types'
 import { instantValue } from '@/lib/table-kit/match'
+import { formatManila } from '@/lib/manila-format'
 
 /**
  * `/admin/users` (spec §13). FINANCE_ADMIN only — gated by
@@ -26,13 +27,13 @@ import { instantValue } from '@/lib/table-kit/match'
 
 const fmtDateTime = (d: Date | null) =>
   d
-    ? d.toLocaleString('en-PH', {
+    ? formatManila(d, {
         month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
       })
     : null
 
 const fmtTime = (d: Date) =>
-  d.toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' })
+  formatManila(d, { hour: 'numeric', minute: '2-digit' })
 
 export default async function UsersPage() {
   const me = await requireAdmin()

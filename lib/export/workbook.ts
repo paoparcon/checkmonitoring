@@ -222,7 +222,7 @@ function titleBlock(
 function generatedLine(meta: ExportMeta): string {
   const stamp = meta.generatedAt.toLocaleString('en-PH', {
     day: '2-digit', month: 'short', year: 'numeric',
-    hour: 'numeric', minute: '2-digit', hour12: true,
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Manila',
   })
   return `Generated ${stamp} by ${meta.generatedBy}`
 }

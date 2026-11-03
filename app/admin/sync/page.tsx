@@ -10,11 +10,12 @@ import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
 import type { KitColumn } from '@/lib/table-kit/types'
 import { instantValue } from '@/lib/table-kit/match'
 import { loadSettings } from '@/lib/settings/read'
+import { formatManila } from '@/lib/manila-format'
 
 // Spec §11's wording: "Last Sync: September 1, 2026 — 10:45 AM".
 const fmtDateTime = (d: Date | null) =>
   d
-    ? d.toLocaleString('en-PH', {
+    ? formatManila(d, {
         month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
       })
     : null

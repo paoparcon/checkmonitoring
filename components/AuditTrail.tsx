@@ -1,4 +1,5 @@
 import { Panel } from './Panel'
+import { formatManila } from '@/lib/manila-format'
 
 type Row = {
   id: string
@@ -37,7 +38,7 @@ type Row = {
  * September.
  */
 const fmt = (d: Date) =>
-  d.toLocaleString('en-PH', {
+  formatManila(d, {
     month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
   })
 

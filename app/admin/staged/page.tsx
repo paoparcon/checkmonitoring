@@ -11,6 +11,7 @@ import { EmptyState } from '@/components/EmptyState'
 import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
 import type { KitColumn } from '@/lib/table-kit/types'
 import { dateValue } from '@/lib/table-kit/match'
+import { formatManila } from '@/lib/manila-format'
 
 /**
  * The staged queue: rows the importer could not write, kept whole.
@@ -34,7 +35,7 @@ const FIELD =
   'focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy'
 
 const fmtDate = (d: Date | null) =>
-  d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+  d ? formatManila(d, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
 const distinct = (vals: string[]) => [...new Set(vals)].sort().map((v) => ({ value: v, label: v }))
 const underscored = (v: string) => v.replace(/_/g, ' ')

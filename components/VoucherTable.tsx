@@ -4,9 +4,10 @@ import type { VoucherRow } from '@/lib/export/voucher-index'
 import { KitTable, type KitRow } from './table-kit/KitTable'
 import type { KitColumn } from '@/lib/table-kit/types'
 import { dateValue } from '@/lib/table-kit/match'
+import { formatManila } from '@/lib/manila-format'
 
 const fmtDate = (d: Date | null) =>
-  d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+  d ? formatManila(d, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
 const distinct = (xs: (string | null)[]) =>
   [...new Set(xs.filter((x): x is string => Boolean(x)))].sort().map((v) => ({ value: v, label: v }))

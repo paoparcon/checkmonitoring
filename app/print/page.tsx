@@ -10,6 +10,7 @@ import { statusPillClass } from '@/lib/status-pill'
 import { PrintButton } from '@/components/PrintButton'
 import { SORT_COOKIE } from '@/lib/list-sort'
 import { describeRefusal } from '@/lib/column-filters'
+import { formatManila } from '@/lib/manila-format'
 
 /**
  * PRINT RELEASE LIST.
@@ -47,7 +48,7 @@ export const dynamic = 'force-dynamic'
 const PRINT_ROW_LIMIT = 1_000
 
 const fmtDate = (d: Date | null) =>
-  d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+  d ? formatManila(d, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
 export default async function PrintPage({
   searchParams,
@@ -113,7 +114,7 @@ export default async function PrintPage({
           {/* Who printed it and when. A sheet of cheque numbers found on a desk
               with no date on it cannot be told from a current one. */}
           {matching.toLocaleString('en-PH')} CHECK{matching === 1 ? '' : 'S'} · PRINTED{' '}
-          {new Date().toLocaleString('en-PH', {
+          {formatManila(new Date(), {
             year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
           })} BY {user.name}
         </p>

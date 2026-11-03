@@ -6,11 +6,12 @@ import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
 import type { KitColumn } from '@/lib/table-kit/types'
 import { instantValue } from '@/lib/table-kit/match'
 import { deliverPortalNowAction, pushEveryCheckAction, retryPortalEventAction } from './actions'
+import { formatManila } from '@/lib/manila-format'
 
 // SEND EVERY CHECK pushes inside a 50 s budget (spec 2026-11-03).
 export const maxDuration = 60
 
-const fmt = (d: Date) => d.toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+const fmt = (d: Date) => formatManila(d, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 export default async function AdminPortalPage() {
   await requireAdmin()

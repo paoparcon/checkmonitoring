@@ -21,6 +21,7 @@ import { isoDay } from '@/lib/domain/details'
 import { loadSettings } from '@/lib/settings/read'
 import { signAction, releaseAction, revertAction, reverseReleaseAction, removeReceiptAction, revertSignatureAction, restoreCancelledAction } from '../actions'
 
+import { formatManila } from '@/lib/manila-format'
 /**
  * ONE CHEQUE.
  *
@@ -36,15 +37,15 @@ import { signAction, releaseAction, revertAction, reverseReleaseAction, removeRe
  */
 
 const fmtDate = (d: Date | null) =>
-  d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+  d ? formatManila(d, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 const fmtDateTime = (d: Date | null) =>
-  d ? d.toLocaleString('en-PH', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'
+  d ? formatManila(d, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—'
 
 // The spine's own marks: a bare date under the rung it belongs to, and nothing
 // at all where there is no date. `fmtDate`'s em dash would read as "this rung
 // has no date" rather than "the cheque has not reached it".
 const mark = (d: Date | null) =>
-  d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: '2-digit' }) : null
+  d ? formatManila(d, { month: 'short', day: 'numeric', year: '2-digit' }) : null
 
 /** A page-level notice. Pastel ground, dark ink, the palette's three tones. */
 function Notice({

@@ -7,6 +7,7 @@ import { ReceiptForm } from '@/components/ReceiptForm'
 import { AttachReceiptFileForm } from '@/components/AttachReceiptFileForm'
 import { RECEIPT_TYPE_LABELS } from '@/lib/domain/receipt'
 import { RECEIPT_RECLASSIFIED_ACTION } from '@/lib/admin/repair-cr-receipts'
+import { formatManila } from '@/lib/manila-format'
 
 /**
  * SUPPLIER RECEIPT — the add-it-later page.
@@ -54,7 +55,7 @@ export default async function ReceiptPage({ params }: { params: Promise<{ id: st
   const recorded = check.orNumber !== null
 
   const fmtDate = (d: Date | null) =>
-    d ? d.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
+    d ? formatManila(d, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 p-8">
