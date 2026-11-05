@@ -669,6 +669,39 @@ sits in MBT-A-9048's OUT OF PATTERN list, as it did in the alias book's.
 
 **NUMBERING's heading is frozen, INVENTORY filters on TICKED / UNTICKED, and SUMMARY has a TOTAL row (2026-11-03, spec §J, user request).** `KitTable` takes `stickyHead` — the frame becomes `max-h-[80vh] overflow-auto` (`STICKY_FRAME`) and the head `sticky top-0` (`STICKY_HEAD`), because a sticky element pins to its nearest SCROLLING ancestor; a side-scroll-only frame gives it nothing to stick to; the footer pins to the bottom the same way. Only the two NUMBERING tables opt in. INVENTORY is an enum column (TICKED / UNTICKED, exact match) — as a text column "contains TICKED" also matched UNTICKED — and the remark text is its own hidden REMARKS (SEARCH) column under CUSTOMIZE COLUMNS. `numberingTotals` (`lib/numbering-view.ts`, pure, BigInt for MISSING and TICKED) sums every SUMMARY count over the books shown; the page says `TOTAL CHECKS: N HELD IN M CHECK BOOKS`, the table has it as a footer, and the SUMMARY sheet a bold TOTAL row.
 
+**CLEARED is a status on screen, not a rung of the ladder (2026-11-05, user: "add CLEARED in the status").**
+A RELEASED check the bank has cleared stays `status = RELEASED` with `clearingStatus = CLEARED` in the
+database; `displayStatus` / `displayStatusWhere` (`lib/display-status.ts`) are the one definition of what a
+reader sees. The STATUS column, the check page pill and progress (a sixth rung, CLEARED), the export, print,
+the STATUS filter box (`f.status=CLEARED`) and the dashboard all say CLEARED, and **RELEASED there means
+released and NOT yet cleared** — the RELEASED card, `?status=RELEASED` and `getSummary().released` no
+longer count cleared checks (`summary.cleared` does). The enum was left alone on purpose: the outbox,
+REVERSE RELEASE, RECON and the sync all read RELEASED and would each have to learn a ninth value.
+`CheckFilters.displayStatusIn` replaces `status`/`statusIn` when set. The TOTALS screen also has
+**CANCELLED** and **STALED** cards (`?status=STALED` is `isStale`, any status; staled checks are CANCELLED,
+so STALED is part of CANCELLED). On-hand checks were asked for and then withdrawn by the user.
+
+**MARK CLEARED FROM A BANK FILE (`/clearing`, 2026-11-05).** Upload an .xlsx, CSV/text or text PDF
+(`lib/clearing-upload.ts`, `uploadClearingFileAction`, `components/ClearingUpload.tsx`; PDF text via
+`unpdf` 1.9.1, rows rebuilt from text positions). Every line is read; a 6–13 digit number becomes a row
+only when a check here holds it (the rest are counted, a sample shown). The preview shows the verdict
+(`previewClearing`, same as the paste box), the check's ACCOUNT and whether its AMOUNT is on the line. The
+cleared date comes from the line only when unambiguous (Excel date cell, ISO, month spelled out, or a
+numeric date whose order the file settles), else the batch date, else none. CONFIRM re-sends and re-plans
+the file and writes only WILL_CLEAR rows through `recordClearing` (audit `details.source` = file + line),
+30 s budget then "upload again". Old .xls, images and scanned PDFs are refused by name — no OCR. The file
+itself is not stored.
+
+**NUMBERING shows IN ANOTHER BOOK instead of MISSING (2026-11-05).** The BPI books share one numbering
+range (so do the Metrobank ones): a leaf Acumatica posted under BPI-S-4636 read MISSING in BPI-S-8879.
+`buildSeries`'s fourth argument `elsewhere` (every check of another book of the SAME bank,
+`SeriesCheque.otherBook`) places such a check strictly inside the book's sequence, in its pattern, on a
+number the book does not hold — tagged `IN ANOTHER BOOK · <book>`, violet, counted in
+`summary.otherBook` (SUMMARY column, `?show=otherBook`, Excel column and NOTE), never held / voided /
+duplicate here. Measured on production that day: 18,402 lines (BPI-S-8879 MISSING 54,048 → 48,653). The
+PAYROLL case (§I, NO CHECK BOOK) was already handled. An inventory note on such a number records the
+other book's check id.
+
 **A time shown to Finance is formatted in Manila, by name** (`formatManila`, `lib/manila-format.ts`, 2026-11-03). Every page renders on the server and Vercel's clock is UTC: /admin/portal said "Last push Nov 3, 9:23 AM" for the 5:23 PM push that completed the check list, and the sync, users, print, check, receipt, staged, voucher and import-preview pages, the audit trail and the dashboard workbook's stamp were the same 8 hours behind. A day stored at Manila midnight (`manilaDayStart`) is the evening before in UTC, so an unzoned date-only format is a day early too. Every `toLocaleString('en-PH', …)` in server code now goes through `formatManila` or names `timeZone: 'Asia/Manila'`; a new formatter without the zone repeats the defect, and `tests/manila-format.test.ts` pins the rule. Client components (`CheckTable`) format in the browser, which is already Manila.
 
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`

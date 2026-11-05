@@ -1239,6 +1239,8 @@ export async function recordClearing(
   args: {
     checkId: string; userId: string; clearingStatus: ClearingStatus
     crNumber?: string; clearedDate?: Date; now: Date
+    /** The uploaded bank file and line this clearing was read from (`lib/clearing-upload.ts`). */
+    source?: { file: string; place: string }
   },
 ): Promise<Check> {
   return inTx(db, async (tx) => {
@@ -1258,7 +1260,10 @@ export async function recordClearing(
     })
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId, action: 'clearing_recorded',
-      details: { clearingStatus: args.clearingStatus, crNumber: args.crNumber ?? null },
+      details: {
+        clearingStatus: args.clearingStatus, crNumber: args.crNumber ?? null,
+        ...(args.source ? { source: args.source, clearedDate: args.clearedDate?.toISOString().slice(0, 10) ?? null } : {}),
+      },
     })
     return updated
   })

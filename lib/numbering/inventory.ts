@@ -47,7 +47,7 @@ export type InventoryNote = {
 
 export type InventoryLine =
   /** `noBook`: a check with no check book shown here because its number falls inside this sequence (spec §I). */
-  | { kind: 'CHECK'; cheque: Extract<SeriesEntry, { kind: 'CHECK' }>['cheque']; duplicate: boolean; noBook: boolean; note: InventoryNote | null }
+  | { kind: 'CHECK'; cheque: Extract<SeriesEntry, { kind: 'CHECK' }>['cheque']; duplicate: boolean; noBook: boolean; otherBook?: string; note: InventoryNote | null }
   | { kind: 'STAGED'; staged: Extract<SeriesEntry, { kind: 'STAGED' }>['staged']; number: string }
   /** One MISSING number, with its own tick and remark. */
   | { kind: 'MISSING_NUMBER'; number: string; note: InventoryNote | null }
@@ -111,7 +111,7 @@ export function toInventoryLines(
   }
   const lines: InventoryLine[] = []
   for (const e of entries) {
-    if (e.kind === 'CHECK') lines.push({ kind: 'CHECK', cheque: e.cheque, duplicate: e.duplicate, noBook: e.noBook, note: noteFor(e.cheque.checkNumber) })
+    if (e.kind === 'CHECK') lines.push({ kind: 'CHECK', cheque: e.cheque, duplicate: e.duplicate, noBook: e.noBook, ...(e.otherBook ? { otherBook: e.otherBook } : {}), note: noteFor(e.cheque.checkNumber) })
     else if (e.kind === 'STAGED') lines.push({ kind: 'STAGED', staged: e.staged, number: e.number })
     else if (BigInt(e.count) <= BigInt(max)) {
       for (const number of listRun(e.from, e.to)) lines.push({ kind: 'MISSING_NUMBER', number, note: noteFor(number) })

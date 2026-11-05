@@ -31,7 +31,9 @@ export const NUMBERING_ACCOUNT_HEADERS = [
  */
 export const NUMBERING_TO_FIX_SHEET = 'TO FIX IN ACUMATICA'
 export const NUMBERING_TO_FIX_HEADERS = ['CHECK BOOK', 'CHECK NUMBER', 'CV', 'CHECK DATE', 'PAYEE', 'STATUS', 'REASON'] as const
-const SUMMARY_HEADERS = ['CHECK BOOK', 'BANK', 'COMPANY', 'FIRST', 'LAST', 'HELD', 'VOIDED', 'CANCELLED', 'STAGED', 'MISSING NUMBERS', 'MISSING RUNS', 'TICKED', 'NOT NUMERIC', 'OUT OF PATTERN', 'NO CHECK BOOK'] as const
+const SUMMARY_HEADERS = ['CHECK BOOK', 'BANK', 'COMPANY', 'FIRST', 'LAST', 'HELD', 'VOIDED', 'CANCELLED', 'STAGED', 'MISSING NUMBERS', 'MISSING RUNS', 'TICKED', 'NOT NUMERIC', 'OUT OF PATTERN', 'NO CHECK BOOK', 'IN ANOTHER BOOK'] as const
+/** An IN ANOTHER BOOK line (2026-11-05): the number this book is missing, held by another book of the same bank. */
+export const otherBookNote = (book: string) => `IN ANOTHER BOOK — Acumatica posted this leaf under ${book}; shown here instead of MISSING`
 /** The NOTE on a check with no check book shown where its number falls (spec §I). */
 export const noBookNote = (c: SeriesCheque) => `NO CHECK BOOK — Acumatica cash account ${c.cashAccount ?? 'not stated'}; shown where its number falls`
 
@@ -107,7 +109,7 @@ export async function buildNumberingWorkbook(
     const row = ws.getRow(7 + i)
     const values: (string | number | null)[] = [
       a.account, a.bank, a.company, s.first, s.last, s.held, s.voided, s.cancelled, s.staged,
-      countCell(s.missingNumbers), s.missingRuns, countCell(a.inventory.ticked), s.notNumeric, s.outOfPattern, s.noBook,
+      countCell(s.missingNumbers), s.missingRuns, countCell(a.inventory.ticked), s.notNumeric, s.outOfPattern, s.noBook, s.otherBook,
     ]
     values.forEach((v, col) => {
       row.getCell(col + 1).value = v
@@ -121,7 +123,7 @@ export async function buildNumberingWorkbook(
     const total = ws.getRow(7 + accounts.length)
     const values: (string | number | null)[] = [
       totalChecksLine(t), null, null, null, null, t.held, t.voided, t.cancelled, t.staged,
-      countCell(t.missingNumbers), t.missingRuns, countCell(t.ticked), t.notNumeric, t.outOfPattern, t.noBook,
+      countCell(t.missingNumbers), t.missingRuns, countCell(t.ticked), t.notNumeric, t.outOfPattern, t.noBook, t.otherBook,
     ]
     values.forEach((v, col) => {
       total.getCell(col + 1).value = v
@@ -227,7 +229,10 @@ export async function buildNumberingWorkbook(
       }
       const e = item.e
       if (e.kind === 'CHECK') {
-        const notes = [e.duplicate ? 'DUPLICATE NUMBER' : null, e.noBook ? noBookNote(e.cheque) : null].filter((s) => s !== null)
+        const notes = [
+          e.duplicate ? 'DUPLICATE NUMBER' : null, e.noBook ? noBookNote(e.cheque) : null,
+          e.otherBook ? otherBookNote(e.otherBook) : null,
+        ].filter((s) => s !== null)
         chequeRow(e.cheque, notes.length ? notes.join('; ') : null, e.note)
         continue
       }

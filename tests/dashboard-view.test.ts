@@ -71,8 +71,20 @@ describe('selecting a view', () => {
     // RELEASED is excluded from the NEEDS ACTION default, and an explicit
     // status wins over that default — so the card opens a full table.
     expect(cardHref('RELEASED', NOTHING)).toBe('/?status=RELEASED')
+    // Since 2026-11-05 RELEASED is released and NOT yet cleared; CLEARED is the rest.
     expect(viewStatusFilter({ ...NOTHING, status: 'RELEASED' }))
-      .toEqual({ status: 'RELEASED', statusIn: undefined })
+      .toEqual({ status: undefined, statusIn: undefined, displayStatusIn: ['RELEASED'], stale: undefined })
+  })
+
+  it('opens CLEARED and STALED as views of their own', () => {
+    expect(cardHref('CLEARED', NOTHING)).toBe('/?status=CLEARED')
+    expect(viewStatusFilter({ ...NOTHING, status: 'CLEARED' }))
+      .toEqual({ status: undefined, statusIn: undefined, displayStatusIn: ['CLEARED'], stale: undefined })
+    expect(cardHref('STALED', NOTHING)).toBe('/?status=STALED')
+    expect(viewStatusFilter({ ...NOTHING, status: 'STALED' }))
+      .toEqual({ status: undefined, statusIn: undefined, displayStatusIn: undefined, stale: true })
+    expect(describeView({ ...NOTHING, status: 'CLEARED' })).toBe('CLEARED — RELEASED AND CLEARED BY THE BANK')
+    expect(describeView({ ...NOTHING, status: 'RELEASED' })).toBe('RELEASED — NOT YET CLEARED BY THE BANK')
   })
 
   it('does not light one status card while another is the view', () => {

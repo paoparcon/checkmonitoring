@@ -96,6 +96,9 @@ export default async function NumberingPage({
               {one.series.summary.noBook > 0 && (
                 <> · {one.series.summary.noBook.toLocaleString('en-PH')} CHECK{one.series.summary.noBook === 1 ? '' : 'S'} WITH NO CHECK BOOK SHOWN WHERE {one.series.summary.noBook === 1 ? 'ITS' : 'THEIR'} NUMBER FALLS (ACUMATICA POSTED THEM ON A CASH ACCOUNT SUCH AS PAYROLL)</>
               )}
+              {one.series.summary.otherBook > 0 && (
+                <> · {one.series.summary.otherBook.toLocaleString('en-PH')} NUMBER{one.series.summary.otherBook === 1 ? '' : 'S'} THIS BOOK DOES NOT HOLD {one.series.summary.otherBook === 1 ? 'IS' : 'ARE'} HELD BY ANOTHER {one.bank} BOOK, SHOWN TAGGED IN ANOTHER BOOK INSTEAD OF MISSING</>
+              )}
               . Every number, held or missing, has a tick box; press SAVE INVENTORY to record your changes.
             </p>
           )}

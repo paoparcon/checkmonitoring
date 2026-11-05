@@ -7,6 +7,7 @@ import { ELIGIBILITIES } from './domain/eligibility'
 // there is no cycle.
 import { viewStatusFilter } from './dashboard-view'
 import { manilaDayStart, manilaToday } from './manila-day'
+import { displayStatus, displayStatusWhere, type DisplayStatus } from './display-status'
 import {
   DEFAULT_SORT, isAppSorted, dbOrderBy, compareSortValues,
   type SortSpec, type SortDir, type AppSortKey, type SortValue,
@@ -125,6 +126,16 @@ export type CheckFilters = ColumnFilters & {
    */
   incomplete?: boolean
   /**
+   * Statuses as a reader picks them (`lib/display-status.ts`): CLEARED is a
+   * RELEASED cheque the bank has cleared, and RELEASED here is one it has not.
+   * When set it REPLACES `status` / `statusIn` — the CLEARED and RELEASED
+   * views and the STATUS filter's ticked boxes use it, so a cheque is never
+   * counted under both.
+   */
+  displayStatusIn?: readonly DisplayStatus[]
+  /** The STALED view: cheques Finance's verdict marked stale (`Check.isStale`), of any status. */
+  stale?: true
+  /**
    * A filter value on the URL could not be read (an amount `12x`, a day that
    * is not a day). The query then matches NOTHING — never "no filter", which
    * would read as an applied one. Enforced here, in `buildWhere`, so every
@@ -205,7 +216,7 @@ export async function getSummary(db: Db, narrow: SummaryNarrowing = {}, now: Dat
   // whose "excluding N with no amount" line still counted the whole database
   // would be a number nobody could reconcile with the cards above it.
   const scope = narrowingWhere(narrow)
-  const [grouped, currencyAgg, total, incomplete, generatedToday, cancelled, voided] = await Promise.all([
+  const [grouped, currencyAgg, total, incomplete, generatedToday, cancelled, voided, cleared, stale] = await Promise.all([
     // Every count on the dashboard is struck over the same population the table
     // shows — see COMPLETE_ONLY.
     db.check.groupBy({ by: ['status'], _count: { _all: true }, where: { ...scope, ...COMPLETE_ONLY } }),
@@ -241,6 +252,12 @@ export async function getSummary(db: Db, narrow: SummaryNarrowing = {}, now: Dat
     // exactly the cheques these views exist to show (client, 2026-10-06).
     db.check.count({ where: { ...scope, status: 'CANCELLED' } }),
     db.check.count({ where: { ...scope, status: 'VOIDED' } }),
+    // CLEARED (2026-11-05): released and cleared by the bank, over the same
+    // population as the RELEASED rung it is taken out of.
+    db.check.count({ where: { ...scope, ...COMPLETE_ONLY, ...displayStatusWhere('CLEARED') } }),
+    // STALED: not narrowed by COMPLETE_ONLY, for CANCELLED's reason — a stale
+    // cheque is a cancelled one, and those are meant to have no amount.
+    db.check.count({ where: { ...scope, isStale: true } }),
   ])
   const count = (s: CheckStatus) => grouped.find((g) => g.status === s)?._count._all ?? 0
   // `amount` is nullable and 397 register rows have no amount. Verified against
@@ -298,7 +315,16 @@ export async function getSummary(db: Db, narrow: SummaryNarrowing = {}, now: Dat
     signed: count('SIGNED'),
     readyForRelease: count('READY_FOR_RELEASE'),
     scheduled: count('SCHEDULED'),
-    released: count('RELEASED'),
+    /**
+     * RELEASED and NOT yet cleared by the bank. Since 2026-11-05 CLEARED is
+     * its own figure (`cleared`), and the two never count one cheque twice:
+     * this is the RELEASED rung less the cleared, the set `?status=RELEASED`
+     * opens (`displayStatusWhere`).
+     */
+    released: count('RELEASED') - cleared,
+    cleared,
+    /** STALED: every cheque marked stale, of any status (they are CANCELLED here). */
+    stale,
     /**
      * Cheques with no recorded amount — 129 in production. Every OTHER count
      * here now excludes them (client decision, 2026-09-06), which makes this
@@ -490,7 +516,7 @@ function buildWhere(filters: CheckFilters, extraSearch: readonly Prisma.CheckWhe
   // nothing", so a miscomputed scope can never hide every cheque.
   if (filters.status) where.status = filters.status
   else if (filters.statusIn && filters.statusIn.length > 0) where.status = { in: [...filters.statusIn] }
-  if (filters.generatedSince) {
+  if (filters.generatedSince || (filters.displayStatusIn && filters.displayStatusIn.length > 0)) {
     delete where.status
   }
   if (filters.companyId) where.companyId = filters.companyId
@@ -498,6 +524,10 @@ function buildWhere(filters: CheckFilters, extraSearch: readonly Prisma.CheckWhe
   const and: Prisma.CheckWhereInput[] = []
   if (filters.cashAccountId) and.push(accountWhere(filters.cashAccountId))
   if (filters.generatedSince) and.push(generatedWhere(filters.generatedSince))
+  if (filters.displayStatusIn && filters.displayStatusIn.length > 0) {
+    and.push({ OR: filters.displayStatusIn.map(displayStatusWhere) })
+  }
+  if (filters.stale) and.push({ isStale: true })
   if (filters.eligibility) where.eligibility = filters.eligibility
   // The tri-state, spelled out. `true` narrows to the records with no recorded
   // amount, `false` EXCLUDES them (the dashboard's default since 2026-09-06 —
@@ -895,6 +925,8 @@ export type CheckTableRow = {
   amount: string | null
   currency: string
   status: CheckStatus
+  /** What the STATUS column says: `status`, or CLEARED for a released cheque the bank cleared (`displayStatus`). */
+  shownStatus: DisplayStatus
   eligibility: Eligibility
   isCheque: boolean
   /** Finance marked it STALED (2026-10-06); shown as a tag beside the status. */
@@ -969,6 +1001,7 @@ export function toTableRow(r: CheckRow): CheckTableRow {
     amount: r.amount?.toString() ?? null,
     currency: r.currency,
     status: r.status,
+    shownStatus: displayStatus(r.status, r.clearingStatus),
     eligibility: r.eligibility,
     isCheque: r.isCheque,
     isStale: r.isStale,

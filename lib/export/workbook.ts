@@ -87,6 +87,8 @@ export type ExportSummary = {
   readyForRelease: number
   scheduled: number
   released: number
+  /** Released and cleared by the bank; not in `released` (2026-11-05). */
+  cleared: number
   incomplete: number
   totalsByCurrency: readonly { currency: string; total: string | null; count: number }[]
 }
@@ -179,7 +181,7 @@ const EXPORT_CELLS: Record<ExportColumnKey, ExportCell> = {
     value: (r) => (r.amount === null ? null : amountAsNumber(r.amount)),
     sample: (r) => (r.amount === null ? '' : formatMoney(r.amount, r.currency)),
   },
-  status: { kind: 'text', value: (r) => statusWords(r.status), sample: (r) => statusWords(r.status) },
+  status: { kind: 'text', value: (r) => statusWords(r.shownStatus), sample: (r) => statusWords(r.shownStatus) },
   /**
    * The day the release was recorded in this app, as a MANILA day (an evening
    * release is 10:00+ UTC and must not slip to the next or previous day); for a
@@ -413,6 +415,7 @@ function buildSummarySheet(wb: ExcelJS.Workbook, { summary, meta }: ExportInput)
     ['READY FOR RELEASE', summary.readyForRelease],
     ['SCHEDULED', summary.scheduled],
     ['RELEASED', summary.released],
+    ['CLEARED', summary.cleared],
     ['TOTAL CHECKS', summary.total],
   ]
   for (const [label, value] of statusLines) {

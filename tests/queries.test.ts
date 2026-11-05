@@ -33,6 +33,33 @@ describe('getSummary', () => {
     expect(s.totalsByCurrency).toEqual([{ currency: 'PHP', total: '988577.1', count: 5 }])
   })
 
+  it('counts CLEARED apart from RELEASED, and STALED, and lists each view exactly (2026-11-05)', async () => {
+    await makeCheck({ status: 'RELEASED' })
+    const cleared = await makeCheck({ status: 'RELEASED' })
+    await testDb.check.update({ where: { id: cleared.id }, data: { clearingStatus: 'CLEARED' } })
+    const deposited = await makeCheck({ status: 'RELEASED' })
+    await testDb.check.update({ where: { id: deposited.id }, data: { clearingStatus: 'DEPOSITED' } })
+    const stale = await makeCheck({ status: 'CANCELLED' })
+    await testDb.check.update({ where: { id: stale.id }, data: { isStale: true } })
+    await makeCheck({ status: 'CANCELLED' })
+
+    const s = await getSummary(testDb)
+    // DEPOSITED is not cleared: the bank has not paid it yet.
+    expect(s.released).toBe(2)
+    expect(s.cleared).toBe(1)
+    expect(s.cancelled).toBe(2)
+    expect(s.stale).toBe(1)
+
+    expect((await listChecks(testDb, { displayStatusIn: ['CLEARED'] })).map((c) => c.id)).toEqual([cleared.id])
+    expect(await countChecks(testDb, { displayStatusIn: ['RELEASED'] })).toBe(2)
+    expect(await countChecks(testDb, { displayStatusIn: ['RELEASED', 'CLEARED'] })).toBe(3)
+    expect((await listChecks(testDb, { stale: true })).map((c) => c.id)).toEqual([stale.id])
+    // The STATUS column says CLEARED; the stored status stays RELEASED.
+    const row = toTableRow((await listChecks(testDb, { displayStatusIn: ['CLEARED'] }))[0])
+    expect(row.status).toBe('RELEASED')
+    expect(row.shownStatus).toBe('CLEARED')
+  })
+
   /**
    * The PENDING SIGNATURE card folds GENERATED in; the release timeline shows
    * the two rungs separately, because a timeline node's count has to be the

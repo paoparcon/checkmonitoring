@@ -170,8 +170,8 @@ export default async function PrintPage({
                   {formatMoney(r.amount, r.currency)}
                 </td>
                 <td className="py-1.5">
-                  <span className={`inline-block rounded px-1.5 py-0.5 font-semibold ${statusPillClass(r.status)}`}>
-                    {r.status.replace(/_/g, ' ')}
+                  <span className={`inline-block rounded px-1.5 py-0.5 font-semibold ${statusPillClass(r.shownStatus)}`}>
+                    {r.shownStatus.replace(/_/g, ' ')}
                   </span>
                 </td>
               </tr>

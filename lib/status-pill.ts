@@ -53,6 +53,9 @@ export const STATUS_PILL_CLASS: Record<CheckStatus, string> = {
  * the thing being shown.
  */
 export function statusPillClass(status: string): string {
+  // CLEARED is a display status, not a ladder rung (`lib/display-status.ts`),
+  // so it stays out of the map above: the bank's tone, pale mint.
+  if (status === 'CLEARED') return 'bg-mint-bg text-mint-ink'
   return STATUS_PILL_CLASS[status as CheckStatus] ?? STATUS_PILL_CLASS.GENERATED
 }
 

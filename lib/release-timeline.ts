@@ -36,11 +36,13 @@ export type TimelineSummary = {
   readyForRelease: number
   scheduled: number
   released: number
+  /** Released and cleared by the bank (2026-11-05); `released` no longer counts these. */
+  cleared: number
 }
 
 /** A rung of the ladder. `id` is the view card it opens, never a status string. */
 export type TimelineNode = {
-  id: Extract<ViewCardId, 'GENERATED' | 'SIGNATURE_PENDING' | 'SIGNED' | 'READY_FOR_RELEASE' | 'RELEASED'>
+  id: Extract<ViewCardId, 'GENERATED' | 'SIGNATURE_PENDING' | 'SIGNED' | 'READY_FOR_RELEASE' | 'RELEASED' | 'CLEARED'>
   label: string
   count: number
   href: string
@@ -61,6 +63,8 @@ const LADDER = [
   ['SIGNED', 'SIGNED'],
   ['READY_FOR_RELEASE', 'READY'],
   ['RELEASED', 'RELEASED'],
+  // The bank's step after the release (2026-11-05, `lib/display-status.ts`).
+  ['CLEARED', 'CLEARED'],
 ] as const satisfies readonly (readonly [TimelineNode['id'], string])[]
 
 /** A rung of the ladder, as an id. */
@@ -77,6 +81,7 @@ export function buildReleaseTimeline(
     // The pair, exactly as the card and the view read it.
     READY_FOR_RELEASE: summary.readyForRelease + summary.scheduled,
     RELEASED: summary.released,
+    CLEARED: summary.cleared,
   }
 
   return LADDER.map(([id, label]) => ({
@@ -148,6 +153,8 @@ function rungOf(status: string): LadderId | null {
     case 'READY_FOR_RELEASE':
     case 'SCHEDULED': return 'READY_FOR_RELEASE'
     case 'RELEASED': return 'RELEASED'
+    // A display status (`displayStatus`): the detail page passes it for a cleared cheque.
+    case 'CLEARED': return 'CLEARED'
     default: return null
   }
 }

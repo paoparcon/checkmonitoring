@@ -1,6 +1,6 @@
 import type { FilterOptions } from '@/lib/queries'
 import { bankLabel } from '@/lib/export/report'
-import { LIVE_STATUSES, CLOSED_STATUSES } from '@/lib/domain/check-status'
+import { DISPLAY_STATUSES } from '@/lib/display-status'
 import { COLUMN_LABELS, COLUMN_STORAGE_KEY, type ColumnKey } from '@/lib/table-columns'
 import { SORT_KEYS, type SortKey } from '@/lib/list-sort'
 import { fromVisibleList, loadLayout, visibleColumns, type Layout } from './layout'
@@ -38,7 +38,7 @@ const KINDS: Record<SortKey, KitColumn['kind']> = {
   availablePickupDate: 'date', scheduledPickupDate: 'date', releasedAt: 'date',
 }
 
-const STATUSES = [...LIVE_STATUSES, ...CLOSED_STATUSES]
+const STATUSES = DISPLAY_STATUSES
 
 export function mainListColumns(opts: {
   options: FilterOptions

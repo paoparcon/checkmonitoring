@@ -1,12 +1,22 @@
 import type { CheckStatus, Eligibility } from '@prisma/client'
 import type { CheckFilters, FilterOptions } from './queries'
 import { parseStatusParam, parseEligibilityParam, parseOptionId } from './queries'
-import { viewStatusFilter, type DashboardSelection } from './dashboard-view'
+import { viewStatusFilter, type DashboardSelection, type ViewStatus } from './dashboard-view'
 import { bankLabel, describeFilters, exportViewLabel } from './export/report'
 import { isIsoDay } from './domain/details'
 import { manilaDayEnd, manilaDayStart, manilaToday } from './manila-day'
 import { parseColumnFilters, describeColumnFilters, FILTER_MESSAGES, type FParam } from './column-filters'
 import { parseSort, parseSortCookie, DEFAULT_SORT, sameSort, describeSort, type SortSpec } from './list-sort'
+
+/**
+ * `?status=`: a ladder status, or CLEARED / STALED, the two views that are
+ * not one (2026-11-05). Anything else is `undefined`, as `parseStatusParam`
+ * answers — an unrecognised value opens the default view, never a cast.
+ */
+export function parseViewStatusParam(value: string | undefined): ViewStatus | undefined {
+  if (value === 'CLEARED' || value === 'STALED') return value
+  return parseStatusParam(value)
+}
 
 /**
  * The dashboard's URL parameters, resolved into the one filter object that
@@ -68,7 +78,7 @@ export type DashboardQuery = {
   /** The DATE RELEASED boxes as typed (valid or not), `''` when empty or off-view. */
   releasedFrom: string
   releasedTo: string
-  status: CheckStatus | undefined
+  status: ViewStatus | undefined
   eligibility: Eligibility | undefined
   companyId: string | undefined
   cashAccountId: string | undefined
@@ -118,7 +128,7 @@ export function resolveDashboardQuery(
    * "there are no cheques". Each parser answers `undefined` for anything it
    * does not recognise, which `buildWhere` reads as no filter.
    */
-  const status = parseStatusParam(params.status)
+  const status = parseViewStatusParam(params.status)
   const eligibility = parseEligibilityParam(params.eligibility)
   const companyId = parseOptionId(params.company, options.companies)
   const cashAccountId = parseOptionId(params.cashAccount, options.cashAccounts)
@@ -152,7 +162,7 @@ export function resolveDashboardQuery(
    */
   // ON its two views, a value that is not a real day now REFUSES (part C2)
   // instead of opening the view unfiltered.
-  const releasedRangeApplies = status === 'RELEASED' || showAll
+  const releasedRangeApplies = status === 'RELEASED' || status === 'CLEARED' || showAll
   const releasedBound = (name: 'releasedFrom' | 'releasedTo') => {
     const raw = releasedRangeApplies ? (params[name]?.trim() ?? '') : ''
     const day = raw && isIsoDay(raw) ? raw : undefined
@@ -202,7 +212,8 @@ export function resolveDashboardQuery(
     eligibility,
     // CANCELLED and VOIDED cheques are meant to have no amount; the default
     // exclusion of those would empty exactly the views that show them.
-    incomplete: (status === 'CANCELLED' || status === 'VOIDED') && !incomplete ? undefined : incomplete,
+    // STALED likewise: a stale cheque is a cancelled one (2026-10-07).
+    incomplete: (status === 'CANCELLED' || status === 'VOIDED' || status === 'STALED') && !incomplete ? undefined : incomplete,
     // GENERATED is "generated today" (Manila day) — see CheckFilters.generatedSince.
     ...(status === 'GENERATED' ? { generatedSince: manilaDayStart(manilaToday(new Date())) } : {}),
     // Manila calendar days become inclusive instants: the day's first and last
@@ -210,10 +221,9 @@ export function resolveDashboardQuery(
     releasedFrom: releasedFrom.day ? manilaDayStart(releasedFrom.day) : undefined,
     releasedTo: releasedTo.day ? manilaDayEnd(releasedTo.day) : undefined,
     ...viewStatusFilter(selection),
-    // One ticked status is `status`; several are `statusIn`, which `buildWhere`
-    // reads only while `status` is unset — so it is cleared here explicitly.
-    ...(column.status?.length === 1 ? { status: column.status[0], statusIn: undefined } : {}),
-    ...(column.status && column.status.length > 1 ? { status: undefined, statusIn: column.status } : {}),
+    // The ticked statuses, CLEARED among them (`lib/display-status.ts`), replace
+    // the view's status filter — cleared explicitly so nothing stale survives.
+    ...(column.status && column.status.length > 0 ? { status: undefined, statusIn: undefined, displayStatusIn: column.status } : {}),
     ...(refused ? { refused: true as const } : {}),
   }
 

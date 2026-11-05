@@ -100,7 +100,7 @@ function DataCell({ column, r, width }: { column: DataColumn; r: CheckTableRow; 
       // 2026-10-06). It stays CANCELLED; the tag says why.
       return (
         <td style={widthStyle(width)} className="px-2 py-2">
-          <StatusPill status={r.status} />
+          <StatusPill status={r.shownStatus} />
           {r.isStale && <span className="ml-1 text-[10px] font-semibold tracking-widest text-amber-700">STALED</span>}
         </td>
       )

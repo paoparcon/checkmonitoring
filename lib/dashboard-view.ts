@@ -1,6 +1,7 @@
 import type { CheckStatus } from '@prisma/client'
 import { LIVE_STATUSES } from './domain/check-status'
 import type { SortSpec } from './list-sort'
+import type { DisplayStatus } from './display-status'
 
 /**
  * The dashboard's filtering model, as URL arithmetic.
@@ -67,6 +68,13 @@ export const VIEW_CARDS = [
   'GENERATED',
   // The two dead rungs, reached from the STATUS dropdown (client, 2026-10-06).
   'CANCELLED', 'VOIDED',
+  /**
+   * CLEARED — a RELEASED cheque the bank has cleared — and STALED — a cheque
+   * Finance's verdict marked stale — are views without being `CheckStatus`
+   * values (user request 2026-11-05; `lib/display-status.ts`). Both have a
+   * card on the TOTALS screen and an option in the STATUS dropdown.
+   */
+  'CLEARED', 'STALED',
 ] as const satisfies readonly string[]
 
 export type ViewCardId = (typeof VIEW_CARDS)[number]
@@ -92,8 +100,11 @@ export type CardId = ViewCardId
  * `status` is already validated by `parseStatusParam` — an unrecognised value
  * arrives here as null, never as a string this module would pass on.
  */
+/** What `?status=` may name: a ladder status, or one of the two views that are not one. */
+export type ViewStatus = CheckStatus | 'CLEARED' | 'STALED'
+
 export type DashboardSelection = {
-  status: CheckStatus | null
+  status: ViewStatus | null
   showAll: boolean
   incomplete: boolean
   /**
@@ -336,7 +347,17 @@ export function printHref(sel: DashboardSelection): string {
 export function viewStatusFilter(view: ViewState): {
   status: CheckStatus | undefined
   statusIn: readonly CheckStatus[] | undefined
+  displayStatusIn: readonly DisplayStatus[] | undefined
+  stale: true | undefined
 } {
+  const none = { status: undefined, statusIn: undefined, displayStatusIn: undefined, stale: undefined }
+  /**
+   * RELEASED and CLEARED never count the same cheque: RELEASED is released and
+   * not yet cleared by the bank, CLEARED is released and cleared
+   * (`displayStatusWhere`). STALED is the `isStale` flag, whatever the status.
+   */
+  if (view.status === 'RELEASED' || view.status === 'CLEARED') return { ...none, displayStatusIn: [view.status] }
+  if (view.status === 'STALED') return { ...none, stale: true }
   /**
    * READY FOR RELEASE means both rungs. To Finance the cheque is available and
    * waiting to be handed over; whether a supplier has booked a pickup slot in
@@ -344,12 +365,11 @@ export function viewStatusFilter(view: ViewState): {
    * filter has to agree — a card reading 406 that opens a table of 396 is a bug
    * report waiting to happen.
    */
-  if (view.status === 'READY_FOR_RELEASE') return { status: undefined, statusIn: AVAILABLE }
-  // An explicit status wins over the NEEDS ACTION default, including RELEASED,
-  // which the live list excludes.
-  if (view.status) return { status: view.status, statusIn: undefined }
-  if (view.showAll) return { status: undefined, statusIn: undefined }
-  return { status: undefined, statusIn: LIVE_STATUSES }
+  if (view.status === 'READY_FOR_RELEASE') return { ...none, statusIn: AVAILABLE }
+  // An explicit status wins over the NEEDS ACTION default.
+  if (view.status) return { ...none, status: view.status }
+  if (view.showAll) return none
+  return { ...none, statusIn: LIVE_STATUSES }
 }
 
 const words = (s: string) => s.replace(/_/g, ' ')
@@ -372,6 +392,12 @@ const words = (s: string) => s.replace(/_/g, ' ')
 export function describeView(sel: DashboardSelection): string {
   const view = sel.status === 'READY_FOR_RELEASE'
     ? 'READY FOR RELEASE — INCLUDING SCHEDULED'
+    : sel.status === 'RELEASED'
+    ? 'RELEASED — NOT YET CLEARED BY THE BANK'
+    : sel.status === 'CLEARED'
+    ? 'CLEARED — RELEASED AND CLEARED BY THE BANK'
+    : sel.status === 'STALED'
+    ? 'STALED — EVERY CHECK MARKED STALE'
     : sel.status
       ? words(sel.status)
       : sel.showAll
@@ -418,7 +444,7 @@ export function dashboardScreen(sel: DashboardSelection): DashboardScreen {
  * of a set nobody can see.
  */
 export function signAllOffered(v: {
-  status: CheckStatus | null | undefined
+  status: ViewStatus | null | undefined
   showAll: boolean
   q: string | null | undefined
   incomplete: boolean

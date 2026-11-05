@@ -3,7 +3,7 @@ import { cardHref, isCardSelected, type CardId, type DashboardSelection } from '
 /** The counts the STATUS dropdown can print; absent on the list screen, which does not query them. */
 export type StatusCounts = {
   generated: number; signaturePending: number; signed: number; readyForRelease: number; scheduled: number
-  released: number; cancelled: number; voided: number; total: number
+  released: number; cleared: number; cancelled: number; stale: number; voided: number; total: number
 }
 
 export type StatusOption = { id: string; label: string; href: string; selected: boolean }
@@ -14,7 +14,9 @@ const OPTIONS: readonly (readonly [CardId, string, (c: StatusCounts) => number])
   ['SIGNED', 'SIGNED', (c) => c.signed],
   ['READY_FOR_RELEASE', 'READY FOR RELEASE', (c) => c.readyForRelease + c.scheduled],
   ['RELEASED', 'RELEASED', (c) => c.released],
+  ['CLEARED', 'CLEARED', (c) => c.cleared],
   ['CANCELLED', 'CANCELLED', (c) => c.cancelled],
+  ['STALED', 'STALED', (c) => c.stale],
   ['VOIDED', 'VOIDED', (c) => c.voided],
   ['TOTAL_CHECKS', 'ALL CHECKS', (c) => c.total],
 ]

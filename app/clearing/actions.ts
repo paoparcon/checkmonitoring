@@ -7,6 +7,14 @@ import { parseClearingPaste, type PastedLine, type PasteError } from '@/lib/clea
 import { previewClearing, type PreviewRow } from '@/lib/clearing-preview'
 import { runEach, type BulkActionResult } from '@/lib/bulk-run'
 import { loadSettings } from '@/lib/settings/read'
+import { revalidatePath } from 'next/cache'
+import { isNextControlFlowError } from '@/lib/next-errors'
+import { isIsoDay, dayToDate } from '@/lib/domain/details'
+import {
+  readClearingFile, planClearingUpload, applyClearingUpload,
+  MAX_CLEARING_FILE_BYTES, CLEARING_UPLOAD_BUDGET_MS, UNREADABLE_FILE,
+  type ClearingUploadPlan, type ClearingUploadSummary,
+} from '@/lib/clearing-upload'
 
 /**
  * Bulk mark-cleared from pasted statement lines. Any Finance user.
@@ -67,4 +75,50 @@ export async function confirmClearingAction(formData: FormData): Promise<BulkAct
       crNumber: r.crNumber ?? undefined, clearedDate: r.clearedDate ?? undefined, now,
     })
   })
+}
+
+export type ClearingUploadResult =
+  | { ok: true; stage: 'PREVIEW'; plan: ClearingUploadPlan }
+  | { ok: true; stage: 'APPLIED'; plan: ClearingUploadPlan; summary: ClearingUploadSummary }
+  | { ok: false; message: string }
+
+/**
+ * MARK CLEARED FROM A FILE (user request 2026-11-05; `lib/clearing-upload.ts`).
+ * Any Finance user, as the paste box. The first submission plans and writes
+ * nothing; the second carries `confirm` and the SAME file, re-planned here, so
+ * a confirmation can only apply to the file that was previewed and only to
+ * checks still released and uncleared — the domain refuses the rest per check.
+ */
+export async function uploadClearingFileAction(formData: FormData): Promise<ClearingUploadResult> {
+  const user = await requireUser()
+  const file = formData.get('file')
+  if (!(file instanceof File) || file.size === 0) return { ok: false, message: 'Choose the bank file to upload.' }
+  if (file.size > MAX_CLEARING_FILE_BYTES) {
+    return { ok: false, message: `That file is larger than ${MAX_CLEARING_FILE_BYTES / 1024 / 1024} MB. Split it, or save only the cleared checks.` }
+  }
+  const day = String(formData.get('clearedDate') ?? '').trim()
+  if (day !== '' && !isIsoDay(day)) return { ok: false, message: 'The cleared date is not a real day.' }
+  const batchDate = day === '' ? null : dayToDate(day)
+  const confirmed = String(formData.get('confirm') ?? '') === 'true'
+
+  try {
+    const read = await readClearingFile(file.name, Buffer.from(await file.arrayBuffer()))
+    if (!read.ok) return read
+    const now = new Date()
+    const plan = await planClearingUpload(prisma, { fileName: file.name, kind: read.kind, units: read.units, batchDate, now })
+    if (!confirmed) return { ok: true, stage: 'PREVIEW', plan }
+    if (plan.willClear === 0) {
+      return { ok: false, message: 'Nothing on this file names a released check that is not yet cleared.' }
+    }
+    const summary = await applyClearingUpload(prisma, plan, {
+      userId: user.id, now, deadline: new Date(now.getTime() + CLEARING_UPLOAD_BUDGET_MS),
+    })
+    revalidatePath('/')
+    revalidatePath('/clearing')
+    return { ok: true, stage: 'APPLIED', plan, summary }
+  } catch (e) {
+    if (isNextControlFlowError(e)) throw e
+    console.error('clearing upload failed:', e instanceof Error ? e.message : e)
+    return { ok: false, message: `The file could not be read. ${UNREADABLE_FILE}` }
+  }
 }

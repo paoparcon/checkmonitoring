@@ -82,7 +82,7 @@ describe('buildSeries', () => {
     expect(buildSeries([c('42')]).summary).toMatchObject({ first: '42', last: '42', held: 1, missingRuns: 0 })
     expect(buildSeries([])).toEqual({
       entries: [], notNumeric: [], outOfPattern: [], pattern: null,
-      summary: { first: null, last: null, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, notNumeric: 0, duplicates: 0, outOfPattern: 0, noBook: 0 },
+      summary: { first: null, last: null, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, notNumeric: 0, duplicates: 0, outOfPattern: 0, noBook: 0, otherBook: 0 },
     })
   })
 })
@@ -316,5 +316,27 @@ describe('NO CHECK BOOK (spec §I): a check with no book is shown where its numb
     const far = STRAY_GAP + BigInt(2)
     const s = buildSeries([c('100'), c((BigInt(100) + far).toString())], [], [nb('5000')])
     expect(strayEnds(s)).toEqual([])
+  })
+})
+
+describe('IN ANOTHER BOOK (2026-11-05): a number another book of the bank holds is not MISSING', () => {
+  const ob = (n: string, book = 'BPI-S-4636'): SeriesCheque => ({ ...c(n), id: `ob-${n}`, otherBook: book })
+
+  it('places another book\'s check inside the sequence, tagged, and takes it out of MISSING', () => {
+    const s = buildSeries([c('100'), c('104')], [], [], [ob('102')])
+    expect(shape(s.entries)).toEqual(['100', 'MISSING 101-101 (1)', '102', 'MISSING 103-103 (1)', '104'])
+    expect(s.entries[2]).toMatchObject({ kind: 'CHECK', otherBook: 'BPI-S-4636', noBook: false, duplicate: false })
+    expect(s.summary).toMatchObject({ first: '100', last: '104', held: 2, otherBook: 1, missingNumbers: '2', duplicates: 0 })
+  })
+
+  it('never on a number the book holds, outside its range, or out of its pattern', () => {
+    const own = [c('100'), c('101'), c('104')]
+    const s = buildSeries(own, [], [], [ob('101'), ob('099'), ob('105'), ob('1000002')])
+    expect(s.summary).toMatchObject({ otherBook: 0, held: 3, duplicates: 0, missingNumbers: '2' })
+  })
+
+  it('is not held, voided or cancelled here: its own book counts it', () => {
+    const s = buildSeries([c('100'), c('103')], [], [], [{ ...ob('101'), status: 'VOIDED' }, ob('102')])
+    expect(s.summary).toMatchObject({ held: 2, voided: 0, otherBook: 2, missingNumbers: '0', missingRuns: 0 })
   })
 })

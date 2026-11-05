@@ -376,3 +376,25 @@ describe('NO CHECK BOOK (spec §I): an Acumatica check with no book is shown whe
     expect((await listNumberingAccounts(testDb, {}))[0].series.summary).toMatchObject({ noBook: 1, missingNumbers: '2' })
   })
 })
+
+describe('IN ANOTHER BOOK (2026-11-05)', () => {
+  it('shows a number another book of the same bank holds instead of MISSING, on the all-books and one-book pages', async () => {
+    const first = await acuCheck({ checkNumber: '100' })
+    const bookA = await bookFor(first, 'BPI-S-8879')
+    await inBook(bookA, { checkNumber: '104' })
+    const bookB = await testDb.checkBook.create({ data: { code: 'BPI-S-4636', bankId: bookA.bankId, companyId: first.companyId } })
+    const leaf = await inBook(bookB, { checkNumber: '102' })
+    await inBook(bookB, { checkNumber: '300' })
+    // A different bank's check on a number A is missing is not a leaf of A's bank.
+    const other = await acuCheck({ checkNumber: '50' })
+    const mbt = await bookFor(other, 'MBT-A-4155')
+    await inBook(mbt, { checkNumber: '103' })
+
+    for (const filters of [{}, { checkBookId: bookA.id }]) {
+      const a = (await listNumberingAccounts(testDb, filters)).find((x) => x.accountId === bookA.id)!
+      expect(a.series.summary).toMatchObject({ held: 2, otherBook: 1, missingNumbers: '2' })
+      const line = a.series.entries.find((e) => e.kind === 'CHECK' && e.cheque.id === leaf.id)
+      expect(line).toMatchObject({ kind: 'CHECK', otherBook: 'BPI-S-4636', duplicate: false })
+    }
+  })
+})

@@ -90,7 +90,7 @@ describe('bulkSignAction', () => {
     expect(result.ok).toBe(true)
     const outcome = outcomeFor(result, released.id)
     expect(outcome.ok).toBe(false)
-    expect(outcome.message).toBe('Cannot move a check from RELEASED to SIGNED.')
+    expect(outcome.message).toMatch(/^This check is RELEASED, not SIGNATURE PENDING, so there is nothing to sign\./)
     expect(outcome.checkNumber).toBe(released.checkNumber)
   })
 

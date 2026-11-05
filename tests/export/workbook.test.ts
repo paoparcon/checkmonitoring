@@ -36,6 +36,8 @@ function row(overrides: Partial<CheckTableRow> = {}): CheckTableRow {
     receiptType: null,
     hasReceipt: false,
     ...overrides,
+    // The STATUS column reads `shownStatus`; it follows an overridden status unless set.
+    shownStatus: overrides.shownStatus ?? overrides.status ?? 'READY_FOR_RELEASE',
   }
 }
 
@@ -46,6 +48,7 @@ const summary: ExportSummary = {
   readyForRelease: 81,
   scheduled: 6,
   released: 7433,
+  cleared: 0,
   incomplete: 129,
   totalsByCurrency: [
     { currency: 'PHP', total: '1234567.89', count: 9000 },

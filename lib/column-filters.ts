@@ -1,9 +1,8 @@
-import type { CheckStatus } from '@prisma/client'
 import type { ColumnFilters } from './queries'
 import type { SortKey } from './list-sort'
 import { isIsoDay } from './domain/details'
 import { manilaDayStart, manilaDayEnd } from './audit-view'
-import { LIVE_STATUSES, CLOSED_STATUSES } from './domain/check-status'
+import { DISPLAY_STATUSES, type DisplayStatus } from './display-status'
 
 /**
  * The LIST screen's filter row (spec 2026-10-01, part C2), as URL parameters.
@@ -66,7 +65,8 @@ const PARAM_LABELS: Record<string, string> = {
   releasedFrom: 'DATE RELEASED (FROM)', releasedTo: 'DATE RELEASED (TO)',
 }
 
-const STATUSES: readonly CheckStatus[] = [...LIVE_STATUSES, ...CLOSED_STATUSES]
+// CLEARED is pickable here (2026-11-05): a RELEASED cheque the bank has cleared.
+const STATUSES: readonly DisplayStatus[] = DISPLAY_STATUSES
 
 /**
  * Plain digits, or thousands grouped correctly by commas or by spaces (one
@@ -90,7 +90,7 @@ export type ParsedColumnFilters = {
    * STATUS, on ALL CHEQUES only: the ticked statuses, at least one. It narrows
    * `CheckFilters.status` (one) or `statusIn` (several), not a column filter of its own.
    */
-  status: CheckStatus[] | undefined
+  status: DisplayStatus[] | undefined
   /** Every non-empty box as typed (valid or not), for `base` and to render back. */
   values: Record<string, string>
   /** Parameter name → message, for each box that could not be read. */
@@ -104,7 +104,7 @@ export function parseColumnFilters(
   const filters: ColumnFilters = {}
   const values: Record<string, string> = {}
   const errors: Record<string, string> = {}
-  let status: CheckStatus[] | undefined
+  let status: DisplayStatus[] | undefined
 
   const take = (name: FParam): string => {
     const v = read(name)?.trim() ?? ''
@@ -149,7 +149,7 @@ export function parseColumnFilters(
     // whole: dropping it would list more statuses than the reader asked for.
     const picked = [...new Set(take('f.status').split(',').map((s) => s.trim()).filter(Boolean))]
     if (picked.length > 0) {
-      if (picked.every((s) => (STATUSES as readonly string[]).includes(s))) status = picked as CheckStatus[]
+      if (picked.every((s) => (STATUSES as readonly string[]).includes(s))) status = picked as DisplayStatus[]
       else errors['f.status'] = FILTER_MESSAGES.status
     }
   }

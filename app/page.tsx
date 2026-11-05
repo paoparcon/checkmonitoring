@@ -200,6 +200,7 @@ export default async function DashboardPage({
         <WorkflowRow
           summary={summary}
           total={summary.total}
+          closed={{ cancelled: summary.cancelled, stale: summary.stale }}
           incomplete={summary.incomplete}
           incompleteHref={incompleteHref(selection)}
           selection={selection}

@@ -38,6 +38,19 @@ import { canonicalCheckNumber, isBareCheckNumber } from '@/lib/import/normalise'
  * and is not `held`, `voided` or `cancelled` (the book's own), but it is a
  * DUPLICATE when the book's own check shares its number, and it is counted in
  * `noBook`. Where several books' sequences span the number, it is shown in each.
+ *
+ * IN ANOTHER BOOK (user's question 2026-11-05: "possible yung mga missing
+ * checks kasi na yon cash count nya is Payroll clearing - pero ang ginamit na
+ * checks is BPI 8879 - since consecutive yon"). The same holds between books:
+ * the BPI books share one numbering range, so a leaf Acumatica posted under
+ * BPI-S-4636 read MISSING in BPI-S-8879 — 18,402 such lines measured across
+ * the eight books that day. `elsewhere` is every check of ANOTHER book of the
+ * same bank (`SeriesCheque.otherBook` names it); one whose number fits the
+ * pattern, lies strictly inside this book's sequence and is NOT held by this
+ * book is placed as a CHECK entry carrying `otherBook`, so the number is no
+ * longer MISSING. Like a no-book check it never bounds the series, never
+ * votes, is not `held` / `voided` / `cancelled` here, and is never a
+ * duplicate: its own book counts it. It is counted in `otherBook`.
  */
 export type SeriesCheque = {
   id: string; checkNumber: string; checkDate: Date | null; payeeName: string | null
@@ -46,6 +59,10 @@ export type SeriesCheque = {
   cv: string | null
   /** The cash account the check is on (`CashAccount.code`, e.g. PAYROLL) — what a NO CHECK BOOK line names (spec §I). */
   cashAccount?: string | null
+  /** Set only on a check passed as `elsewhere`: the other book that holds it, as an IN ANOTHER BOOK line names it. */
+  otherBook?: string
+  /** The bank has cleared it: shown CLEARED (`lib/display-status.ts`); `status` stays RELEASED for every count. */
+  cleared?: boolean
 }
 export type SeriesStaged = {
   acumaticaTenant: string; acumaticaRef: string; statedCheckRef: string; checkDate: Date | null; payeeName: string | null
@@ -53,7 +70,7 @@ export type SeriesStaged = {
 }
 export type SeriesEntry =
   /** `noBook`: the check carries no check book and is shown here because its number falls inside this book's sequence (spec §I). */
-  | { kind: 'CHECK'; cheque: SeriesCheque; duplicate: boolean; noBook: boolean }
+  | { kind: 'CHECK'; cheque: SeriesCheque; duplicate: boolean; noBook: boolean; /** The other book holding this number (2026-11-05). */ otherBook?: string }
   | { kind: 'STAGED'; staged: SeriesStaged; number: string }
   | { kind: 'MISSING'; from: string; to: string; count: string }
 export type SeriesSummary = {
@@ -71,6 +88,8 @@ export type SeriesSummary = {
   outOfPattern: number
   /** Checks with no check book shown in this sequence because their number falls inside it (spec §I). */
   noBook: number
+  /** Numbers this book does not hold that another book of the same bank does, shown instead of MISSING (2026-11-05). */
+  otherBook: number
 }
 export type NumberShape = { digits: number; lead: string }
 export type AccountSeries = {
@@ -134,11 +153,12 @@ export function stagedSeriesNumber(statedCheckRef: string | null | undefined): s
 }
 
 type Item =
-  | { n: bigint; text: string; order: string; cheque: SeriesCheque; staged?: undefined; noBook?: boolean }
+  | { n: bigint; text: string; order: string; cheque: SeriesCheque; staged?: undefined; noBook?: boolean; otherBook?: string }
   | { n: bigint; text: string; order: string; staged: SeriesStaged; cheque?: undefined; noBook?: undefined }
 
 export function buildSeries(
   cheques: readonly SeriesCheque[], staged: readonly SeriesStaged[] = [], unbooked: readonly SeriesCheque[] = [],
+  elsewhere: readonly SeriesCheque[] = [],
 ): AccountSeries {
   const all: Item[] = []
   const notNumeric: SeriesCheque[] = []
@@ -170,8 +190,19 @@ export function buildSeries(
 
   // A no-book check is placed only strictly inside the book's own sequence and
   // in its pattern: the book's first and last stay the book's own (spec §I2).
-  const placed: Item[] = own.length < 2 ? [] : candidates.filter((x) => fits(x) && x.n > own[0].n && x.n < own[own.length - 1].n)
-  const items = placed.length ? [...own, ...placed].sort((a, b) => (a.n < b.n ? -1 : a.n > b.n ? 1 : a.order < b.order ? -1 : a.order > b.order ? 1 : 0)) : own
+  const inside = (x: Item) => own.length >= 2 && fits(x) && x.n > own[0].n && x.n < own[own.length - 1].n
+  const placed: Item[] = candidates.filter(inside)
+  // Another book's check, on a number this book does not hold (2026-11-05).
+  const ownNumbers = new Set(all.filter((x) => x.cheque).map((x) => x.n))
+  const borrowed: Item[] = []
+  for (const cheque of elsewhere) {
+    const text = cheque.checkNumber.trim()
+    if (!NUMERIC.test(text) || !cheque.otherBook) continue
+    const x: Item = { n: BigInt(text), text, order: `2${cheque.id}`, cheque, otherBook: cheque.otherBook }
+    if (!ownNumbers.has(x.n) && inside(x)) borrowed.push(x)
+  }
+  const extra = [...placed, ...borrowed]
+  const items = extra.length ? [...own, ...extra].sort((a, b) => (a.n < b.n ? -1 : a.n > b.n ? 1 : a.order < b.order ? -1 : a.order > b.order ? 1 : 0)) : own
 
   // Over every numeric cheque, placed no-book checks included: two cheques on
   // one number (7 and 007 alike) share a shape, so a duplicate always sits on
@@ -180,7 +211,9 @@ export function buildSeries(
   for (const x of [...all, ...placed]) if (x.cheque) perNumber.set(x.n, (perNumber.get(x.n) ?? 0) + 1)
   const isDuplicate = (n: bigint) => (perNumber.get(n) ?? 0) > 1
   const toEntry = (x: Item): SeriesEntry => (x.cheque
-    ? { kind: 'CHECK', cheque: x.cheque, duplicate: isDuplicate(x.n), noBook: x.noBook === true }
+    ? (x.otherBook
+      ? { kind: 'CHECK', cheque: x.cheque, duplicate: false, noBook: false, otherBook: x.otherBook }
+      : { kind: 'CHECK', cheque: x.cheque, duplicate: isDuplicate(x.n), noBook: x.noBook === true })
     : { kind: 'STAGED', staged: x.staged, number: x.text })
 
   const entries: SeriesEntry[] = []
@@ -229,6 +262,7 @@ export function buildSeries(
       duplicates: [...chequeItems, ...placed].filter((x) => isDuplicate(x.n)).length,
       outOfPattern: misfits.length,
       noBook: placed.length,
+      otherBook: borrowed.length,
     },
   }
 }

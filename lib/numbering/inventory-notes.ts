@@ -84,7 +84,7 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
   }
 
   return inTx(db, async (tx) => {
-    const book = await tx.checkBook.findUnique({ where: { id: args.checkBookId }, select: { id: true, code: true } })
+    const book = await tx.checkBook.findUnique({ where: { id: args.checkBookId }, select: { id: true, code: true, bankId: true } })
     if (!book) throw new DomainError('INVENTORY_NO_SUCH_BOOK', 'That check book is not on record.')
     // The check holding this number, if one does (both spellings the series
     // could hold: as typed on the screen, and canonical) — for the audit row
@@ -95,6 +95,11 @@ export async function recordInventoryNote(db: Db, args: RecordInventoryNoteArgs)
       await tx.check.findFirst({ where: { checkBookId: book.id, checkNumber: { in: numbers } }, select: { id: true } })
       ?? await tx.check.findFirst({
         where: { checkBookId: null, isCheque: true, acumaticaPaymentId: { not: null }, checkNumber: { in: numbers } },
+        orderBy: { id: 'asc' }, select: { id: true },
+      })
+      // Else another book of the same bank, shown IN ANOTHER BOOK on this number (2026-11-05).
+      ?? await tx.check.findFirst({
+        where: { checkBook: { bankId: book.bankId }, isCheque: true, acumaticaPaymentId: { not: null }, checkNumber: { in: numbers } },
         orderBy: { id: 'asc' }, select: { id: true },
       })
     ) : null

@@ -22,7 +22,10 @@ const TONE: Record<string, Tone> = {
   SIGNED: { bg: 'bg-white', ink: 'text-sky-ink', accent: 'bg-sky-500', icon: 'bg-sky-bg text-sky-ink', bar: 'bg-sky-500' },
   READY_FOR_RELEASE: { bg: 'bg-white', ink: 'text-success-ink', accent: 'bg-emerald-500', icon: 'bg-success-bg text-success-ink', bar: 'bg-emerald-500' },
   RELEASED: { bg: 'bg-white', ink: 'text-lavender-ink', accent: 'bg-violet-400', icon: 'bg-lavender-bg text-lavender-ink', bar: 'bg-violet-400' },
+  CLEARED: { bg: 'bg-white', ink: 'text-mint-ink', accent: 'bg-teal-500', icon: 'bg-mint-bg text-mint-ink', bar: 'bg-teal-500' },
   TOTAL_CHECKS: { bg: 'bg-white', ink: 'text-navy', accent: 'bg-navy', icon: 'bg-navy-bg text-navy', bar: 'bg-navy' },
+  CANCELLED: { bg: 'bg-white', ink: 'text-danger-ink', accent: 'bg-rose-400', icon: 'bg-danger-bg text-danger-ink', bar: 'bg-rose-400' },
+  STALED: { bg: 'bg-white', ink: 'text-warning-ink', accent: 'bg-orange-400', icon: 'bg-warning-bg text-warning-ink', bar: 'bg-orange-400' },
 }
 
 const ICON: Record<string, ReactNode> = {
@@ -30,6 +33,9 @@ const ICON: Record<string, ReactNode> = {
   SIGNATURE_PENDING: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
   SIGNED: <path d="M3 17c3-1 4-8 7-8s1 7 4 7 3-5 7-5M3 21h18" />,
   RELEASED: <><path d="M3 7h18v13H3z" /><path d="M3 7l9 6 9-6" /></>,
+  CLEARED: <><path d="M3 10l9-6 9 6M5 10v9M19 10v9M9 10v9M15 10v9M3 21h18" /></>,
+  CANCELLED: <><circle cx="12" cy="12" r="9" /><path d="M8 8l8 8M16 8l-8 8" /></>,
+  STALED: <><path d="M7 3h10M7 21h10M8 3c0 5 8 6 8 9s-8 4-8 9M16 3c0 5-8 6-8 9" /></>,
   TOTAL_CHECKS: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
 }
 
@@ -37,12 +43,16 @@ const NOTE: Record<string, string> = {
   GENERATED: 'Just created in Acumatica',
   SIGNATURE_PENDING: 'Waiting on a signatory',
   SIGNED: 'In hand · tick READY to release',
-  RELEASED: 'Handed over to the payee',
+  RELEASED: 'Handed over · not yet cleared',
+  CLEARED: 'Cleared by the bank',
   TOTAL_CHECKS: 'Every status, incl. cancelled & voided',
+  CANCELLED: 'Cancelled here, incl. staled',
+  STALED: 'Past their presentment life',
 }
 
 const LABEL: Record<string, string> = {
-  GENERATED: 'GENERATED', SIGNATURE_PENDING: 'PENDING SIGNATURE', SIGNED: 'SIGNED', RELEASED: 'RELEASED', TOTAL_CHECKS: 'ALL CHECKS',
+  GENERATED: 'GENERATED', SIGNATURE_PENDING: 'PENDING SIGNATURE', SIGNED: 'SIGNED', RELEASED: 'RELEASED',
+  CLEARED: 'CLEARED', TOTAL_CHECKS: 'ALL CHECKS', CANCELLED: 'CANCELLED', STALED: 'STALED',
 }
 
 function StageCard({ id, count, href, selected }: { id: string; count: number; href: string; selected: boolean }) {
@@ -74,9 +84,11 @@ function StageCard({ id, count, href, selected }: { id: string; count: number; h
 const pct = (n: number, of: number) => (of === 0 ? 0 : Math.round((n / of) * 1000) / 10)
 
 export function WorkflowRow({
-  summary, total, incomplete, incompleteHref, selection,
+  summary, total, closed, incomplete, incompleteHref, selection,
 }: {
   summary: TimelineSummary
+  /** CANCELLED and STALED, the two closed counts Finance asked to see (2026-11-05). A staled cheque is a cancelled one, so STALED is part of CANCELLED. */
+  closed: { cancelled: number; stale: number }
   /** ALL CHECKS: every status, the cheque inventory. */
   total: number
   /** Cheques with no recorded amount, left out of every figure here. */
@@ -86,10 +98,10 @@ export function WorkflowRow({
 }) {
   const nodes = buildReleaseTimeline(summary, selection)
   const cards = nodes.filter((n) => n.id !== 'READY_FOR_RELEASE' && (n.id !== 'GENERATED' || n.count > 0))
-  const cols = cards.length + 1 === 5 ? 'xl:grid-cols-5' : 'xl:grid-cols-4'
+  const cols = cards.length + 1 === 6 ? 'xl:grid-cols-6' : 'xl:grid-cols-5'
 
   // Where the LIVE cheques are: the rungs before RELEASED, as shares.
-  const live = nodes.filter((n) => n.id !== 'RELEASED' && n.count > 0)
+  const live = nodes.filter((n) => n.id !== 'RELEASED' && n.id !== 'CLEARED' && n.count > 0)
   const liveTotal = live.reduce((s, n) => s + n.count, 0)
 
   return (
@@ -99,6 +111,17 @@ export function WorkflowRow({
         <StageCard
           id="TOTAL_CHECKS" count={total}
           href={cardHref('TOTAL_CHECKS', selection)} selected={isCardSelected('TOTAL_CHECKS', selection)}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <StageCard
+          id="CANCELLED" count={closed.cancelled}
+          href={cardHref('CANCELLED', selection)} selected={isCardSelected('CANCELLED', selection)}
+        />
+        <StageCard
+          id="STALED" count={closed.stale}
+          href={cardHref('STALED', selection)} selected={isCardSelected('STALED', selection)}
         />
       </div>
 

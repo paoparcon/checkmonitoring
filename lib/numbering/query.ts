@@ -70,14 +70,15 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
 
   const chequeSelect = {
     id: true, checkNumber: true, checkDate: true, payeeName: true, amount: true, currency: true, status: true, acumaticaPaymentId: true,
-    cashAccount: { select: { code: true } },
+    clearingStatus: true, cashAccount: { select: { code: true } },
   } as const
   const toSeriesCheque = (r: Prisma.CheckGetPayload<{ select: typeof chequeSelect }>): SeriesCheque => ({
     id: r.id, checkNumber: r.checkNumber, checkDate: r.checkDate, payeeName: r.payeeName,
     amount: r.amount?.toFixed(2) ?? null, currency: r.currency, status: r.status, cv: r.acumaticaPaymentId,
     cashAccount: r.cashAccount?.code ?? null,
+    ...(r.status === 'RELEASED' && r.clearingStatus === 'CLEARED' ? { cleared: true } : {}),
   })
-  const [rows, unbooked] = await Promise.all([
+  const [rows, unbooked, others] = await Promise.all([
     db.check.findMany({
       where: { isCheque: true, acumaticaPaymentId: { not: null }, checkBookId: bookIds ? { in: bookIds } : { not: null } },
       select: {
@@ -93,8 +94,28 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
       where: { isCheque: true, acumaticaPaymentId: { not: null }, checkBookId: null },
       select: chequeSelect,
     }),
+    // Every check of every OTHER book of a shown book's bank (2026-11-05): a
+    // number one book is missing may be a leaf another book of the same bank
+    // holds. On the all-books page `rows` already holds them; a narrowed page
+    // reads the rest of those banks' books, in the same round trip.
+    bookIds ? db.check.findMany({
+      where: {
+        isCheque: true, acumaticaPaymentId: { not: null },
+        checkBookId: { notIn: bookIds }, checkBook: { bank: { checkBooks: { some: { id: { in: bookIds } } } } },
+      },
+      select: { ...chequeSelect, checkBook: { select: { id: true, code: true, bank: { select: { code: true } } } } },
+    }) : Promise.resolve([]),
   ])
   const unbookedCheques = unbooked.map(toSeriesCheque)
+  const byBank = new Map<string, { bookId: string; cheque: SeriesCheque }[]>()
+  for (const r of [...rows, ...others]) {
+    if (!r.checkBook) continue
+    const list = byBank.get(r.checkBook.bank.code) ?? []
+    list.push({ bookId: r.checkBook.id, cheque: { ...toSeriesCheque(r), otherBook: r.checkBook.code } })
+    byBank.set(r.checkBook.bank.code, list)
+  }
+  const elsewhereFor = (bookId: string, bank: string) =>
+    (byBank.get(bank) ?? []).filter((x) => x.bookId !== bookId).map((x) => x.cheque)
 
   const byBook = new Map<string, Group>()
   const groupFor = (b: BookRef): Group => {
@@ -140,7 +161,7 @@ export async function listNumberingAccounts(db: Db, f: NumberingFilters): Promis
 
   return [...byBook.entries()]
     .map(([accountId, g]) => {
-      const series = buildSeries(g.cheques, g.staged, unbookedCheques)
+      const series = buildSeries(g.cheques, g.staged, unbookedCheques, elsewhereFor(accountId, g.bank))
       const lines = toInventoryLines(series.entries, notes.get(accountId) ?? [])
       return { accountId, account: g.account, bank: g.bank, company: companyLabel(g.companies), series, lines, inventory: inventoryCounts(lines) }
     })

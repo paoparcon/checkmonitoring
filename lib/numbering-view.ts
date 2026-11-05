@@ -14,7 +14,7 @@ export type NumberingParams = { company?: string; account?: string; missing?: bo
  * ONLY view) and HELD opens the book plain; NOT NUMERIC and OUT OF PATTERN are
  * their own tables, reached by anchor.
  */
-export const NUMBERING_SHOWS = ['voided', 'cancelled', 'staged', 'ticked', 'noBook'] as const
+export const NUMBERING_SHOWS = ['voided', 'cancelled', 'staged', 'ticked', 'noBook', 'otherBook'] as const
 export type NumberingShow = (typeof NUMBERING_SHOWS)[number]
 
 export function parseShow(value: string | null | undefined): NumberingShow | undefined {
@@ -30,12 +30,13 @@ export function showFilters(show: NumberingShow | undefined): Record<string, str
     case 'staged': return { status: 'STAGED' }
     case 'ticked': return { inventory: '=TICKED' }
     case 'noBook': return { status: 'NO CHECK BOOK' }
+    case 'otherBook': return { status: 'IN ANOTHER BOOK' }
     default: return {}
   }
 }
 
 export const SHOW_LABELS: Readonly<Record<NumberingShow, string>> = {
-  voided: 'VOIDED', cancelled: 'CANCELLED', staged: 'STAGED', ticked: 'TICKED', noBook: 'NO CHECK BOOK',
+  voided: 'VOIDED', cancelled: 'CANCELLED', staged: 'STAGED', ticked: 'TICKED', noBook: 'NO CHECK BOOK', otherBook: 'IN ANOTHER BOOK',
 }
 
 export function numberingHref(p: NumberingParams, path: string = NUMBERING_PATH): string {
@@ -94,6 +95,8 @@ export type NumberingTotals = {
   /** Decimal strings: a MISSING run can be billions, and ticks count every number a ticked run spans. */
   missingNumbers: string; missingRuns: number; ticked: string
   notNumeric: number; outOfPattern: number; noBook: number
+  /** Numbers shown IN ANOTHER BOOK instead of MISSING (2026-11-05). */
+  otherBook: number
 }
 
 /**
@@ -104,13 +107,13 @@ export type NumberingTotals = {
 export function numberingTotals(
   accounts: readonly { series: { summary: Omit<NumberingTotals, 'books' | 'ticked'> & { first?: unknown } }; inventory: { ticked: string } }[],
 ): NumberingTotals {
-  const t: NumberingTotals = { books: accounts.length, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, ticked: '0', notNumeric: 0, outOfPattern: 0, noBook: 0 }
+  const t: NumberingTotals = { books: accounts.length, held: 0, voided: 0, cancelled: 0, staged: 0, missingNumbers: '0', missingRuns: 0, ticked: '0', notNumeric: 0, outOfPattern: 0, noBook: 0, otherBook: 0 }
   let missing = BigInt(0)
   let ticked = BigInt(0)
   for (const a of accounts) {
     const s = a.series.summary
     t.held += s.held; t.voided += s.voided; t.cancelled += s.cancelled; t.staged += s.staged
-    t.missingRuns += s.missingRuns; t.notNumeric += s.notNumeric; t.outOfPattern += s.outOfPattern; t.noBook += s.noBook
+    t.missingRuns += s.missingRuns; t.notNumeric += s.notNumeric; t.outOfPattern += s.outOfPattern; t.noBook += s.noBook; t.otherBook += s.otherBook
     missing += BigInt(s.missingNumbers)
     ticked += BigInt(a.inventory.ticked)
   }

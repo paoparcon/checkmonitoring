@@ -60,7 +60,7 @@ export function statusWords(status: CheckStatus | string): string {
  * `viewStatusFilter` applies, so the name and the contents cannot disagree: an
  * explicit status wins over the scope flag.
  */
-export function exportViewLabel(view: { status: CheckStatus | null; showAll: boolean }): string {
+export function exportViewLabel(view: { status: string | null; showAll: boolean }): string {
   if (view.status) return statusWords(view.status)
   return view.showAll ? 'ALL CHECKS' : 'NEEDS ACTION'
 }

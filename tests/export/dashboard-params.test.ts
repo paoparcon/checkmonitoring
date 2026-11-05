@@ -275,11 +275,12 @@ describe('resolveDashboardQuery', () => {
 
     it('applies STATUS on ALL CHECKS only, without changing the view', () => {
       const all = resolveDashboardQuery({ scope: 'all', 'f.status': 'SIGNED' }, options)
-      expect(all.filters.status).toBe('SIGNED')
+      expect(all.filters.status).toBeUndefined()
+      expect(all.filters.displayStatusIn).toEqual(['SIGNED'])
       expect(all.selection.status).toBeNull()
       expect(all.selection.base).toEqual({ 'f.status': 'SIGNED' })
       const signed = resolveDashboardQuery({ status: 'RELEASED', 'f.status': 'SIGNED' }, options)
-      expect(signed.filters.status).toBe('RELEASED')
+      expect(signed.filters.displayStatusIn).toEqual(['RELEASED'])
       expect(signed.selection.base).toEqual({})
       expect(signed.refused).toBe(false)
     })
@@ -287,9 +288,25 @@ describe('resolveDashboardQuery', () => {
     it('applies several ticked STATUS boxes on ALL CHECKS as a set', () => {
       const r = resolveDashboardQuery({ scope: 'all', 'f.status': 'SIGNED,RELEASED' }, options)
       expect(r.filters.status).toBeUndefined()
-      expect(r.filters.statusIn).toEqual(['SIGNED', 'RELEASED'])
+      expect(r.filters.statusIn).toBeUndefined()
+      expect(r.filters.displayStatusIn).toEqual(['SIGNED', 'RELEASED'])
       expect(r.selection.base).toEqual({ 'f.status': 'SIGNED,RELEASED' })
       expect(r.refused).toBe(false)
+    })
+
+    it('takes CLEARED as a STATUS box and as a view (2026-11-05)', () => {
+      const box = resolveDashboardQuery({ scope: 'all', 'f.status': 'CLEARED,CANCELLED' }, options)
+      expect(box.refused).toBe(false)
+      expect(box.filters.displayStatusIn).toEqual(['CLEARED', 'CANCELLED'])
+      const view = resolveDashboardQuery({ status: 'CLEARED', releasedFrom: '2026-10-01' }, options)
+      expect(view.selection.status).toBe('CLEARED')
+      expect(view.filters.displayStatusIn).toEqual(['CLEARED'])
+      // A cleared cheque was released, so DATE RELEASED applies on CLEARED as on RELEASED.
+      expect(view.filters.releasedFrom).toBeDefined()
+      const stale = resolveDashboardQuery({ status: 'STALED' }, options)
+      expect(stale.filters.stale).toBe(true)
+      // A stale cheque is a cancelled one: the no-amount exclusion would hide it.
+      expect(stale.filters.incomplete).toBeUndefined()
     })
 
     it('carries company, bank and the release range in columnValues for the filter row', () => {

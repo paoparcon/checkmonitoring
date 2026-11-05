@@ -88,17 +88,17 @@ describe('NO CHECK BOOK (spec §I)', () => {
 
 describe('TOTAL over the books (user request 2026-11-03)', () => {
   const book = (held: number, missingNumbers: string, ticked: string, extra: Partial<Record<string, number>> = {}) => ({
-    series: { summary: { held, voided: 0, cancelled: 0, staged: 0, missingNumbers, missingRuns: 0, notNumeric: 0, outOfPattern: 0, noBook: 0, ...extra } },
+    series: { summary: { held, voided: 0, cancelled: 0, staged: 0, missingNumbers, missingRuns: 0, notNumeric: 0, outOfPattern: 0, noBook: 0, otherBook: 0, ...extra } },
     inventory: { ticked },
   })
   it('numberingTotals sums every count column, big ones as decimal strings', () => {
     const t = numberingTotals([
-      book(5000, '11913041270', '3', { voided: 2, missingRuns: 4, noBook: 1 }),
+      book(5000, '11913041270', '3', { voided: 2, missingRuns: 4, noBook: 1, otherBook: 7 }),
       book(6043, '12', '9007199254740993', { cancelled: 1, staged: 3, notNumeric: 1, outOfPattern: 2, missingRuns: 1 }),
     ])
     expect(t).toEqual({
       books: 2, held: 11043, voided: 2, cancelled: 1, staged: 3, missingNumbers: '11913041282', missingRuns: 5,
-      ticked: '9007199254740996', notNumeric: 1, outOfPattern: 2, noBook: 1,
+      ticked: '9007199254740996', notNumeric: 1, outOfPattern: 2, noBook: 1, otherBook: 7,
     })
     expect(numberingTotals([])).toMatchObject({ books: 0, held: 0, missingNumbers: '0', ticked: '0' })
   })

@@ -47,15 +47,18 @@ const remarksValue = (n: InventoryNote | null) => n?.remarks ?? null
 /** The tag on a check with no check book shown where its number falls (spec §I): names Acumatica's cash account. */
 const noBookTag = (c: SeriesCheque) => `NO CHECK BOOK · ${c.cashAccount ?? 'NO CASH ACCOUNT'}`
 
-function checkRow(c: SeriesCheque, note?: string, noBook = false): KitRow {
-  const tag = noBook ? noBookTag(c) : null
+/** The tag on another book's check shown where this book is missing the number (2026-11-05). */
+const otherBookTag = (book: string) => `IN ANOTHER BOOK · ${book}`
+
+function checkRow(c: SeriesCheque, note?: string, noBook = false, otherBook?: string): KitRow {
+  const tag = otherBook ? otherBookTag(otherBook) : noBook ? noBookTag(c) : null
   return {
-    key: c.id,
-    className: noBook ? 'border-b border-sky-100 bg-sky-50/70' : undefined,
+    key: otherBook ? `${c.id}@${otherBook}` : c.id,
+    className: otherBook ? 'border-b border-violet-100 bg-violet-50/70' : noBook ? 'border-b border-sky-100 bg-sky-50/70' : undefined,
     values: {
       checkNumber: c.checkNumber, checkDate: dateValue(c.checkDate), payee: c.payeeName,
       amount: c.amount === null ? null : String(c.amount),
-      status: [c.status.replace(/_/g, ' '), note, tag].filter((s) => s).join(' '),
+      status: [(c.cleared ? 'CLEARED' : c.status).replace(/_/g, ' '), note, tag].filter((s) => s).join(' '),
     },
     cells: {
       checkNumber: <Link prefetch={false} href={`/checks/${c.id}`} className="underline underline-offset-2">{c.checkNumber}</Link>,
@@ -64,9 +67,9 @@ function checkRow(c: SeriesCheque, note?: string, noBook = false): KitRow {
       amount: formatMoney(c.amount, c.currency),
       status: (
         <>
-          <StatusPill status={c.status} />
+          <StatusPill status={c.cleared ? 'CLEARED' : c.status} />
           {note && <span className="ml-2 text-xs font-semibold text-amber-700">{note}</span>}
-          {tag && <span className="ml-2 inline-block whitespace-nowrap rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold tracking-wide text-sky-800">{tag}</span>}
+          {tag && <span className={`ml-2 inline-block whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide ${otherBook ? 'bg-violet-100 text-violet-800' : 'bg-sky-100 text-sky-800'}`}>{tag}</span>}
         </>
       ),
     },
@@ -137,7 +140,7 @@ function entryRows(entries: readonly SeriesEntry[]): KitRow[] {
         key: `m-${e.from}`, className: 'border-b border-amber-200 bg-amber-50',
         band: <div className="px-4 py-3 font-semibold tabular-nums text-amber-800">{missingLabel(e)}</div>,
       }
-    : e.kind === 'STAGED' ? stagedRow(e.staged) : checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook))
+    : e.kind === 'STAGED' ? stagedRow(e.staged) : checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook, e.otherBook))
 }
 
 /** A non-zero count is a link into the book's lines with that set in force (user request 2026-11-03: "those numbers should be clickable"). */
@@ -165,19 +168,19 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
     { key: 'last', label: 'LAST', kind: 'text', className: 'tabular-nums' },
     count('held', 'HELD'), count('voided', 'VOIDED'), count('cancelled', 'CANCELLED'), count('staged', 'STAGED'),
     count('missing', 'MISSING'), count('ticked', 'TICKED'), count('notNumeric', 'NOT NUMERIC'), count('outOfPattern', 'OUT OF PATTERN'),
-    count('noBook', 'NO CHECK BOOK'),
+    count('noBook', 'NO CHECK BOOK'), count('otherBook', 'IN ANOTHER BOOK'),
   ]
   const rows: KitRow[] = accounts.map((a) => {
     const s = a.series.summary
     const base = numberingHref({ company, account: a.accountId })
-    const show = (show: 'voided' | 'cancelled' | 'staged' | 'ticked' | 'noBook') => numberingHref({ company, account: a.accountId, show })
+    const show = (show: 'voided' | 'cancelled' | 'staged' | 'ticked' | 'noBook' | 'otherBook') => numberingHref({ company, account: a.accountId, show })
     return {
       key: a.accountId,
       values: {
         account: a.account, bank: a.bank, company: a.company, first: s.first ?? null, last: s.last ?? null,
         held: String(s.held), voided: String(s.voided), cancelled: String(s.cancelled), staged: String(s.staged),
         missing: s.missingNumbers, ticked: a.inventory.ticked, notNumeric: String(s.notNumeric), outOfPattern: String(s.outOfPattern),
-        noBook: String(s.noBook),
+        noBook: String(s.noBook), otherBook: String(s.otherBook),
       },
       cells: {
         account: <Link prefetch={false} href={base} className="underline underline-offset-2">{a.account}</Link>,
@@ -195,6 +198,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
         notNumeric: countLink(`${base}#not-numeric`, s.notNumeric.toLocaleString('en-PH'), s.notNumeric > 0),
         outOfPattern: countLink(`${base}#out-of-pattern`, s.outOfPattern.toLocaleString('en-PH'), s.outOfPattern > 0),
         noBook: countLink(show('noBook'), <span className={s.noBook ? 'font-semibold text-sky-800' : ''}>{s.noBook.toLocaleString('en-PH')}</span>, s.noBook > 0),
+        otherBook: countLink(show('otherBook'), <span className={s.otherBook ? 'font-semibold text-violet-800' : ''}>{s.otherBook.toLocaleString('en-PH')}</span>, s.otherBook > 0),
       },
     }
   })
@@ -205,6 +209,7 @@ export function NumberingSummaryTable({ accounts, company }: { accounts: readonl
     missing: <span className={t.missingRuns ? 'text-amber-700' : ''}>{fmtCount(t.missingNumbers)}{t.missingRuns ? ` (${t.missingRuns.toLocaleString('en-PH')})` : ''}</span>,
     ticked: <span className={t.ticked !== '0' ? 'text-success-ink' : ''}>{fmtCount(t.ticked)}</span>,
     notNumeric: t.notNumeric.toLocaleString('en-PH'), outOfPattern: t.outOfPattern.toLocaleString('en-PH'), noBook: t.noBook.toLocaleString('en-PH'),
+    otherBook: t.otherBook.toLocaleString('en-PH'),
   }
   return <KitTable tableId="numbering-books-inventory" columns={columns} rows={rows} footer={footer} stickyHead />
 }
@@ -243,7 +248,7 @@ export function NumberingEntriesTable({ lines, checkBookId, initialFilters }: { 
       case 'STAGED':
         return withInventory(stagedRow(e.staged), checkBookId, e.number, null)
       case 'CHECK':
-        return withInventory(checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook), checkBookId, e.cheque.checkNumber, e.note)
+        return withInventory(checkRow(e.cheque, e.duplicate ? 'DUPLICATE NUMBER' : undefined, e.noBook, e.otherBook), checkBookId, e.cheque.checkNumber, e.note)
     }
   })
   return (

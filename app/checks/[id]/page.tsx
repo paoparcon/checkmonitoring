@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { displayStatus } from '@/lib/display-status'
 import { notFound } from 'next/navigation'
 import { requireUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
@@ -157,7 +158,7 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
               {formatMoney(check.amount, check.currency)}
             </p>
             <div className="mt-2 flex justify-end">
-              <StatusPill status={check.status} />
+              <StatusPill status={displayStatus(check.status, check.clearingStatus)} />
               {check.isStale && <span className="ml-2 self-center text-xs font-semibold tracking-widest text-amber-700">STALED</span>}
             </div>
           </div>
@@ -169,11 +170,12 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
           <p className="text-[11px] font-semibold tracking-widest text-slate-400">RELEASE WORKFLOW</p>
           <div className="mt-3 overflow-x-auto">
             <CheckProgress
-              status={check.status}
+              status={displayStatus(check.status, check.clearingStatus)}
               marks={{
                 SIGNED: mark(check.signedAt),
                 READY_FOR_RELEASE: mark(check.availablePickupDate ?? check.readyAt),
                 RELEASED: mark(check.releasedAt),
+                CLEARED: mark(check.clearedDate),
               }}
             />
           </div>

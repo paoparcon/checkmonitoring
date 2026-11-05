@@ -19,12 +19,13 @@ const SUMMARY: TimelineSummary = {
   readyForRelease: 74,
   scheduled: 6,
   released: 9545,
+  cleared: 0,
 }
 
 describe('buildReleaseTimeline', () => {
   it('walks the ladder in order, so a reader sees where checks are stuck', () => {
     expect(buildReleaseTimeline(SUMMARY, NOTHING).map((n) => n.label))
-      .toEqual(['GENERATED', 'PENDING', 'SIGNED', 'READY', 'RELEASED'])
+      .toEqual(['GENERATED', 'PENDING', 'SIGNED', 'READY', 'RELEASED', 'CLEARED'])
   })
 
   it('takes every count from the summary rather than from a query of its own', () => {
@@ -39,6 +40,7 @@ describe('buildReleaseTimeline', () => {
       // Finance the cheque is available and waiting to be handed over.
       READY_FOR_RELEASE: 80,
       RELEASED: 9545,
+      CLEARED: 0,
     })
   })
 
@@ -108,17 +110,23 @@ describe('buildCheckProgress', () => {
   it('marks the rungs behind the check DONE and the ones ahead UPCOMING', () => {
     const { steps, current } = buildCheckProgress('SIGNED')
     expect(current).toBe('SIGNED')
-    expect(steps.map((s) => s.state)).toEqual(['DONE', 'DONE', 'CURRENT', 'UPCOMING', 'UPCOMING'])
+    expect(steps.map((s) => s.state)).toEqual(['DONE', 'DONE', 'CURRENT', 'UPCOMING', 'UPCOMING', 'UPCOMING'])
   })
 
   it('starts a freshly generated check on the first rung with nothing behind it', () => {
     expect(buildCheckProgress('GENERATED').steps.map((s) => s.state))
-      .toEqual(['CURRENT', 'UPCOMING', 'UPCOMING', 'UPCOMING', 'UPCOMING'])
+      .toEqual(['CURRENT', 'UPCOMING', 'UPCOMING', 'UPCOMING', 'UPCOMING', 'UPCOMING'])
   })
 
-  it('leaves nothing ahead of a released check', () => {
+  it('leaves only the bank clearing ahead of a released check', () => {
     const { steps, current } = buildCheckProgress('RELEASED')
     expect(current).toBe('RELEASED')
+    expect(steps.filter((s) => s.state === 'UPCOMING').map((s) => s.id)).toEqual(['CLEARED'])
+  })
+
+  it('leaves nothing ahead of a cleared check', () => {
+    const { steps, current } = buildCheckProgress('CLEARED')
+    expect(current).toBe('CLEARED')
     expect(steps.every((s) => s.state !== 'UPCOMING')).toBe(true)
   })
 
