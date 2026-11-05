@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { testDb, resetDb } from '../helpers/db'
 import { makeUser, makeCheck } from '../helpers/factory'
-import { MAX_BULK_SELECTION } from '@/lib/bulk'
+/** The tick-box cap removed on 2026-11-05 ("dont limit 50 tick at a time"). */
+const OLD_CAP = 50
 
 const currentUser = {
   id: '',
@@ -112,20 +113,16 @@ describe('bulkSignAction', () => {
     expect(result).toEqual({ ok: false, message: 'Select at least one check first.' })
   })
 
-  it('refuses a selection larger than the cap and writes nothing', async () => {
+  it('acts on a selection larger than the old cap of 50 (no cap since 2026-11-05)', async () => {
     const { bulkSignAction } = await import('@/app/checks/bulk-actions')
     const real = await makeCheck({ status: 'SIGNATURE_PENDING' })
-    const padding = Array.from({ length: MAX_BULK_SELECTION }, (_, i) => `missing-${i}`)
+    const padding = Array.from({ length: OLD_CAP }, (_, i) => `missing-${i}`)
 
     const result = await bulkSignAction(fd([real.id, ...padding]))
 
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.message).toContain(String(MAX_BULK_SELECTION))
-    // The cap is a real refusal, not a truncation: the cheque that WOULD have
-    // fitted is untouched too.
-    expect((await testDb.check.findUniqueOrThrow({ where: { id: real.id } })).status).toBe('SIGNATURE_PENDING')
-  })
+    expect(result).toMatchObject({ ok: true, succeeded: 1, failed: OLD_CAP })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: real.id } })).status).toBe('SIGNED')
+  }, 60_000)
 
   it('writes one audit row per check actually changed', async () => {
     const { bulkSignAction } = await import('@/app/checks/bulk-actions')
@@ -468,10 +465,11 @@ describe('bulkRecordReceiptsAction', () => {
       .toEqual({ ok: false, message: 'Type a receipt reference on at least one ticked check before saving.' })
   })
 
-  it('holds the bulk cap', async () => {
+  it('has no selection cap: more than 50 ticked is refused only for having no receipt typed', async () => {
     const { bulkRecordReceiptsAction } = await import('@/app/checks/bulk-actions')
-    const tooMany = Array.from({ length: MAX_BULK_SELECTION + 1 }, (_, i) => `id-${i}`)
-    expect((await bulkRecordReceiptsAction(fd(tooMany))).ok).toBe(false)
+    const many = Array.from({ length: OLD_CAP + 1 }, (_, i) => `id-${i}`)
+    expect(await bulkRecordReceiptsAction(fd(many)))
+      .toEqual({ ok: false, message: 'Type a receipt reference on at least one ticked check before saving.' })
   })
 })
 
@@ -653,16 +651,13 @@ describe('releaseAllReadyAction', () => {
   })
 
   /**
-   * 81 are ready in production and `MAX_BULK_SELECTION` is 50. The cap is not
-   * raised — it exists because concurrent interactive transactions against Neon
-   * deadlock, and the tick-box path needs it. The set is released in sequential
-   * batches instead, each cheque still in its own transaction with its own
-   * guards and its own audit row.
+   * More than the old 50-check cap, in one run: each cheque still in its own
+   * transaction with its own guards and its own audit row.
    */
-  it('releases a set larger than MAX_BULK_SELECTION in sequential batches', async () => {
+  it('releases a set larger than the old cap of 50 in one run', async () => {
     const { releaseAllReadyAction } = await import('@/app/checks/bulk-actions')
     currentUser.role = 'FINANCE_ADMIN'
-    const total = MAX_BULK_SELECTION + 3
+    const total = OLD_CAP + 3
 
     // One company and cash account shared by the lot: this test is about the
     // batching, and 53 separate factory calls is 212 round trips to Neon.
@@ -854,12 +849,12 @@ describe('bulkRevertToSignedAction', () => {
     expect((await testDb.check.findUniqueOrThrow({ where: { id: released.id } })).status).toBe('RELEASED')
   })
 
-  it('holds the bulk cap', async () => {
+  it('has no selection cap: more than 50 ids run, each refused on its own', async () => {
     const { bulkRevertToSignedAction } = await import('@/app/checks/bulk-actions')
-    const tooMany = Array.from({ length: MAX_BULK_SELECTION + 1 }, (_, i) => `id-${i}`)
-    const result = await bulkRevertToSignedAction(fd(tooMany, { reason: 'x' }))
-    expect(result.ok).toBe(false)
-  })
+    const many = Array.from({ length: OLD_CAP + 1 }, (_, i) => `id-${i}`)
+    const result = await bulkRevertToSignedAction(fd(many, { reason: 'x' }))
+    expect(result).toMatchObject({ ok: true, succeeded: 0, failed: OLD_CAP + 1 })
+  }, 60_000)
 })
 
 describe('signAllPendingAction', () => {
@@ -974,19 +969,17 @@ describe('bulkRevertToPendingAction', () => {
     expect(row.remarks).toBe('Signed too early')
   })
 
-  it('refuses a selection larger than the cap and writes nothing', async () => {
+  it('acts on a selection larger than the old cap of 50', async () => {
     const { bulkRevertToPendingAction } = await import('@/app/checks/bulk-actions')
     const real = await makeCheck({ status: 'SIGNED' })
-    const padding = Array.from({ length: MAX_BULK_SELECTION }, (_, i) => `missing-${i}`)
+    const padding = Array.from({ length: OLD_CAP }, (_, i) => `missing-${i}`)
 
     const result = await bulkRevertToPendingAction(fd([real.id, ...padding]))
 
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.message).toContain(String(MAX_BULK_SELECTION))
-    expect((await testDb.check.findUniqueOrThrow({ where: { id: real.id } })).status).toBe('SIGNED')
-    expect(await testDb.auditLog.count({ where: { action: 'signature_reverted' } })).toBe(0)
-  })
+    expect(result).toMatchObject({ ok: true, succeeded: 1, failed: OLD_CAP })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: real.id } })).status).toBe('SIGNATURE_PENDING')
+    expect(await testDb.auditLog.count({ where: { action: 'signature_reverted' } })).toBe(1)
+  }, 60_000)
 })
 
 describe('bulkReadyForReleaseAction: notifications', () => {

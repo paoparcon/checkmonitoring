@@ -6,6 +6,7 @@ import { requireUser } from '@/lib/auth'
 import { DomainError } from '@/lib/domain/errors'
 import { isNextControlFlowError } from '@/lib/next-errors'
 import { afterResponse, kickPortalDelivery } from '@/lib/sync/portal-kick'
+import { BULK_TIME_BUDGET_MS } from '@/lib/bulk-run'
 import { approveAvailabilityRequest, rejectAvailabilityRequest } from '@/lib/domain/availability-approval'
 import { loadApprover, canDecide } from '@/lib/approvals/approver'
 import { loadSettings } from '@/lib/settings/read'
@@ -21,7 +22,8 @@ import { notifyApprovalDecided } from '@/lib/notifications/approvals'
  * that moved, and the requester of the verdict either way.
  */
 export type DecisionResult =
-  | { ok: true; decided: number; failed: { requestId: string; message: string }[] }
+  /** `notReached`: requests the 45 s budget left undecided (still PENDING). */
+  | { ok: true; decided: number; failed: { requestId: string; message: string }[]; notReached?: number }
   | { ok: false; message: string }
 
 const str = (f: FormData, k: string) => String(f.get(k) ?? '').trim()
@@ -41,7 +43,12 @@ async function decide(formData: FormData, decision: 'APPROVED' | 'REJECTED'): Pr
   const now = new Date()
   const failed: { requestId: string; message: string }[] = []
   const moved: string[] = []
+  // No limit on how many may be ticked (2026-11-05); a run that would outlive
+  // the request stops at the budget and leaves the rest PENDING, said so.
+  const deadline = Date.now() + BULK_TIME_BUDGET_MS
+  let notReached = 0
   for (const requestId of requestIds) {
+    if (Date.now() >= deadline) { notReached++; continue }
     try {
       if (decision === 'APPROVED') {
         const { request, check } = await approveAvailabilityRequest(prisma, { requestId, actor: user, now, note })
@@ -68,13 +75,16 @@ async function decide(formData: FormData, decision: 'APPROVED' | 'REJECTED'): Pr
   }
   if (moved.length > 0) await notifyReady(prisma, user, moved)
   try {
-    afterResponse(() => kickPortalDelivery(prisma, { budgetMs: 8_000 }))
+    afterResponse(() => kickPortalDelivery(prisma, { budgetMs: requestIds.length > 50 ? 25_000 : 8_000 }))
   } catch (e) {
     console.error('portal delivery could not be scheduled:', e instanceof Error ? e.message : e)
   }
   revalidatePath('/')
   revalidatePath('/approvals')
-  return { ok: true, decided: requestIds.length - failed.length, failed }
+  return {
+    ok: true, decided: requestIds.length - failed.length - notReached, failed,
+    ...(notReached > 0 ? { notReached } : {}),
+  }
 }
 
 export async function approveRequestAction(formData: FormData): Promise<DecisionResult> {

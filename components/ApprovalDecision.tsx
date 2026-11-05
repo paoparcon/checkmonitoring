@@ -65,7 +65,12 @@ export function ApprovalDecision({ requestIds, compact = false, onDone }: {
           {result.failed.map((f) => <li key={f.requestId}>{f.message}</li>)}
         </ul>
       )}
-      {result?.ok && result.decided > 0 && result.failed.length === 0 && (
+      {result?.ok && (result.notReached ?? 0) > 0 && (
+        <p className="rounded-lg bg-amber-50 p-2 text-xs font-medium text-amber-900">
+          {result.decided} decided; {result.notReached} not reached before the time limit and still waiting — select them and press again.
+        </p>
+      )}
+      {result?.ok && result.decided > 0 && result.failed.length === 0 && !result.notReached && (
         <p className="text-xs text-success-ink">{result.decided} decided.</p>
       )}
     </div>

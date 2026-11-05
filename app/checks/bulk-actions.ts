@@ -7,7 +7,7 @@ import { applyOrRequest, type AvailabilityKind } from '@/lib/domain/availability
 import { loadApprover, type Approver } from '@/lib/approvals/approver'
 import { notifyApprovalRequested } from '@/lib/notifications/approvals'
 import { isoDay } from '@/lib/domain/details'
-import { parseSelection, chunkSelection } from '@/lib/bulk'
+import { parseSelection } from '@/lib/bulk'
 import {
   listTodaysReleaseIds, listPendingSignatureIds, getFilterOptions, parseOptionId, parseEligibilityParam,
   type SummaryNarrowing, type ColumnFilters,
@@ -100,8 +100,7 @@ const sentColumnFilter = (formData: FormData) =>
 
 export async function bulkSignAction(formData: FormData): Promise<BulkActionResult> {
   const user = await requireUser()
-  const settings = await loadSettings(prisma)
-  const selection = parseSelection(ids(formData), settings.values['caps.bulkSelection'])
+  const selection = parseSelection(ids(formData))
   if (!selection.ok) return { ok: false, message: selection.message }
 
   // One timestamp for the batch: these cheques were signed in one act, and the
@@ -114,7 +113,7 @@ export async function bulkSignAction(formData: FormData): Promise<BulkActionResu
 export async function bulkReadyForReleaseAction(formData: FormData): Promise<BulkActionResult> {
   const user = await requireUser()
   const settings = await loadSettings(prisma)
-  const selection = parseSelection(ids(formData), settings.values['caps.bulkSelection'])
+  const selection = parseSelection(ids(formData))
   if (!selection.ok) return { ok: false, message: selection.message }
 
   // The pickup date is one field shared by the whole batch, so a missing or
@@ -176,7 +175,7 @@ async function gatedBatch(
 export async function bulkRevertToSignedAction(formData: FormData): Promise<BulkActionResult> {
   const user = await requireUser()
   const settings = await loadSettings(prisma)
-  const selection = parseSelection(ids(formData), settings.values['caps.bulkSelection'])
+  const selection = parseSelection(ids(formData))
   if (!selection.ok) return { ok: false, message: selection.message }
 
   const reason = str(formData, 'reason')
@@ -191,8 +190,7 @@ export async function bulkRevertToSignedAction(formData: FormData): Promise<Bulk
  */
 export async function bulkRevertToPendingAction(formData: FormData): Promise<BulkActionResult> {
   const user = await requireUser()
-  const settings = await loadSettings(prisma)
-  const selection = parseSelection(ids(formData), settings.values['caps.bulkSelection'])
+  const selection = parseSelection(ids(formData))
   if (!selection.ok) return { ok: false, message: selection.message }
   const reason = str(formData, 'reason')
   const now = new Date()
@@ -226,8 +224,7 @@ export async function bulkRevertToPendingAction(formData: FormData): Promise<Bul
  */
 export async function bulkReleaseAction(formData: FormData): Promise<BulkActionResult> {
   const user = await requireUser()
-  const settings = await loadSettings(prisma)
-  const selection = parseSelection(ids(formData), settings.values['caps.bulkSelection'])
+  const selection = parseSelection(ids(formData))
   if (!selection.ok) return { ok: false, message: selection.message }
 
   const read = readRowReceipts(formData, selection.checkIds)
@@ -260,8 +257,7 @@ export async function bulkReleaseAction(formData: FormData): Promise<BulkActionR
  */
 export async function bulkRecordReceiptsAction(formData: FormData): Promise<BulkActionResult> {
   const user = await requireUser()
-  const settings = await loadSettings(prisma)
-  const selection = parseSelection(ids(formData), settings.values['caps.bulkSelection'])
+  const selection = parseSelection(ids(formData))
   if (!selection.ok) return { ok: false, message: selection.message }
 
   const read = readRowReceipts(formData, selection.checkIds)
@@ -283,7 +279,7 @@ export async function bulkRecordReceiptsAction(formData: FormData): Promise<Bulk
 
 /**
  * What differs between the two server-confirmed "ALL" actions. Everything else
- * — the guards, the order they run in, the batching — is `runConfirmedAll`.
+ * — the guards and the order they run in — is `runConfirmedAll`.
  */
 type ConfirmedAll = {
   /** The value the confirmation form submits as `confirm`. */
@@ -356,8 +352,6 @@ async function runConfirmedAll(formData: FormData, spec: ConfirmedAll): Promise<
     return { ok: false, message: messages.badCount }
   }
 
-  const settings = await loadSettings(prisma)
-  const cap = settings.values['caps.bulkSelection']
   // A filter that is present but names nothing REFUSES — dropping it would
   // silently widen the set from one company to every company.
   const narrow = await readNarrowing(formData)
@@ -382,45 +376,12 @@ async function runConfirmedAll(formData: FormData, spec: ConfirmedAll): Promise<
     return { ok: false, message: messages.moreThanConfirmed(checkIds.length, expectedCount) }
   }
 
-  /**
-   * Sequential batches of `MAX_BULK_SELECTION`, not one oversized call.
-   *
-   * **Raising the cap would be the wrong fix.** It is not a limit on how much
-   * this action may release — the set here is decided by a query, counted on
-   * screen and confirmed. It is a limit on an UNBOUNDED, user-composed tick-box
-   * selection, where a select-all over a filter is how "the twelve I meant"
-   * becomes "every cheque in the company"; and it is what keeps the tick-box
-   * path from opening fifty interactive transactions' worth of work that this
-   * project's suite already learned deadlocks against Neon (`40P01`). Raising it
-   * to fit 81 would loosen that path to solve a problem it does not have.
-   *
-   * Batching costs nothing in correctness: `runEach` already processes one
-   * cheque at a time, so each cheque gets its own transaction, its own guards
-   * and its own audit row whether it is in a batch of one or of fifty. What the
-   * batches buy is that every id still passes through `parseSelection`, the
-   * single gate every bulk write in this system goes through.
-   */
+  // One run over the whole set, one transaction per check (the selection cap
+  // and the batching it forced were removed on 2026-11-05). `runEach`'s time
+  // budget reports any check it did not reach.
   // One timestamp for the whole action: these cheques moved in one act.
   const now = new Date()
-  const outcomes: BulkOutcome[] = []
-  for (const batch of chunkSelection(checkIds, cap)) {
-    const selection = parseSelection(batch, cap)
-    // Unreachable: `chunkSelection` de-duplicates, drops blanks and splits at
-    // the cap. Handled rather than asserted, because the alternative to a
-    // returned refusal is a thrown one half way through a release.
-    if (!selection.ok) return { ok: false, message: selection.message }
-
-    const batchResult = await runEach(prisma, selection.checkIds, (checkId) => spec.apply(checkId, now))
-    // `runEach` only reports `ok: false` for a refusal it was handed, which
-    // cannot happen above; the narrowing is for the type, not for the case.
-    if (!batchResult.ok) return batchResult
-    outcomes.push(...batchResult.outcomes)
-  }
-
-  // Recomputed over every batch, so "73 of 81" counts the whole action rather
-  // than the last batch of it.
-  const succeeded = outcomes.filter((o) => o.ok).length
-  return { ok: true, succeeded, failed: outcomes.length - succeeded, outcomes }
+  return runEach(prisma, checkIds, (checkId) => spec.apply(checkId, now))
 }
 
 /**

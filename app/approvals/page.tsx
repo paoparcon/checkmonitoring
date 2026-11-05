@@ -12,6 +12,8 @@ import { formatManila } from '@/lib/manila-format'
 import { formatMoney } from '@/lib/money'
 
 export const dynamic = 'force-dynamic'
+// APPROVE SELECTED over every pending request; the decision loop stops at 45 s (2026-11-05).
+export const maxDuration = 60
 
 const fmt = (d: Date) => formatManila(d, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
 
@@ -41,7 +43,7 @@ export default async function ApprovalsPage() {
       <Panel title="WAITING FOR APPROVAL" aside={<span className="text-sm text-slate-500">{pending.length}</span>} bodyClassName="p-0">
         {pending.length === 0
           ? <div className="px-6 py-8 text-sm text-slate-500">Nothing is waiting.</div>
-          : <ApprovalsTable rows={pending} canDecide={decides} cap={settings.values['caps.bulkSelection']} />}
+          : <ApprovalsTable rows={pending} canDecide={decides} />}
       </Panel>
 
       <Panel title="DECIDED" aside={<span className="text-sm text-slate-500">latest {decided.length}</span>} bodyClassName="p-0">

@@ -13,7 +13,7 @@ export const KIND_LABEL = { MAKE_AVAILABLE: 'READY FOR RELEASE', WITHDRAW: 'REVE
 const EXPECTED = { MAKE_AVAILABLE: ['SIGNED'], WITHDRAW: ['READY_FOR_RELEASE', 'SCHEDULED'] } as const
 
 /** The open requests, with APPROVE / REJECT per row and over the ticked rows for the approver. */
-export function ApprovalsTable({ rows, canDecide, cap }: { rows: RequestView[]; canDecide: boolean; cap: number }) {
+export function ApprovalsTable({ rows, canDecide }: { rows: RequestView[]; canDecide: boolean }) {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set())
   const ids = rows.filter((r) => selected.has(r.id)).map((r) => r.id)
   const toggle = (id: string) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
@@ -77,9 +77,7 @@ export function ApprovalsTable({ rows, canDecide, cap }: { rows: RequestView[]; 
       {canDecide && ids.length > 0 && (
         <div className="sticky bottom-0 z-10 rounded-2xl bg-white p-4 shadow-lg ring-1 ring-slate-300">
           <p className="mb-2 text-sm font-semibold tracking-wide text-slate-900">{ids.length} SELECTED</p>
-          {ids.length > cap
-            ? <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">A decision is limited to {cap} at a time — untick some before continuing.</p>
-            : <ApprovalDecision requestIds={ids} onDone={() => setSelected(new Set())} />}
+          <ApprovalDecision requestIds={ids} onDone={() => setSelected(new Set())} />
         </div>
       )}
     </div>

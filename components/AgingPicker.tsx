@@ -29,7 +29,7 @@ const BUCKET_TONE: Record<string, string> = {
   b90: 'ring-rose-300', b90plus: 'ring-rose-400', noDue: 'ring-slate-300',
 }
 
-export function AgingPicker({ rows, cap, truncated }: { rows: readonly AgingRow[]; cap: number; truncated: boolean }) {
+export function AgingPicker({ rows, truncated }: { rows: readonly AgingRow[]; truncated: boolean }) {
   const router = useRouter()
   const companies = useMemo(() => [...new Set(rows.map((r) => r.company))].sort(), [rows])
   const banks = useMemo(() => [...new Set(rows.map((r) => r.bank).filter((b): b is string => b !== null))].sort(), [rows])
@@ -59,7 +59,6 @@ export function AgingPicker({ rows, cap, truncated }: { rows: readonly AgingRow[
   const chosen = useMemo(() => effectiveSelection(rows, selected), [rows, selected])
   const chosenIds = useMemo(() => new Set(chosen.map((r) => r.id)), [chosen])
   const picked = selectionTotal(rows, chosenIds)
-  const overCap = chosen.length > cap
   // The SELECTED view lists every chosen check, deliberately not narrowed by the column filters.
   const matching = useMemo(
     () => choice === 'SELECTED'
@@ -106,13 +105,13 @@ export function AgingPicker({ rows, cap, truncated }: { rows: readonly AgingRow[
       if (r.ok) {
         // A refused check stays ticked for a retry; readied ones are cleared.
         setSelected(new Set(r.outcomes.filter((o) => !o.ok).map((o) => o.checkId)))
-        if (r.succeeded > 0) router.refresh()
+        if (r.succeeded > 0 || (r.requested ?? 0) > 0) router.refresh()
       }
     })
   }
 
   const failures = result?.ok
-    ? result.outcomes.filter((o): o is Extract<BulkOutcome, { ok: false }> => !o.ok)
+    ? result.outcomes.filter((o): o is Extract<BulkOutcome, { ok: false }> => !o.ok && !o.notReached)
     : []
 
   const card = (key: BucketChoice | 'SELECTED', label: string, t: { count: number; amount: string }, tone: string) => (
@@ -260,17 +259,12 @@ export function AgingPicker({ rows, cap, truncated }: { rows: readonly AgingRow[
               <button type="button" onClick={() => setChoice('SELECTED')} className="underline">SHOW SELECTED</button>)
             </span>
           )}
-          {overCap && (
-            <span className="text-xs font-semibold tracking-wide text-warning-ink">
-              AT MOST {cap.toLocaleString('en-PH')} AT A TIME — UNTICK SOME.
-            </span>
-          )}
           <label htmlFor="aging-pickup-date" className="text-xs font-medium tracking-wide text-slate-600">AVAILABLE PICKUP DATE</label>
           <input id="aging-pickup-date" type="date" value={pickupDate} onChange={(e) => setPickupDate(e.target.value)}
             className="rounded-lg border border-slate-300 px-2 py-1 text-sm" />
           <button
             type="button" onClick={ready}
-            disabled={pending || chosen.length === 0 || overCap || pickupDate === ''}
+            disabled={pending || chosen.length === 0 || pickupDate === ''}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
             {pending ? 'WORKING…' : 'MARK READY FOR RELEASE'}
@@ -279,7 +273,17 @@ export function AgingPicker({ rows, cap, truncated }: { rows: readonly AgingRow[
         {result && !result.ok && <p className="mt-2 text-sm text-warning-ink">{result.message}</p>}
         {result?.ok && (
           <div className="mt-2 text-sm text-slate-700">
-            {result.succeeded} MARKED READY FOR RELEASE{result.failed > 0 && `, ${result.failed} REFUSED:`}
+            {result.succeeded} MARKED READY FOR RELEASE{failures.length > 0 && `, ${failures.length} REFUSED:`}
+            {(result.requested ?? 0) > 0 && (
+              <p className="mt-1 text-emerald-800">
+                {result.requested} REQUEST{result.requested === 1 ? '' : 'S'} SENT TO {result.approverName ?? 'THE APPROVER'} FOR APPROVAL — the checks stay SIGNED until approved.
+              </p>
+            )}
+            {(result.notReached ?? 0) > 0 && (
+              <p className="mt-1 font-medium text-warning-ink">
+                {result.notReached} NOT REACHED BEFORE THE TIME LIMIT — still ticked; press MARK READY FOR RELEASE again to finish them.
+              </p>
+            )}
             {failures.length > 0 && (
               <ul className="mt-1 list-disc pl-5 text-xs text-warning-ink">
                 {failures.map((f) => <li key={f.checkId}>{f.checkNumber ?? f.checkId}: {f.message}</li>)}

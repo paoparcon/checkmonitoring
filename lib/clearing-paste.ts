@@ -1,4 +1,4 @@
-import { MAX_BULK_SELECTION } from '@/lib/bulk'
+import { DEFAULT_MAX_BULK_SELECTION } from '@/lib/settings/defaults'
 import { canonicalCheckNumber } from '@/lib/import/normalise'
 
 /**
@@ -16,12 +16,12 @@ import { canonicalCheckNumber } from '@/lib/import/normalise'
  * second write would be a refused transition reported as a failure on a
  * cheque that did in fact clear.
  *
- * The cap is `MAX_BULK_SELECTION`, for its own reason: each confirm is one
+ * The cap is the `caps.bulkSelection` setting, for its own reason: each confirm is one
  * sequential transaction per cheque against Neon, and fifty is a screenful a
  * person can read back before pressing CONFIRM.
  */
 
-export const MAX_CLEARING_LINES = MAX_BULK_SELECTION
+export const MAX_CLEARING_LINES = DEFAULT_MAX_BULK_SELECTION
 
 export type PastedLine = {
   line: number

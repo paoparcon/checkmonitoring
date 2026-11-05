@@ -8,7 +8,7 @@ import {
   SETTINGS, SETTING_KEYS, DEFAULTS, settingDef, isSettingKey, parseSettingText, formatSettingText, isCategory,
 } from '@/lib/settings/registry'
 import { STALE_AFTER_HOURS } from '@/lib/sync/staleness'
-import { MAX_BULK_SELECTION } from '@/lib/bulk'
+import { DEFAULT_MAX_BULK_SELECTION as MAX_BULK_SELECTION } from '@/lib/settings/defaults'
 import { EMAIL_FREE_FAILURES } from '@/lib/login-throttle'
 
 describe('the registry imports only leaves', () => {

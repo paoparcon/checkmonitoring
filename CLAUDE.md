@@ -704,6 +704,16 @@ other book's check id.
 
 **A time shown to Finance is formatted in Manila, by name** (`formatManila`, `lib/manila-format.ts`, 2026-11-03). Every page renders on the server and Vercel's clock is UTC: /admin/portal said "Last push Nov 3, 9:23 AM" for the 5:23 PM push that completed the check list, and the sync, users, print, check, receipt, staged, voucher and import-preview pages, the audit trail and the dashboard workbook's stamp were the same 8 hours behind. A day stored at Manila midnight (`manilaDayStart`) is the evening before in UTC, so an unzoned date-only format is a day early too. Every `toLocaleString('en-PH', …)` in server code now goes through `formatManila` or names `timeZone: 'Asia/Manila'`; a new formatter without the zone repeats the defect, and `tests/manila-format.test.ts` pins the rule. Client components (`CheckTable`) format in the browser, which is already Manila.
 
+**Ticked checks have no limit (2026-11-05, user: "dont limit 50 tick at a time. i can select all").**
+`parseSelection` (`lib/bulk.ts`) only cleans and de-duplicates; the 50-check refusal and `chunkSelection`
+are gone, and RELEASE ALL / SIGN ALL run their set in one `runEach`. The list's bulk bar, AGING and
+APPROVALS no longer disable a large selection. What bounds a run now is time: `runEach` stops at
+`BULK_TIME_BUDGET_MS` (45 s) and reports the rest as NOT REACHED (`notReached`, nothing written for
+them, the ticks kept so the same press finishes them); `/approvals`' decide loop does the same. The
+pages hosting bulk actions (`/`, `/aging`, `/approvals`) declare `maxDuration = 60`, and a run's portal
+kick takes what is left of the minute, up to 25 s. The setting `caps.bulkSelection` (key kept) now caps
+only the CLEARING paste box and is labelled LINES PER CLEARING PASTE.
+
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`
 mis-tokenises the pipe; `node node_modules/vitest/vitest.mjs run file -t "a|b"` is the same
 runner without the `.cmd` shim and works.
@@ -757,7 +767,7 @@ the protocol postgresql://"*. `scripts/set-vercel-env.mjs` strips them.
 run when `DATABASE_URL_TEST` is unset or equal to `DATABASE_URL`.
 
 **A threshold is a setting, and the constant is only its default.** Since 2026-09-12 `STALE_AFTER_HOURS`,
-`ABANDONED_AFTER_MINUTES`, `SYNC_IN_PROGRESS_MINUTES`, `MAX_BULK_SELECTION`, `EXPORT_ROW_LIMIT`,
+`ABANDONED_AFTER_MINUTES`, `SYNC_IN_PROGRESS_MINUTES`, `MAX_CLEARING_LINES` (setting `caps.bulkSelection`), `EXPORT_ROW_LIMIT`,
 `VOUCHER_SCREEN_ROW_LIMIT`, `autoSign.mondayEnabled` and the three login-throttle allowances are the DEFAULTS in
 `lib/settings/registry.ts`; the value in force comes from `loadSettings` at request time, and every
 function that uses one takes it as a parameter. A new call site that reads the constant directly

@@ -129,11 +129,10 @@ function DataCell({ column, r, width }: { column: DataColumn; r: CheckTableRow; 
 }
 
 export function CheckTable({
-  rows, canRelease, bulkCap, sort, filters, approverName = null,
+  rows, canRelease, sort, filters, approverName = null,
 }: {
   rows: CheckTableRow[]
   canRelease: boolean
-  bulkCap: number
   /** The bar's MARK READY / REVERT TO SIGNED become requests for this person (spec 2026-11-05); null applies at once. */
   approverName?: string | null
   /** The order in force (URL, cookie or default) — which header shows an arrow. */
@@ -386,7 +385,6 @@ export function CheckTable({
           selectedRows={rows.filter((r) => selected.has(r.id))}
           drafts={drafts}
           canRelease={canRelease}
-          cap={bulkCap}
           approverName={approverName}
           onDone={() => { setSelected(new Set()); setDrafts({}) }}
         />

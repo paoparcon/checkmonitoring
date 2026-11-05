@@ -35,6 +35,10 @@ import { formatMoney } from '@/lib/money'
 import { loadApprover } from '@/lib/approvals/approver'
 import { countPendingRequests } from '@/lib/approvals/queries'
 
+// The list's bulk actions run in this page's function. With no selection cap
+// (2026-11-05) a select-all can be hundreds of checks; runEach stops at 45 s.
+export const maxDuration = 60
+
 /**
  * THE DASHBOARD.
  *
@@ -440,7 +444,6 @@ export default async function DashboardPage({
         // MARK RELEASED on the list is every Finance user's (client, 2026-10-16).
         canRelease
         approverName={approvalBy}
-        bulkCap={settings.values['caps.bulkSelection']}
         sort={sort}
         filters={{
           options,

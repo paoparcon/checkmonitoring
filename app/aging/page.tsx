@@ -1,6 +1,5 @@
 import { requireUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
-import { loadSettings } from '@/lib/settings/read'
 import { loadAgingRows } from '@/lib/aging/query'
 import { AppHeader } from '@/components/AppHeader'
 import { AgingPicker } from '@/components/AgingPicker'
@@ -14,16 +13,18 @@ import { AgingPicker } from '@/components/AgingPicker'
  * lists payees and amounts.
  */
 export const dynamic = 'force-dynamic'
+// A select-all MARK READY runs here; runEach stops at 45 s (2026-11-05).
+export const maxDuration = 60
 
 export default async function AgingPage() {
   const user = await requireUser()
   const now = new Date()
-  const [{ rows, truncated }, settings] = await Promise.all([loadAgingRows(prisma, now), loadSettings(prisma)])
+  const { rows, truncated } = await loadAgingRows(prisma, now)
 
   return (
     <main className="space-y-4 px-4 py-5">
       <AppHeader user={user} title="AGING" back={{ href: '/', label: '← DASHBOARD' }} />
-      <AgingPicker rows={rows} cap={settings.values['caps.bulkSelection']} truncated={truncated} />
+      <AgingPicker rows={rows} truncated={truncated} />
     </main>
   )
 }

@@ -25,9 +25,9 @@ import {
  * design decision D11 for this button). `canRelease` still exists for callers
  * that hide it; the list passes true.
  *
- * **The cap is enforced here only as a courtesy.** `parseSelection` refuses an
- * oversized selection server-side; this disables the buttons so the user finds
- * out before pressing one rather than after.
+ * **There is no limit on how many rows may be ticked** (user ruling
+ * 2026-11-05). A run that reaches its time budget reports how many it did not
+ * reach and keeps the ticks, so pressing the button again finishes the rest.
  *
  * **Each action acts on its own subset of the ticked rows, and carries only
  * that subset's own receipts.** SIGN, READY FOR RELEASE and RELEASE act on the
@@ -39,12 +39,11 @@ import {
  * (`drafts`, keyed by check id) back onto the matching action.
  */
 export function BulkActionBar({
-  selectedRows, drafts, canRelease, cap, onDone, approverName = null,
+  selectedRows, drafts, canRelease, onDone, approverName = null,
 }: {
   selectedRows: (RowFacts & { checkNumber: string })[]
   drafts: Readonly<Record<string, ReceiptDraft>>
   canRelease: boolean
-  cap: number
   /** Called after a batch that changed something, so the table can clear itself. */
   onDone: () => void
   /** Set when THIS user's MARK READY FOR RELEASE / REVERT TO SIGNED become requests for that person (spec 2026-11-05). */
@@ -66,8 +65,7 @@ export function BulkActionBar({
   const revertable = revertableIds(selectedRows)
   const signed = signedIds(selectedRows)
   const total = selectedRows.length
-  const overCap = total > cap
-  const disabled = pending || overCap
+  const disabled = pending
   // Only a row whose box is actually SHOWN can have a missing type disable a
   // button — a hidden draft (a live row when the viewer cannot release, or
   // any row not tickable) must never block anything. `CheckTable` opens the
@@ -95,7 +93,8 @@ export function BulkActionBar({
         // Refresh before clearing: the rows the user is looking at have new
         // statuses, and the result panel below stays on screen to say which.
         router.refresh()
-        onDone()
+        // A run cut short keeps the ticks, so the same press finishes it.
+        if (!r.notReached) onDone()
       }
     })
   }
@@ -103,7 +102,7 @@ export function BulkActionBar({
   // A type predicate, not a bare `!o.ok`: TypeScript does not narrow a union
   // through Array.filter, and the refusal message lives only on the false arm.
   const failures = result?.ok
-    ? result.outcomes.filter((o): o is Extract<BulkOutcome, { ok: false }> => !o.ok)
+    ? result.outcomes.filter((o): o is Extract<BulkOutcome, { ok: false }> => !o.ok && !o.notReached)
     : []
 
   return (
@@ -263,12 +262,6 @@ export function BulkActionBar({
         </p>
       )}
 
-      {overCap && (
-        <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-          {total} CHECKS ARE SELECTED. A bulk action is limited to {cap}
-          {' '}at a time — untick some before continuing.
-        </p>
-      )}
 
       {result && !result.ok && (
         <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{result.message}</p>
@@ -291,6 +284,12 @@ export function BulkActionBar({
               {skippedReceipts !== null && skippedReceipts > 0 && (
                 <> {skippedReceipts} SKIPPED — NO REFERENCE TYPED.</>
               )}
+            </p>
+          )}
+          {(result.notReached ?? 0) > 0 && (
+            <p className="rounded-lg bg-amber-50 p-3 text-sm font-medium text-amber-900">
+              {result.notReached} CHECK{result.notReached === 1 ? ' WAS' : 'S WERE'} NOT REACHED BEFORE THE TIME LIMIT.
+              They are still ticked — press the same button again to finish them.
             </p>
           )}
           {failures.length > 0 && (

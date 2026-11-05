@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseClearingPaste, MAX_CLEARING_LINES } from '@/lib/clearing-paste'
-import { MAX_BULK_SELECTION } from '@/lib/bulk'
+import { DEFAULT_MAX_BULK_SELECTION as MAX_BULK_SELECTION } from '@/lib/settings/defaults'
 
 describe('parseClearingPaste', () => {
   it('reads a bare check number per line', () => {
