@@ -2,7 +2,6 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getSessionUser } from '@/lib/auth'
 import { CashRegister, ChequeRegister } from '@/components/MoneyMachines'
-import { DancerVideo } from '@/components/DancerVideo'
 
 /**
  * THE LANDING PAGE.
@@ -59,18 +58,6 @@ export default async function WelcomePage() {
         </div>
 
         <div className="order-1 text-center lg:order-2">
-          {/* TEMPORARY — for the presentation (2026-09-27), to be removed
-              afterwards on the user's own word. The user's own dance clip,
-              carrying its own audio, painted with the background removed live
-              in the browser (see DancerVideo). It starts on its own where the
-              browser allows it, on the first click anywhere otherwise, and
-              loops. Delete this block, the component, public/dancing.mp4 and
-              its entry in the middleware matcher together. The page's title
-              lines came out at the user's request — the header above still
-              names the system. */}
-          <DancerVideo src="/Woman_dancing_on_terrace_20260927144811.mp4" audioSrc="/chorus.mp3.mp4" />
-
-
           <Link
             href="/login"
             className="mt-8 inline-flex h-12 items-center justify-center rounded-xl bg-navy px-8 text-sm font-medium tracking-wide text-white shadow-md transition hover:bg-navy/90"
