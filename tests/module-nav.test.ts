@@ -17,6 +17,7 @@ describe('activeModule', () => {
     expect(activeModule('/')).toBe('CHECK_RELEASE')
     expect(activeModule('/checks/abc')).toBe('CHECK_RELEASE')
     expect(activeModule('/receipts/abc')).toBe('CHECK_RELEASE')
+    expect(activeModule('/approvals')).toBe('CHECK_RELEASE')
     expect(activeModule('/aging')).toBe('AGING')
     expect(activeModule('/vouchers')).toBe('VOUCHERS')
     expect(activeModule('/forecast')).toBe('FORECAST')

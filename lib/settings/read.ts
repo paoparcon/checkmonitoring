@@ -21,7 +21,7 @@ export type LoadedSettings = {
 export async function loadSettings(db: Db): Promise<LoadedSettings> {
   const rows = await db.setting.findMany()
   const stored = new Map(rows.map((r) => [r.key, r.value]))
-  const values = { ...DEFAULTS } as Record<string, number | readonly string[]>
+  const values = { ...DEFAULTS } as Record<string, number | readonly string[] | string>
   const overridden = new Set<SettingKey>()
   const outOfBounds = new Set<SettingKey>()
   for (const def of SETTINGS) {

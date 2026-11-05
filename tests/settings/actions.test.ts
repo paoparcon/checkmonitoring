@@ -48,6 +48,24 @@ describe('updateSetting', () => {
     expect(await testDb.auditLog.count()).toBe(0)
   })
 
+  it('stores the approver only when the id names an active user, and nobody as the empty string', async () => {
+    const admin = await makeUser('FINANCE_ADMIN')
+    const paolo = await makeUser('FINANCE_USER')
+    const gone = await makeUser('FINANCE_USER')
+    await testDb.user.update({ where: { id: gone.id }, data: { active: false } })
+    await expect(updateSetting(testDb, { key: 'approval.availabilityApprover', text: gone.id, actorRole: 'FINANCE_ADMIN', userId: admin.id }))
+      .rejects.toMatchObject({ code: 'UNKNOWN_USER' })
+    await expect(updateSetting(testDb, { key: 'approval.availabilityApprover', text: 'nobody-here', actorRole: 'FINANCE_ADMIN', userId: admin.id }))
+      .rejects.toMatchObject({ code: 'UNKNOWN_USER' })
+    expect(await testDb.setting.count()).toBe(0)
+    await updateSetting(testDb, { key: 'approval.availabilityApprover', text: paolo.id, actorRole: 'FINANCE_ADMIN', userId: admin.id })
+    expect((await loadSettings(testDb)).values['approval.availabilityApprover']).toBe(paolo.id)
+    await updateSetting(testDb, { key: 'approval.availabilityApprover', text: '', actorRole: 'FINANCE_ADMIN', userId: admin.id })
+    expect((await testDb.setting.findUniqueOrThrow({ where: { key: 'approval.availabilityApprover' } })).value).toBe('')
+    expect((await loadSettings(testDb)).values['approval.availabilityApprover']).toBe('')
+    expect(await audit('setting_changed')).toHaveLength(2)
+  })
+
   it('stores the category list as JSON', async () => {
     const admin = await makeUser('FINANCE_ADMIN')
     await updateSetting(testDb, { key: 'categories', text: 'payroll\nrent', actorRole: 'FINANCE_ADMIN', userId: admin.id })

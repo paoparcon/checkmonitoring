@@ -42,6 +42,24 @@ describe('markSigned', () => {
     expect(after.signedById).toBeNull()
     expect(await testDb.auditLog.count({ where: { checkId: check.id } })).toBe(0)
   })
+
+  // 2026-11-04: 36 READY FOR RELEASE checks were taken off the release list
+  // with MARK SIGNED on the list — status SIGNED, pickup date kept, the portal
+  // told nothing. The ladder's READY → SIGNED edge is REVERT TO SIGNED's only.
+  it('refuses anything but SIGNATURE_PENDING or GENERATED — a READY check is reverted, never "signed"', async () => {
+    const user = await makeUser()
+    for (const status of ['SIGNED', 'READY_FOR_RELEASE', 'SCHEDULED', 'RELEASED', 'CANCELLED'] as const) {
+      const check = await makeCheck({ status, availablePickupDate: PICKUP })
+      await expect(markSigned(testDb, { checkId: check.id, userId: user.id, now: NOW }))
+        .rejects.toMatchObject({ code: 'NOT_PENDING_SIGNATURE' })
+      const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+      expect(after.status).toBe(status)
+      expect(after.availablePickupDate).toEqual(PICKUP)
+    }
+    const generated = await makeCheck({ status: 'GENERATED' })
+    expect((await markSigned(testDb, { checkId: generated.id, userId: user.id, now: NOW })).status).toBe('SIGNED')
+    expect(await testDb.auditLog.count({ where: { action: 'marked_signed' } })).toBe(1)
+  })
 })
 
 describe('markReadyForRelease', () => {
@@ -176,6 +194,16 @@ describe('revertAvailability', () => {
     await expect(revertAvailability(testDb, {
       checkId: check.id, userId: user.id, reason: '   ', now: NOW,
     })).rejects.toMatchObject({ code: 'REASON_REQUIRED' })
+  })
+
+  it('walks down only from READY FOR RELEASE or SCHEDULED — RELEASED → SIGNED is a release reversal', async () => {
+    const user = await makeUser()
+    for (const status of ['RELEASED', 'SIGNED', 'SIGNATURE_PENDING'] as const) {
+      const check = await makeCheck({ status })
+      await expect(revertAvailability(testDb, { checkId: check.id, userId: user.id, reason: 'x', now: NOW }))
+        .rejects.toMatchObject({ code: 'NOT_AVAILABLE' })
+      expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).status).toBe(status)
+    }
   })
 
   // Regression test for the bug: markReadyForRelease routes on eligibility,

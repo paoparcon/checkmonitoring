@@ -22,6 +22,8 @@ import { runScheduledBillsSync } from '@/lib/sync/bills'
 import { runScheduledBillRefsSync } from '@/lib/sync/bill-refs'
 import { loadSettings } from '@/lib/settings/read'
 import { afterResponse, kickPortalDelivery } from '@/lib/sync/portal-kick'
+import { loadApprover } from '@/lib/approvals/approver'
+import { notifyApprovalRequested } from '@/lib/notifications/approvals'
 import { isIsoDay, dayToDate } from '@/lib/domain/details'
 import {
   applyReadyUpload, planReadyUpload, readReadyUpload, sheetsFromWorkbook,
@@ -331,9 +333,20 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
     }
 
     const now = new Date()
+    const { approver } = await loadApprover(prisma, await loadSettings(prisma))
     const summary = await applyReadyUpload(prisma, plan, {
-      userId: user.id, pickupDate, now, deadline: new Date(now.getTime() + READY_UPLOAD_BUDGET_MS),
+      userId: user.id, pickupDate, now, deadline: new Date(now.getTime() + READY_UPLOAD_BUDGET_MS), approver,
     })
+    if (summary.requested > 0 && approver) {
+      // The rows that became requests: every planned check that was not
+      // readied and did not fail, in plan order — the apply loop is sequential.
+      const requestedIds = (await prisma.availabilityRequest.findMany({
+        where: { status: 'PENDING', requestedById: user.id, requestedAt: now }, select: { checkId: true },
+      })).map((r) => r.checkId)
+      await notifyApprovalRequested(prisma, {
+        approverId: approver.id, requester: user, kind: 'MAKE_AVAILABLE', checkIds: requestedIds, pickupDay,
+      })
+    }
     try {
       afterResponse(() => kickPortalDelivery(prisma, { budgetMs: READY_UPLOAD_KICK_MS }))
     } catch (e) {

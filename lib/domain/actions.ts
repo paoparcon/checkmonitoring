@@ -35,6 +35,19 @@ export type ActionSource = {
   listRows: { sheet: string; row: number; voucher: string | null; checkNumber: string | null }[]
 }
 
+/**
+ * The request an availability change was applied FOR, when the actor is the
+ * approver deciding another user's request (spec 2026-11-05 §6). Carried on
+ * the `ready_for_release` / `reverted_availability` row's details, so the
+ * trail reads "approved by X, requested by Y".
+ */
+export type ApprovalRef = { requestId: string; requestedById: string; requestedAt: Date }
+
+function approvalDetails(approval: ApprovalRef | undefined): Prisma.InputJsonObject {
+  if (!approval) return {}
+  return { approval: { requestId: approval.requestId, requestedById: approval.requestedById, requestedAt: approval.requestedAt.toISOString() } }
+}
+
 function sourceRemark(source: ActionSource | undefined): string {
   if (!source) return ''
   return ` From the uploaded list ${source.file} (${source.listRows.map((r) => `${r.sheet} row ${r.row}`).join(', ')}).`
@@ -272,6 +285,18 @@ export async function markSigned(
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
     assertReleasable({ isCheque: check.isCheque })
+    // Only a signature. The ladder has a READY_FOR_RELEASE → SIGNED edge, but
+    // that edge is REVERT TO SIGNED's (`revertAvailability`, which clears the
+    // pickup and tells the portal). On 2026-11-04 36 READY checks were taken
+    // off the release list by MARK SIGNED on the list: status SIGNED, pickup
+    // date kept, portal told nothing, suppliers reminded seven more times.
+    // Spec 2026-11-05-availability-approval-design §2.
+    if (check.status !== 'SIGNATURE_PENDING' && check.status !== 'GENERATED') {
+      const hint = check.status === 'READY_FOR_RELEASE' || check.status === 'SCHEDULED'
+        ? ' Use REVERT TO SIGNED to take it off the release list.'
+        : ''
+      throw new DomainError('NOT_PENDING_SIGNATURE', `This check is ${check.status}, not SIGNATURE PENDING, so there is nothing to sign.${hint}`)
+    }
     assertTransition(check.status as CheckStatus, 'SIGNED')
     const updated = await tx.check.update({
       where: { id: check.id },
@@ -365,7 +390,7 @@ export async function revertSignature(
 
 export async function markReadyForRelease(
   db: Db,
-  args: { checkId: string; userId: string; availablePickupDate: Date | null; now: Date; source?: ActionSource },
+  args: { checkId: string; userId: string; availablePickupDate: Date | null; now: Date; source?: ActionSource; approval?: ApprovalRef },
 ): Promise<Check> {
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
@@ -447,6 +472,7 @@ export async function markReadyForRelease(
       details: {
         availablePickupDate: args.availablePickupDate?.toISOString() ?? null, portalPush: pushes,
         ...(args.source ? { source: args.source } : {}),
+        ...approvalDetails(args.approval),
       },
       remarks: `Pickup ${args.availablePickupDate?.toISOString().slice(0, 10) ?? 'unset'}.${sourceRemark(args.source)}`,
     })
@@ -455,14 +481,23 @@ export async function markReadyForRelease(
   })
 }
 
+/** The rungs REVERT TO SIGNED walks down from. RELEASED → SIGNED is `reverseRelease`'s, never this. */
+export const REVERTABLE_STATUSES: readonly CheckStatus[] = ['READY_FOR_RELEASE', 'SCHEDULED']
+
 export async function revertAvailability(
-  db: Db, args: { checkId: string; userId: string; reason: string; now: Date },
+  db: Db, args: { checkId: string; userId: string; reason: string; now: Date; approval?: ApprovalRef },
 ): Promise<Check> {
   if (!args.reason || args.reason.trim() === '') {
     throw new DomainError('REASON_REQUIRED', 'A reason is required to revert availability.')
   }
   return inTx(db, async (tx) => {
     const check = await load(tx, args.checkId)
+    // Explicit, not only the ladder: the ladder also has RELEASED → SIGNED,
+    // which is a release reversal (receipt and clearing refusals, its own
+    // audit row) and must not be reachable as a "revert" (2026-11-05).
+    if (!REVERTABLE_STATUSES.includes(check.status as CheckStatus)) {
+      throw new DomainError('NOT_AVAILABLE', `This check is ${check.status}, not READY FOR RELEASE, so there is no availability to revert.`)
+    }
     assertTransition(check.status as CheckStatus, 'SIGNED')
 
     // A release reversal the portal has not received yet (2026-10-23): this
@@ -516,6 +551,7 @@ export async function revertAvailability(
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId,
       action: 'reverted_availability', remarks: args.reason,
+      ...(args.approval ? { details: approvalDetails(args.approval) } : {}),
     })
 
     return updated

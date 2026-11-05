@@ -436,6 +436,40 @@ the middleware sends an anonymous bare `/` there and every other guarded path to
 before, and sign-out lands on `/welcome`. `requireUser()` still redirects to `/login`. The page
 reads no data and must never show a figure: it is the one page a stranger can load.
 
+**Availability changes are approved by one person (2026-11-05, spec
+`2026-11-05-availability-approval-design.md`; user ruling: *"all should be approved by Paolo Parcon …
+only for the checks available for release. I want to have control in this because these are also
+communicated in the supplier"*).** The two changes the supplier is told about — MARK READY FOR RELEASE
+(SIGNED → READY_FOR_RELEASE) and REVERT TO SIGNED (READY/SCHEDULED → SIGNED) — go through
+`applyOrRequest` (`lib/domain/availability-approval.ts`) from the check page, the list's bulk bar, AGING
+and the `/admin/import` READY upload. The approver is the setting `approval.availabilityApprover`
+(`/admin/settings`, group APPROVAL, a dropdown of active users; kind `user`, the twelfth knob; NOBODY by
+default, which is **no approval step** — set it after the deploy). With a person set, that person's own
+actions apply at once and everyone else's become an `AvailabilityRequest` (one PENDING per check,
+`pendingKey` unique with `checkId`): **the check does not move, no pickup date or `readyAt` is written and
+the portal hears nothing until approval.** Requesting runs the same refusals as applying (missing fields,
+reason, from-status), so the requester hears them at once. `approveAvailabilityRequest` applies the
+domain action AS THE APPROVER (`readyById`, the `ready_for_release` / `reverted_availability` audit
+actor) with `details.approval` naming the request and requester; a check that moved since is refused
+`REQUEST_STALE` and must be rejected by hand; REJECT needs a note. Only the approver decides, not another
+admin — except that while NOBODY is set a FINANCE_ADMIN may close leftovers. `/approvals` (every user;
+APPROVE/REJECT for the approver, per row and over a selection), an APPROVALS header link with the pending
+count, a WAITING FOR APPROVAL panel on the check page, REQUEST… button labels for non-approvers, a
+dashboard TOTALS line, `requested` on the upload report, `APPROVAL_REQUESTED` (to the approver) and
+`APPROVAL_DECIDED` (to the requester) notifications — a new `USER` audience with `userId` in `notify`.
+Audit: `availability_requested` / `availability_approved` / `availability_rejected`. Migration
+`20261105000000_availability_request` must reach production BEFORE the deploy (the header counts the table
+on every page). **Closed with it:** `markSigned` refuses anything but SIGNATURE_PENDING/GENERATED
+(`NOT_PENDING_SIGNATURE`) — on 2026-11-04 36 READY checks were taken off the release list with MARK
+SIGNED on the list, pickup date kept, portal told nothing, suppliers reminded seven more times — and
+`revertAvailability` refuses anything but READY/SCHEDULED (`NOT_AVAILABLE`; RELEASED → SIGNED is
+`reverseRelease`'s). Not gated: MARK RELEASED / RELEASE ALL, REVERSE RELEASE, the one-off catch-up
+scripts. **Still open from the same day:** the 36 SIGNED-by-mistake checks are to be re-readied by the
+user (an upload-shaped list was provided); the portal's deployed code ignores a REVERT on a RELEASED bill,
+so the four RELEASED → SIGNED reversals of 2026-11-04 (`6000353231`, `6000353362`, `6000353678`,
+`6000354854`) are still paid there until the portal fix in `~/Downloads/Supplier-Database-claude-reissue-revives-cancelled-row`
+is carried into its repo and deployed; this app records the portal's `noop` answer as a clean SYNCED.
+
 **A cancelled or voided check is detached from its AP bills, and the portal is not told** (user
 ruling 2026-10-29: *"Once the check is cancelled, it should not be connected to the AP it was applied
 to"*; spec `2026-10-29-cancelled-check-detaches-from-ap-design.md`). The portal keeps one release row
@@ -972,7 +1006,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+**2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
 `numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
 `numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
 in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on

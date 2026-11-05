@@ -252,8 +252,9 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
           <p className={`rounded-lg p-4 text-sm ${applied ? 'bg-success-bg text-success-ink' : 'bg-navy-bg text-navy'}`}>
             {applied
               ? `DONE — ${result.fileName}. ${n(result.summary.readied)} check(s) marked READY FOR RELEASE with pickup ${result.pickupDate}` +
+                (result.summary.requested > 0 ? `, ${n(result.summary.requested)} sent to the approver as requests (they stay as they are until approved)` : '') +
                 (result.summary.signed > 0 ? `, ${n(result.summary.signed)} of them signed first` : '') +
-                '. The Supplier Portal is being told.'
+                (result.summary.readied > 0 ? '. The Supplier Portal is being told.' : '.')
               : nothingToDo
                 ? `PREVIEW ONLY — ${result.fileName}. No row of this list can be marked ready; see why below. Nothing has been written.`
                 : `PREVIEW ONLY — ${result.fileName}. Nothing has been written. Read the plan below, then confirm.`}

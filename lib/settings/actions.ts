@@ -26,6 +26,13 @@ export async function updateSetting(
   if (!parsed.ok) throw new DomainError('INVALID_SETTING', parsed.message)
   const to = formatSettingText(def, parsed.value)
   await db.$transaction(async (tx) => {
+    // A user setting must name an ACTIVE user or nobody: the gate must never
+    // queue requests nobody can decide (spec 2026-11-05 §3). Checked inside
+    // the transaction, so a deactivation racing this save cannot slip past.
+    if (def.kind === 'user' && to !== '') {
+      const user = await tx.user.findUnique({ where: { id: to }, select: { active: true } })
+      if (!user || !user.active) throw new DomainError('UNKNOWN_USER', `${def.label} must name an active user.`)
+    }
     const existing = await tx.setting.findUnique({ where: { key: def.key } })
     const inForce = existing?.value ?? formatSettingText(def, def.default)
     if (inForce === to) return

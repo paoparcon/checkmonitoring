@@ -37,6 +37,9 @@ export async function resetDb() {
     await tx.notification.deleteMany()
     await tx.checkBill.deleteMany()
     await tx.checkReceiptFile.deleteMany()
+    // Approval requests hang off a check and two users (RESTRICT), so they go
+    // before the check does (spec 2026-11-05).
+    await tx.availabilityRequest.deleteMany()
     await tx.check.deleteMany()
     // PlannedOutflow's bankId/companyId/createdById FKs are ON DELETE RESTRICT
     // (migration 20260912000000), so a row surviving from an earlier test would

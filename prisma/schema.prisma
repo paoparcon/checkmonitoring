@@ -401,6 +401,7 @@ model Check {
   bills              CheckBill[]
   auditLogs          AuditLog[]
   portalEvents       PortalEvent[]
+  availabilityRequests AvailabilityRequest[]
   notifications      Notification[]
 
   createdAt          DateTime         @default(now())
@@ -903,6 +904,8 @@ model User {
   receiptFilesUploaded     CheckReceiptFile[] @relation("receiptFileUploadedBy")
   inventoryNotesUpdated    CheckInventoryNote[] @relation("inventoryNoteUpdatedBy")
   notifications            Notification[]
+  availabilityRequestsMade    AvailabilityRequest[] @relation("availabilityRequestedBy")
+  availabilityRequestsDecided AvailabilityRequest[] @relation("availabilityDecidedBy")
 }
 
 /// An outflow that is not a cheque — payroll, a tax remittance, loan
@@ -1011,4 +1014,56 @@ model RegistrationAttempt {
 
   @@index([ip, createdAt])
   @@index([createdAt])
+}
+
+// ── AVAILABILITY APPROVAL (spec 2026-11-05-availability-approval-design.md) ──
+
+enum AvailabilityRequestKind {
+  /// SIGNED → READY_FOR_RELEASE, the supplier is told the check is available.
+  MAKE_AVAILABLE
+  /// READY_FOR_RELEASE / SCHEDULED → SIGNED, the supplier is told it is withdrawn.
+  WITHDRAW
+}
+
+enum AvailabilityRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// A change to a check's availability that a Finance user asked for and the
+/// approver named in `approval.availabilityApprover` has not yet decided. The
+/// check does not move while the request is PENDING: no status, no pickup
+/// date, no portal event. Approval applies the domain action as the approver;
+/// rejection leaves the check as it was. Rows are never deleted.
+model AvailabilityRequest {
+  id                  String                    @id @default(cuid())
+  checkId             String
+  kind                AvailabilityRequestKind
+  status              AvailabilityRequestStatus @default(PENDING)
+  /// 'PENDING' while the request is open, null once decided. Exists only for
+  /// the unique index below: Postgres treats nulls as distinct, so a check may
+  /// have many decided requests and at most ONE pending. Prisma cannot declare
+  /// a partial unique index, and a `migrate dev` would drop one written by hand.
+  pendingKey          String?
+  requestedById       String
+  requestedAt         DateTime
+  /// MAKE_AVAILABLE: the pickup date the requester typed, written onto the check on approval.
+  availablePickupDate DateTime?
+  /// WITHDRAW: the requester's reason, required as REVERT TO SIGNED requires it.
+  reason              String?
+  /// The list the request came from (file, sheet, row, bill), when it came from the READY upload.
+  source              Json?
+  decidedById         String?
+  decidedAt           DateTime?
+  /// REJECT requires one; APPROVE may carry one.
+  decisionNote        String?
+
+  check       Check @relation(fields: [checkId], references: [id])
+  requestedBy User  @relation("availabilityRequestedBy", fields: [requestedById], references: [id])
+  decidedBy   User? @relation("availabilityDecidedBy", fields: [decidedById], references: [id])
+
+  @@unique([checkId, pendingKey])
+  @@index([status, requestedAt])
+  @@index([requestedById])
 }

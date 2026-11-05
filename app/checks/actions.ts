@@ -8,15 +8,25 @@ import { DomainError } from '@/lib/domain/errors'
 import { isNextControlFlowError } from '@/lib/next-errors'
 import { afterResponse, kickPortalDelivery } from '@/lib/sync/portal-kick'
 import {
-  markSigned, markReadyForRelease, revertAvailability,
+  markSigned,
   releaseDirectly, recordClearing, cancelCheck, deleteIncompleteCheck, recordReceipt,
   reverseRelease, updateDetails, revertSignature, restoreCancelled, attachReceiptFile, removeReceipt,
   REVERSAL_DESTINATIONS, type ReversalDestination,
 } from '@/lib/domain/actions'
 import { readReceiptFields } from '@/lib/receipt-form'
 import { notifyReady } from '@/lib/notifications/ready'
+import { notifyApprovalRequested } from '@/lib/notifications/approvals'
+import { loadSettings } from '@/lib/settings/read'
+import { loadApprover } from '@/lib/approvals/approver'
+import { applyOrRequest, type AvailabilityKind, type GateOutcome } from '@/lib/domain/availability-approval'
+import { isoDay } from '@/lib/domain/details'
 
-export type ActionResult = { ok: true } | { ok: false; message: string }
+/**
+ * `requested` (2026-11-05): the action wrote a request for the approver named,
+ * not the change itself — the check has not moved. The form says so instead of
+ * "Check is now READY FOR RELEASE".
+ */
+export type ActionResult = { ok: true; requested?: { approverName: string } } | { ok: false; message: string }
 
 const str = (f: FormData, k: string) => String(f.get(k) ?? '').trim()
 const date = (f: FormData, k: string) => {
@@ -67,17 +77,41 @@ export async function signAction(formData: FormData): Promise<ActionResult> {
   return run(checkId, () => markSigned(prisma, { checkId, userId: user.id, now: new Date() }))
 }
 
+/**
+ * THE TWO GATED ACTIONS (spec 2026-11-05-availability-approval-design §5).
+ * `applyOrRequest` applies the change when nobody is set as approver or the
+ * actor is the approver, and records a request otherwise. The notices follow
+ * the outcome: the others hear of a check that MOVED, the approver hears of a
+ * request. Both after the write committed; neither can fail the action.
+ */
+async function gated(
+  user: { id: string; name: string }, checkId: string, kind: AvailabilityKind,
+  fields: { availablePickupDate?: Date | null; reason?: string },
+): Promise<ActionResult> {
+  const { approver } = await loadApprover(prisma, await loadSettings(prisma))
+  // A holder, not a `let`: TypeScript narrows a variable assigned inside a
+  // closure to its initial null and reads the branch below as unreachable.
+  const box: { outcome: GateOutcome | null } = { outcome: null }
+  const result = await run(checkId, async () => {
+    box.outcome = await applyOrRequest(prisma, { kind, checkId, actor: user, approver, now: new Date(), ...fields })
+  })
+  if (!result.ok || box.outcome === null) return result
+  const o = box.outcome
+  if (o.applied) {
+    if (kind === 'MAKE_AVAILABLE') await notifyReady(prisma, user, [checkId])
+    return result
+  }
+  await notifyApprovalRequested(prisma, {
+    approverId: approver!.id, requester: user, kind, checkIds: [checkId],
+    pickupDay: fields.availablePickupDate ? isoDay(fields.availablePickupDate) : null, reason: fields.reason ?? null,
+  })
+  return { ok: true, requested: { approverName: approver!.name } }
+}
+
 export async function readyForReleaseAction(formData: FormData): Promise<ActionResult> {
   const user = await requireUser()
   const checkId = str(formData, 'checkId')
-  const result = await run(checkId, () => markReadyForRelease(prisma, {
-    checkId, userId: user.id,
-    availablePickupDate: date(formData, 'availablePickupDate'),
-    now: new Date(),
-  }))
-  // The others are told after the check moved; never fails the action.
-  if (result.ok) await notifyReady(prisma, user, [checkId])
-  return result
+  return gated(user, checkId, 'MAKE_AVAILABLE', { availablePickupDate: date(formData, 'availablePickupDate') })
 }
 
 export async function revertAction(formData: FormData): Promise<ActionResult> {
@@ -85,10 +119,7 @@ export async function revertAction(formData: FormData): Promise<ActionResult> {
   // REVERT TO SIGNED. The reason stays mandatory — the domain refuses a blank one.
   const user = await requireUser()
   const checkId = str(formData, 'checkId')
-  return run(checkId, () => revertAvailability(prisma, {
-    checkId, userId: user.id,
-    reason: str(formData, 'reason'), now: new Date(),
-  }))
+  return gated(user, checkId, 'WITHDRAW', { reason: str(formData, 'reason') })
 }
 
 export async function revertSignatureAction(formData: FormData): Promise<ActionResult> {

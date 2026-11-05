@@ -32,6 +32,8 @@ import { SyncStatusLine } from '@/components/SyncStatusLine'
 import { DashboardSyncControls } from '@/components/DashboardSyncControls'
 import { loadSettings } from '@/lib/settings/read'
 import { formatMoney } from '@/lib/money'
+import { loadApprover } from '@/lib/approvals/approver'
+import { countPendingRequests } from '@/lib/approvals/queries'
 
 /**
  * THE DASHBOARD.
@@ -98,6 +100,10 @@ export default async function DashboardPage({
     getFilterOptions(prisma),
     loadSettings(prisma),
   ])
+  // The approval gate (spec 2026-11-05): the name the list's buttons carry when
+  // this user's availability changes become requests, and how many are waiting.
+  const [inForce, pendingApprovals] = await Promise.all([loadApprover(prisma, settings), countPendingRequests(prisma)])
+  const approvalBy = inForce.approver && inForce.approver.id !== user.id ? inForce.approver.name : null
 
   /**
    * Every URL parameter is validated, the view is resolved and the filters are
@@ -198,6 +204,16 @@ export default async function DashboardPage({
           incompleteHref={incompleteHref(selection)}
           selection={selection}
         />
+
+        {/* Availability changes waiting on the approver (spec 2026-11-05 §7).
+            Shown only when there are some; the figure is system-wide. */}
+        {pendingApprovals > 0 && (
+          <p className="rounded-lg bg-amber-50 px-4 py-2 text-sm text-amber-900">
+            {pendingApprovals.toLocaleString('en-PH')} AVAILABILITY CHANGE{pendingApprovals === 1 ? '' : 'S'} WAITING FOR APPROVAL
+            {inForce.approver ? ` BY ${inForce.approver.name.toUpperCase()}` : ''}.{' '}
+            <Link href="/approvals" className="underline underline-offset-2">Open</Link>
+          </p>
+        )}
 
         {/* The confirmation step only: an exact string match, so an unrecognised
             value never guesses its way into a confirmation. Stays mounted while
@@ -422,6 +438,7 @@ export default async function DashboardPage({
         rows={rows.map(toTableRow)}
         // MARK RELEASED on the list is every Finance user's (client, 2026-10-16).
         canRelease
+        approverName={approvalBy}
         bulkCap={settings.values['caps.bulkSelection']}
         sort={sort}
         filters={{

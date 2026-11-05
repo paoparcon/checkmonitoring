@@ -1,6 +1,8 @@
 import type { CheckStatus, Prisma, PrismaClient } from '@prisma/client'
 import ExcelJS from 'exceljs'
-import { markReadyForRelease, markSigned } from '@/lib/domain/actions'
+import { markSigned } from '@/lib/domain/actions'
+import { applyOrRequest } from '@/lib/domain/availability-approval'
+import type { Approver } from '@/lib/approvals/approver'
 import { checkReadyForRelease } from '@/lib/domain/check-status'
 import { DomainError } from '@/lib/domain/errors'
 import { canonicalCheckNumber, cleanCell } from '@/lib/import/normalise'
@@ -432,7 +434,9 @@ function describe(row: UploadRow, v: Exclude<UploadVerdict, { kind: 'READY' | 'B
 
 export type ReadyUploadSummary = {
   readied: number
-  /** Of the readied, how many were SIGNATURE_PENDING and were signed first. */
+  /** Written as requests for the approver instead of readied (spec 2026-11-05 §5): the checks did not move. */
+  requested: number
+  /** Of the readied or requested, how many were SIGNATURE_PENDING and were signed first. */
   signed: number
   /** Changed under us between preview and confirm, or refused by the domain. */
   failed: { checkNumber: string; message: string }[]
@@ -452,9 +456,13 @@ export type ReadyUploadSummary = {
 export async function applyReadyUpload(
   db: PrismaClient,
   plan: ReadyUploadPlan,
-  args: { userId: string; pickupDate: Date; now: Date; deadline?: Date },
+  args: {
+    userId: string; pickupDate: Date; now: Date; deadline?: Date
+    /** The approver in force (`loadApprover`); omitted or null means every row is readied at once. */
+    approver?: Approver | null
+  },
 ): Promise<ReadyUploadSummary> {
-  const summary: ReadyUploadSummary = { readied: 0, signed: 0, failed: [], notReached: 0 }
+  const summary: ReadyUploadSummary = { readied: 0, requested: 0, signed: 0, failed: [], notReached: 0 }
   for (const [i, { check, signFirst, rows }] of plan.toReady.entries()) {
     if (args.deadline && Date.now() > args.deadline.getTime()) { summary.notReached = plan.toReady.length - i; break }
     const source = {
@@ -471,12 +479,17 @@ export async function applyReadyUpload(
         if (live.status !== check.status) {
           throw new DomainError('MOVED_SINCE_PREVIEW', `was ${check.status} at the preview and is now ${live.status}; not changed — preview the list again`)
         }
+        // The signature is immediate — it is not told to the supplier. The
+        // availability goes through the gate: readied by the approver or
+        // while nobody is set, otherwise a request for the approver.
         if (signFirst) await markSigned(tx, { checkId: check.id, userId: args.userId, now: args.now, source })
-        await markReadyForRelease(tx, {
-          checkId: check.id, userId: args.userId, availablePickupDate: args.pickupDate, now: args.now, source,
+        const outcome = await applyOrRequest(tx, {
+          kind: 'MAKE_AVAILABLE', checkId: check.id, actor: { id: args.userId }, approver: args.approver ?? null,
+          availablePickupDate: args.pickupDate, now: args.now, source,
         })
+        if (outcome.applied) summary.readied++
+        else summary.requested++
       }, { timeout: 30_000, maxWait: 15_000 })
-      summary.readied++
       if (signFirst) summary.signed++
     } catch (e) {
       if (!(e instanceof DomainError)) throw e

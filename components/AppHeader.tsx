@@ -3,6 +3,7 @@ import { signOutAction } from '@/app/actions'
 import type { SessionUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { countUnread } from '@/lib/notifications/queries'
+import { countPendingRequests } from '@/lib/approvals/queries'
 import { ModuleNav } from './ModuleNav'
 
 /**
@@ -38,10 +39,13 @@ export async function AppHeader({
   // The bell's count: one indexed count per render, no polling. A failed count
   // shows no number rather than breaking the page.
   let unread: number | null = null
+  // APPROVALS (spec 2026-11-05 §7): how many availability changes wait on the
+  // approver. One indexed count; shown as a badge, the link is always there.
+  let waiting: number | null = null
   try {
-    unread = await countUnread(prisma, user.id)
+    ;[unread, waiting] = await Promise.all([countUnread(prisma, user.id), countPendingRequests(prisma)])
   } catch (e) {
-    console.error('unread notification count failed:', e instanceof Error ? e.message : e)
+    console.error('header counts failed:', e instanceof Error ? e.message : e)
   }
 
   return (
@@ -64,6 +68,15 @@ export async function AppHeader({
             NOTIFICATIONS
             {unread !== null && unread > 0 && (
               <span className="rounded-full bg-navy px-2 py-0.5 text-[10px] font-semibold text-white">{unread}</span>
+            )}
+          </Link>
+          <Link
+            href="/approvals"
+            className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm ring-1 ring-hairline transition hover:bg-navy-bg hover:text-navy"
+          >
+            APPROVALS
+            {waiting !== null && waiting > 0 && (
+              <span className="rounded-full bg-amber-600 px-2 py-0.5 text-[10px] font-semibold text-white">{waiting}</span>
             )}
           </Link>
           {/* The name, with the email beside it. Two people called "Ronald" is

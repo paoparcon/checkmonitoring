@@ -32,6 +32,13 @@ export function ActionForm({
       {result && !result.ok && (
         <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{result.message}</p>
       )}
+      {/* A gated action that became a request (2026-11-05): the check did not
+          move, so the page re-rendering says nothing — this line does. */}
+      {result?.ok && result.requested && (
+        <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900">
+          Request sent to {result.requested.approverName}. The check stays as it is until it is approved.
+        </p>
+      )}
     </form>
   )
 }

@@ -2,7 +2,11 @@
 
 import { prisma } from '@/lib/db'
 import { requireUser } from '@/lib/auth'
-import { markSigned, markReadyForRelease, markReleased, releaseDirectly, recordReceipt, revertAvailability, revertSignature } from '@/lib/domain/actions'
+import { markSigned, markReleased, releaseDirectly, recordReceipt, revertSignature } from '@/lib/domain/actions'
+import { applyOrRequest, type AvailabilityKind } from '@/lib/domain/availability-approval'
+import { loadApprover, type Approver } from '@/lib/approvals/approver'
+import { notifyApprovalRequested } from '@/lib/notifications/approvals'
+import { isoDay } from '@/lib/domain/details'
 import { parseSelection, chunkSelection } from '@/lib/bulk'
 import {
   listTodaysReleaseIds, listPendingSignatureIds, getFilterOptions, parseOptionId, parseEligibilityParam,
@@ -128,11 +132,37 @@ export async function bulkReadyForReleaseAction(formData: FormData): Promise<Bul
     }
   }
 
+  return gatedBatch(user, selection.checkIds, 'MAKE_AVAILABLE', { availablePickupDate }, await loadApprover(prisma, settings))
+}
+
+/**
+ * The batch form of the gate (spec 2026-11-05 §5): each check applies or is
+ * requested on its own, in its own transaction; the result counts both and
+ * names the approver, so the bar can say "N request(s) sent to X". One notice
+ * each way for the batch — the others hear of the checks that moved, the
+ * approver of the ones waiting.
+ */
+async function gatedBatch(
+  user: { id: string; name: string }, checkIds: string[], kind: AvailabilityKind,
+  fields: { availablePickupDate?: Date; reason?: string }, inForce: { approver: Approver | null },
+): Promise<BulkActionResult> {
   const now = new Date()
-  const result = await runEach(prisma, selection.checkIds, (checkId) =>
-    markReadyForRelease(prisma, { checkId, userId: user.id, availablePickupDate, now }))
+  const result = await runEach(prisma, checkIds, async (checkId) => {
+    const o = await applyOrRequest(prisma, { kind, checkId, actor: user, approver: inForce.approver, now, ...fields })
+    return o.applied ? {} : { requested: true }
+  })
+  if (!result.ok) return result
+  const moved = result.outcomes.filter((o) => o.ok && !o.requested).map((o) => o.checkId)
+  const waiting = result.outcomes.filter((o) => o.ok && o.requested).map((o) => o.checkId)
   // One notification for the batch, over the checks that moved (spec 2026-10-16).
-  if (result.ok) await notifyReady(prisma, user, result.outcomes.filter((o) => o.ok).map((o) => o.checkId))
+  if (kind === 'MAKE_AVAILABLE') await notifyReady(prisma, user, moved)
+  if (waiting.length > 0 && inForce.approver) {
+    await notifyApprovalRequested(prisma, {
+      approverId: inForce.approver.id, requester: user, kind, checkIds: waiting,
+      pickupDay: fields.availablePickupDate ? isoDay(fields.availablePickupDate) : null, reason: fields.reason ?? null,
+    })
+    return { ...result, approverName: inForce.approver.name }
+  }
   return result
 }
 
@@ -152,9 +182,7 @@ export async function bulkRevertToSignedAction(formData: FormData): Promise<Bulk
   const reason = str(formData, 'reason')
   if (!reason) return { ok: false, message: 'Enter a reason before reverting checks to SIGNED.' }
 
-  const now = new Date()
-  return runEach(prisma, selection.checkIds, (checkId) =>
-    revertAvailability(prisma, { checkId, userId: user.id, reason, now }))
+  return gatedBatch(user, selection.checkIds, 'WITHDRAW', { reason }, await loadApprover(prisma, settings))
 }
 
 /**

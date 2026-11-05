@@ -21,7 +21,7 @@ export type Module = {
 }
 
 export const MODULES: readonly Module[] = [
-  { id: 'CHECK_RELEASE', label: 'CHECK RELEASE', href: '/', prefixes: ['/', '/checks', '/receipts'], adminOnly: false },
+  { id: 'CHECK_RELEASE', label: 'CHECK RELEASE', href: '/', prefixes: ['/', '/checks', '/receipts', '/approvals'], adminOnly: false },
   { id: 'AGING', label: 'AGING', href: '/aging', prefixes: ['/aging'], adminOnly: false },
   { id: 'VOUCHERS', label: 'VOUCHERS', href: '/vouchers', prefixes: ['/vouchers'], adminOnly: false },
   { id: 'FORECAST', label: 'FORECAST', href: '/forecast', prefixes: ['/forecast'], adminOnly: false },

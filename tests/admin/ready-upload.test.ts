@@ -202,12 +202,45 @@ describe('planReadyUpload and applyReadyUpload', () => {
     ])
 
     const summary = await applyReadyUpload(testDb, plan, { userId: admin.id, pickupDate: PICKUP, now: new Date() })
-    expect(summary).toEqual({ readied: 3, signed: 1, failed: [], notReached: 0 })
+    expect(summary).toEqual({ readied: 3, requested: 0, signed: 1, failed: [], notReached: 0 })
     for (const id of [signed.id, pending.id, reissue.id]) {
       expect((await testDb.check.findUniqueOrThrow({ where: { id } })).status).toBe('READY_FOR_RELEASE')
     }
     const audit = await testDb.auditLog.findFirst({ where: { checkId: pending.id, action: 'ready_for_release' } })
     expect(audit?.details).toMatchObject({ source: { file: 'bills.xlsx', listRows: [{ sheet: 'LIST', row: 4, voucher: 'AP-ST000002', checkNumber: null }] } })
+  })
+
+  it("becomes requests, not readies, when an approver is set and the admin is not that person (spec 2026-11-05 §5)", async () => {
+    const admin = await makeUser('FINANCE_ADMIN')
+    const paolo = await makeUser('FINANCE_ADMIN')
+    const signed = await makeCheck({ status: 'SIGNED', checkNumber: '6000400001', apvNumbers: ['AP-ST000001'] })
+    const pending = await makeCheck({ status: 'SIGNATURE_PENDING', checkNumber: '6000400002', apvNumbers: ['AP-ST000002'] })
+    const plan = await planReadyUpload(testDb, {
+      file: 'ready.xlsx', pickupDate: PICKUP,
+      list: list([['6000400001', 'AP-ST000001'], ['6000400002', 'AP-ST000002']]),
+    })
+    const now = new Date('2026-11-05T02:00:00.000Z')
+    const summary = await applyReadyUpload(testDb, plan, {
+      userId: admin.id, pickupDate: PICKUP, now, approver: { id: paolo.id, name: paolo.name, email: paolo.email },
+    })
+    expect(summary).toEqual({ readied: 0, requested: 2, signed: 1, failed: [], notReached: 0 })
+    // The signature is immediate; the availability waits.
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })).status).toBe('SIGNED')
+    expect(await testDb.check.findUniqueOrThrow({ where: { id: pending.id } })).toMatchObject({ status: 'SIGNED', signedById: admin.id, readyById: null })
+    expect(await testDb.portalEvent.count()).toBe(0)
+    const requests = await testDb.availabilityRequest.findMany({ orderBy: { checkId: 'asc' } })
+    expect(requests).toHaveLength(2)
+    for (const r of requests) {
+      expect(r).toMatchObject({ status: 'PENDING', kind: 'MAKE_AVAILABLE', requestedById: admin.id, requestedAt: now, availablePickupDate: PICKUP })
+      expect(r.source).toMatchObject({ file: 'ready.xlsx' })
+    }
+    // The approver's own upload applies at once.
+    const own = await applyReadyUpload(testDb, await planReadyUpload(testDb, {
+      file: 'ready.xlsx', pickupDate: PICKUP, list: list([['6000400001', 'AP-ST000001']]),
+    }), { userId: paolo.id, pickupDate: PICKUP, now, approver: { id: paolo.id, name: paolo.name, email: paolo.email } })
+    // Refused: a request is already pending on that check — the summary names it.
+    expect(own.readied).toBe(0)
+    expect(own.failed).toEqual([{ checkNumber: '6000400001', message: expect.stringContaining('waiting for approval') }])
   })
 
   it('applies through the domain: ready under the admin, with the pickup date, a portal event, and the list on the audit row', async () => {
@@ -220,7 +253,7 @@ describe('planReadyUpload and applyReadyUpload', () => {
     })
     const now = new Date('2026-10-29T02:00:00.000Z')
     const summary = await applyReadyUpload(testDb, plan, { userId: admin.id, pickupDate: PICKUP, now })
-    expect(summary).toEqual({ readied: 2, signed: 1, failed: [], notReached: 0 })
+    expect(summary).toEqual({ readied: 2, requested: 0, signed: 1, failed: [], notReached: 0 })
 
     const a = await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })
     expect(a).toMatchObject({ status: 'READY_FOR_RELEASE', readyById: admin.id, readyAt: now, availablePickupDate: PICKUP, portalSyncStatus: 'PENDING' })
@@ -269,7 +302,7 @@ describe('planReadyUpload and applyReadyUpload', () => {
     const first = await applyReadyUpload(testDb, await planReadyUpload(testDb, input), {
       userId: admin.id, pickupDate: PICKUP, now: new Date(), deadline: new Date(0),
     })
-    expect(first).toEqual({ readied: 0, signed: 0, failed: [], notReached: 2 })
+    expect(first).toEqual({ readied: 0, requested: 0, signed: 0, failed: [], notReached: 2 })
 
     const again = await planReadyUpload(testDb, input)
     expect(again.toReady).toHaveLength(2)

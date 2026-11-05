@@ -19,7 +19,7 @@ import { DEFAULT_CATEGORIES, isCategory } from './categories'
 export { DEFAULT_CATEGORIES, isCategory }
 
 /**
- * THE TWELVE KNOBS, DECLARED ONCE.
+ * THE TWELVE KNOBS, DECLARED ONCE (eleven until 2026-11-05).
  *
  * Each default is the constant the code already exports, so the paragraph of
  * reasoning beside each constant stays where it was written and the `Setting`
@@ -35,14 +35,16 @@ export { DEFAULT_CATEGORIES, isCategory }
  * Pure. Imports only constants.
  */
 
-export type SettingGroup = 'SYNC' | 'CAPS' | 'LOGIN' | 'CATEGORIES'
+export type SettingGroup = 'SYNC' | 'CAPS' | 'LOGIN' | 'CATEGORIES' | 'APPROVAL'
 
 export type IntKey =
   | 'sync.staleAfterHours' | 'sync.abandonedAfterMinutes' | 'sync.inProgressMinutes'
   | 'caps.bulkSelection' | 'caps.exportRows' | 'caps.voucherScreenRows'
   | 'login.windowMinutes' | 'login.emailFreeFailures' | 'login.ipFreeFailures'
   | 'signup.ipPerHour'
-export type SettingKey = IntKey | 'categories'
+/** A setting whose value is a user id — the empty string means nobody. */
+export type UserKey = 'approval.availabilityApprover'
+export type SettingKey = IntKey | 'categories' | UserKey
 
 export type IntSettingDef = {
   kind: 'int'; key: IntKey; group: SettingGroup; label: string; help: string; unit: string
@@ -51,7 +53,12 @@ export type IntSettingDef = {
 export type ListSettingDef = {
   kind: 'list'; key: 'categories'; group: 'CATEGORIES'; label: string; help: string; default: readonly string[]
 }
-export type SettingDef = IntSettingDef | ListSettingDef
+export type UserSettingDef = {
+  kind: 'user'; key: UserKey; group: 'APPROVAL'; label: string; help: string
+  /** Always '' — nobody. The registry is pure and cannot know a user id; an admin picks one on the screen. */
+  default: ''
+}
+export type SettingDef = IntSettingDef | ListSettingDef | UserSettingDef
 
 
 export const SETTINGS: readonly SettingDef[] = [
@@ -88,11 +95,18 @@ export const SETTINGS: readonly SettingDef[] = [
   { kind: 'list', key: 'categories', group: 'CATEGORIES', label: 'CATEGORIES',
     help: 'What a check or a planned outflow may be filed under. One per line. Anything else is refused on the form.',
     default: DEFAULT_CATEGORIES },
+  // Spec 2026-11-05-availability-approval-design §3. Nobody by default, which
+  // means no approval step — every MARK READY FOR RELEASE and REVERT TO SIGNED
+  // applies at once, as before the spec. The approver's own actions apply at
+  // once too; everyone else's wait on /approvals.
+  { kind: 'user', key: 'approval.availabilityApprover', group: 'APPROVAL', label: 'AVAILABILITY CHANGES ARE APPROVED BY',
+    help: 'When a person is chosen, another user\'s MARK READY FOR RELEASE or REVERT TO SIGNED becomes a request that this person approves or rejects on APPROVALS, and the supplier portal is told only on approval. This person\'s own actions apply at once. NOBODY means no approval step.',
+    default: '' },
 ]
 
 export const SETTING_KEYS: readonly SettingKey[] = SETTINGS.map((s) => s.key)
 
-export type SettingsValues = Record<IntKey, number> & { categories: readonly string[] }
+export type SettingsValues = Record<IntKey, number> & { categories: readonly string[] } & Record<UserKey, string>
 
 export const DEFAULTS: SettingsValues = Object.fromEntries(
   SETTINGS.map((s) => [s.key, s.default]),
@@ -107,10 +121,21 @@ export function isSettingKey(key: string): key is SettingKey {
 }
 
 const WHOLE = /^\d+$/
+/** A Prisma cuid, or any id shape short of a sentence: no whitespace, at most 64 characters. */
+const USER_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+export type SettingValue = number | string[] | string
 
 export function parseSettingText(
   def: SettingDef, text: string,
-): { ok: true; value: number | string[] } | { ok: false; message: string } {
+): { ok: true; value: SettingValue } | { ok: false; message: string } {
+  if (def.kind === 'user') {
+    // '' is NOBODY, a legitimate value. Whether a non-empty id names an ACTIVE
+    // user is checked by `updateSetting`, which has the database; this is pure.
+    const s = text.trim()
+    if (s !== '' && !USER_ID.test(s)) return { ok: false, message: `${def.label} must name a user.` }
+    return { ok: true, value: s }
+  }
   if (def.kind === 'int') {
     const s = text.trim()
     if (!WHOLE.test(s)) return { ok: false, message: `${def.label} must be a whole number of ${def.unit}.` }
@@ -128,13 +153,14 @@ export function parseSettingText(
 }
 
 /** What the table stores and the form shows. An int as digits; the list as a JSON array. */
-export function formatSettingText(def: SettingDef, value: number | readonly string[]): string {
-  return def.kind === 'int' ? String(value) : JSON.stringify(value)
+export function formatSettingText(def: SettingDef, value: number | readonly string[] | string): string {
+  if (def.kind === 'list') return JSON.stringify(value)
+  return String(value)
 }
 
 /** Parses what the TABLE holds (not what a form sends): the list is JSON there. */
-export function parseStoredText(def: SettingDef, stored: string): { ok: true; value: number | string[] } | { ok: false } {
-  if (def.kind === 'int') {
+export function parseStoredText(def: SettingDef, stored: string): { ok: true; value: SettingValue } | { ok: false } {
+  if (def.kind === 'int' || def.kind === 'user') {
     const r = parseSettingText(def, stored)
     return r.ok ? r : { ok: false }
   }

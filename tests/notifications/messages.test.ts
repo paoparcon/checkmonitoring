@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { syncFailureNotices, staleNotices, parkedNotice, readyNotice, safeLink } from '@/lib/notifications/messages'
+import { syncFailureNotices, staleNotices, parkedNotice, readyNotice, safeLink, approvalRequestedNotice, approvalDecidedNotice } from '@/lib/notifications/messages'
 import type { AutoSignRun } from '@/lib/sync/auto-sign'
 
 const okSign: AutoSignRun = { outcome: 'OK', signed: 0, skipped: 0, enabled: true }
@@ -102,6 +102,42 @@ describe('readyNotice', () => {
       { checkNumber: '3', amount: '5.00', currency: 'USD' },
     ] })
     expect(n?.message).toBe('Ana marked 3 checks READY FOR RELEASE: ₱0.30, $5.00')
+  })
+})
+
+describe('approvalRequestedNotice', () => {
+  it('tells the approver, and only the approver, what is asked for one check', () => {
+    expect(approvalRequestedNotice({
+      approverId: 'paolo', requesterName: 'Ana', kind: 'MAKE_AVAILABLE', pickupDay: '2026-11-06',
+      checks: [{ id: 'c1', checkNumber: '6000354012', amount: '12500.00', currency: 'PHP' }],
+    })).toEqual({
+      kind: 'APPROVAL_REQUESTED', audience: 'USER', userId: 'paolo', link: '/approvals', checkId: 'c1',
+      message: 'Ana requests READY FOR RELEASE for check 6000354012: ₱12,500.00 (pickup 2026-11-06)',
+    })
+  })
+  it('totals a batch per currency and carries the withdrawal reason', () => {
+    const n = approvalRequestedNotice({
+      approverId: 'paolo', requesterName: 'Ana', kind: 'WITHDRAW', reason: 'Pulled from the list',
+      checks: [{ id: 'a', checkNumber: '1', amount: '0.10', currency: 'PHP' }, { id: 'b', checkNumber: '2', amount: '0.20', currency: 'PHP' }],
+    })
+    expect(n?.message).toBe('Ana requests REVERT TO SIGNED for 2 checks: ₱0.30 — Pulled from the list')
+    expect(n?.checkId).toBeUndefined()
+    expect(approvalRequestedNotice({ approverId: 'p', requesterName: 'A', kind: 'WITHDRAW', checks: [] })).toBeNull()
+  })
+})
+
+describe('approvalDecidedNotice', () => {
+  it('tells the requester the verdict, with the note, linking the check', () => {
+    expect(approvalDecidedNotice({
+      requesterId: 'ana', approverName: 'Paolo', decision: 'REJECTED', kind: 'MAKE_AVAILABLE',
+      check: { id: 'c1', checkNumber: '6000354012' }, note: 'Not on the list',
+    })).toEqual({
+      kind: 'APPROVAL_DECIDED', audience: 'USER', userId: 'ana', link: '/checks/c1', checkId: 'c1',
+      message: 'Paolo rejected your READY FOR RELEASE request for check 6000354012: Not on the list',
+    })
+    expect(approvalDecidedNotice({
+      requesterId: 'ana', approverName: 'Paolo', decision: 'APPROVED', kind: 'WITHDRAW', check: { id: 'c1', checkNumber: null }, note: null,
+    }).message).toBe('Paolo approved your REVERT TO SIGNED request for check (no number)')
   })
 })
 

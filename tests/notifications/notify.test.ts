@@ -27,6 +27,18 @@ describe('notify', () => {
     expect(rows.every((r) => r.readAt === null && r.link !== null)).toBe(true)
   })
 
+  it('USER reaches the one named, while active, and nobody when that person is the actor', async () => {
+    const paolo = await makeUser('FINANCE_USER')
+    await makeUser('FINANCE_ADMIN')
+    const one: Notice = { kind: 'APPROVAL_REQUESTED', audience: 'USER', userId: paolo.id, message: 'q', link: '/approvals' }
+    expect(await notify(testDb, one)).toBe(1)
+    expect((await testDb.notification.findMany()).map((r) => r.userId)).toEqual([paolo.id])
+    expect(await notify(testDb, one, { excludeUserId: paolo.id })).toBe(0)
+    await testDb.user.update({ where: { id: paolo.id }, data: { active: false } })
+    expect(await notify(testDb, one)).toBe(0)
+    await expect(notify(testDb, { ...one, userId: undefined })).rejects.toThrow(/userId/)
+  })
+
   it('leaves out the actor', async () => {
     const actor = await makeUser('FINANCE_USER')
     const other = await makeUser('FINANCE_USER')

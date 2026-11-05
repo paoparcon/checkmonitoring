@@ -22,6 +22,9 @@ import { isoDay } from '@/lib/domain/details'
 import { loadSettings } from '@/lib/settings/read'
 import { signAction, releaseAction, revertAction, reverseReleaseAction, removeReceiptAction, revertSignatureAction, restoreCancelledAction } from '../actions'
 import { formatManila } from '@/lib/manila-format'
+import { loadApprover, canDecide } from '@/lib/approvals/approver'
+import { pendingRequestFor } from '@/lib/approvals/queries'
+import { ApprovalDecision } from '@/components/ApprovalDecision'
 
 /**
  * ONE CHEQUE.
@@ -79,6 +82,12 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
   const { id } = await params
 
   const settings = await loadSettings(prisma)
+  // The approval gate (spec 2026-11-05): who approves availability changes, and
+  // whether this check has one waiting. `approvalBy` is the name the buttons
+  // name when THIS user's action would become a request; null when it applies.
+  const [inForce, pendingRequest] = await Promise.all([loadApprover(prisma, settings), pendingRequestFor(prisma, id)])
+  const approvalBy = inForce.approver && inForce.approver.id !== user.id ? inForce.approver.name : null
+  const decides = canDecide(user, inForce.approver)
 
   const check = await prisma.check.findUnique({
     where: { id },
@@ -289,8 +298,28 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
           />
         )}
 
-        {check.status === 'SIGNED' && (
-          <ReadyForReleaseForm checkId={check.id} defaultDate={today} />
+        {/* WAITING FOR APPROVAL (spec 2026-11-05 §7): the request replaces the
+            MARK READY / REVERT TO SIGNED forms while it is open, so a second
+            request cannot be typed — the domain would refuse it anyway. The
+            approver decides here or on /approvals. */}
+        {pendingRequest && (
+          <div className="space-y-3 rounded-xl bg-amber-50 px-4 py-3 ring-1 ring-amber-200">
+            <p className="text-[11px] font-semibold tracking-widest text-amber-900">WAITING FOR APPROVAL</p>
+            <p className="text-sm text-amber-900">
+              {pendingRequest.requestedBy} requested <strong>{pendingRequest.kind === 'MAKE_AVAILABLE' ? 'READY FOR RELEASE' : 'REVERT TO SIGNED'}</strong>
+              {pendingRequest.kind === 'MAKE_AVAILABLE' ? ` with pickup ${pendingRequest.pickupDay ?? '—'}` : `: ${pendingRequest.reason}`}
+              {' '}on {fmtDateTime(pendingRequest.requestedAt)}.
+              {inForce.approver ? ` ${inForce.approver.name} decides.` : ' No approver is set; a Finance Admin decides.'}
+              {' '}The check does not move, and the supplier is not told, until it is approved.
+            </p>
+            {decides
+              ? <ApprovalDecision requestIds={[pendingRequest.id]} />
+              : <Link href="/approvals" className="text-sm text-navy underline underline-offset-2">Open APPROVALS</Link>}
+          </div>
+        )}
+
+        {check.status === 'SIGNED' && !pendingRequest && (
+          <ReadyForReleaseForm checkId={check.id} defaultDate={today} approverName={approvalBy} />
         )}
 
         {/* SIGNED back to SIGNATURE PENDING (client, 2026-10-01). Every
@@ -335,11 +364,11 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
             the domain refuses a blank one — because a cheque that moved down a
             rung with no explanation is indistinguishable from one that was never
             approved. */}
-        {(check.status === 'READY_FOR_RELEASE' || check.status === 'SCHEDULED') && (
+        {(check.status === 'READY_FOR_RELEASE' || check.status === 'SCHEDULED') && !pendingRequest && (
           <ActionForm
             action={revertAction}
             checkId={check.id}
-            label="REVERT TO SIGNED"
+            label={approvalBy ? 'REQUEST REVERT TO SIGNED' : 'REVERT TO SIGNED'}
             className="block rounded-lg border border-hairline bg-white px-4 py-2 text-sm font-medium tracking-wide text-navy transition hover:bg-ground disabled:opacity-50"
           >
             <label className="block text-[11px] font-semibold tracking-widest text-slate-400">
@@ -348,7 +377,9 @@ export default async function CheckDetailPage({ params }: { params: Promise<{ id
             <input name="reason" required placeholder="Approved in error"
               className="h-10 w-full max-w-md rounded-lg border border-hairline bg-white px-3 text-sm text-slate-900 focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy" />
             <p className="text-[11px] text-slate-500">
-              Returns this check to SIGNED and clears any pickup the supplier had booked.
+              {approvalBy
+                ? `Sends a request to ${approvalBy}. On approval the check returns to SIGNED, any pickup the supplier had booked is cleared, and the portal is told.`
+                : 'Returns this check to SIGNED and clears any pickup the supplier had booked.'}
             </p>
           </ActionForm>
         )}

@@ -32,9 +32,15 @@ describe('the registry imports only leaves', () => {
 })
 
 describe('the registry', () => {
-  it('declares eleven settings, each key once', () => {
-    expect(SETTINGS).toHaveLength(11)
-    expect(new Set(SETTING_KEYS).size).toBe(11)
+  it('declares twelve settings, each key once', () => {
+    expect(SETTINGS).toHaveLength(12)
+    expect(new Set(SETTING_KEYS).size).toBe(12)
+  })
+
+  it('declares the availability approver as a user setting, nobody by default (spec 2026-11-05 §3)', () => {
+    const def = settingDef('approval.availabilityApprover')
+    expect(def).toMatchObject({ kind: 'user', group: 'APPROVAL', default: '' })
+    expect(DEFAULTS['approval.availabilityApprover']).toBe('')
   })
 
   it('declares the registration allowance as a LOGIN setting, five an hour by default', () => {
@@ -89,6 +95,20 @@ describe('parseSettingText — int', () => {
   })
   it('formats back to the digits', () => {
     expect(formatSettingText(def, 6)).toBe('6')
+  })
+})
+
+describe('parseSettingText — the approver', () => {
+  const def = settingDef('approval.availabilityApprover')!
+  it("reads an id, reads '' as nobody, and refuses anything that is not an id", () => {
+    expect(parseSettingText(def, ' cm1abc_XYZ-9 ')).toEqual({ ok: true, value: 'cm1abc_XYZ-9' })
+    expect(parseSettingText(def, '')).toEqual({ ok: true, value: '' })
+    expect(parseSettingText(def, 'two words')).toMatchObject({ ok: false })
+    expect(parseSettingText(def, 'x'.repeat(65))).toMatchObject({ ok: false })
+  })
+  it('stores the id as it is', () => {
+    expect(formatSettingText(def, 'cm1abc')).toBe('cm1abc')
+    expect(formatSettingText(def, '')).toBe('')
   })
 })
 

@@ -10,11 +10,15 @@ type Db = PrismaClient | Prisma.TransactionClient
  * Returns the rows written.
  */
 export async function notify(db: Db, notice: Notice, opts: { excludeUserId?: string } = {}): Promise<number> {
+  // A USER notice with nobody named is a programming error, not a broadcast.
+  if (notice.audience === 'USER' && !notice.userId) throw new Error(`notification ${notice.kind}: USER audience with no userId`)
   const users = await db.user.findMany({
     where: {
       active: true,
       ...(notice.audience === 'ADMINS' ? { role: 'FINANCE_ADMIN' as const } : {}),
-      ...(opts.excludeUserId ? { id: { not: opts.excludeUserId } } : {}),
+      ...(notice.audience === 'USER'
+        ? { id: notice.userId === opts.excludeUserId ? { in: [] as string[] } : notice.userId }
+        : opts.excludeUserId ? { id: { not: opts.excludeUserId } } : {}),
     },
     select: { id: true },
   })

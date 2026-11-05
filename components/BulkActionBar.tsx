@@ -39,7 +39,7 @@ import {
  * (`drafts`, keyed by check id) back onto the matching action.
  */
 export function BulkActionBar({
-  selectedRows, drafts, canRelease, cap, onDone,
+  selectedRows, drafts, canRelease, cap, onDone, approverName = null,
 }: {
   selectedRows: (RowFacts & { checkNumber: string })[]
   drafts: Readonly<Record<string, ReceiptDraft>>
@@ -47,6 +47,8 @@ export function BulkActionBar({
   cap: number
   /** Called after a batch that changed something, so the table can clear itself. */
   onDone: () => void
+  /** Set when THIS user's MARK READY FOR RELEASE / REVERT TO SIGNED become requests for that person (spec 2026-11-05). */
+  approverName?: string | null
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -89,7 +91,7 @@ export function BulkActionBar({
     startTransition(async () => {
       const r = await action(formData)
       setResult(r)
-      if (r.ok && r.succeeded > 0) {
+      if (r.ok && (r.succeeded > 0 || (r.requested ?? 0) > 0)) {
         // Refresh before clearing: the rows the user is looking at have new
         // statuses, and the result panel below stays on screen to say which.
         router.refresh()
@@ -131,12 +133,14 @@ export function BulkActionBar({
           <button
             type="button" disabled={disabled || live.length === 0 || pickupDate === ''}
             onClick={() => {
-              if (!confirm(`Mark ${live.length} check(s) READY FOR RELEASE?`)) return
+              if (!confirm(approverName
+                ? `Send READY FOR RELEASE requests for ${live.length} check(s) to ${approverName}? They move, and the supplier is told, only when approved.`
+                : `Mark ${live.length} check(s) READY FOR RELEASE?`)) return
               submit(bulkReadyForReleaseAction, live, [['availablePickupDate', pickupDate]])
             }}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            MARK READY FOR RELEASE
+            {approverName ? 'REQUEST READY FOR RELEASE' : 'MARK READY FOR RELEASE'}
           </button>
         </div>
 
@@ -157,13 +161,15 @@ export function BulkActionBar({
             <button
               type="button" disabled={disabled || revertReason.trim() === ''}
               onClick={() => {
-                if (!confirm(`Revert ${revertable.length} check(s) to SIGNED? They come off the release list.`)) return
+                if (!confirm(approverName
+                  ? `Send REVERT TO SIGNED requests for ${revertable.length} check(s) to ${approverName}? They come off the release list only when approved.`
+                  : `Revert ${revertable.length} check(s) to SIGNED? They come off the release list.`)) return
                 submit(bulkRevertToSignedAction, revertable, [['reason', revertReason.trim()]])
                 setRevertReason('')
               }}
               className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
-              REVERT TO SIGNED ({revertable.length})
+              {approverName ? 'REQUEST REVERT TO SIGNED' : 'REVERT TO SIGNED'} ({revertable.length})
             </button>
           </div>
         )}
@@ -270,6 +276,12 @@ export function BulkActionBar({
 
       {result?.ok && (
         <div className="mt-3 space-y-2">
+          {(result.requested ?? 0) > 0 && (
+            <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900">
+              {result.requested} REQUEST{result.requested === 1 ? '' : 'S'} SENT TO {result.approverName ?? 'THE APPROVER'} FOR APPROVAL.
+              The checks stay as they are until approved.
+            </p>
+          )}
           {result.succeeded > 0 && (
             <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-900">
               {result.succeeded} CHECK{result.succeeded === 1 ? '' : 'S'} UPDATED.

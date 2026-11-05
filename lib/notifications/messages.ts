@@ -11,8 +11,11 @@ import type { Staleness } from '@/lib/sync/staleness'
  * Pure: outcomes in, notices out. `notify` (./notify.ts) resolves the audience
  * to people and writes the rows.
  */
-export type NotificationKind = 'SYNC_FAILED' | 'AUTO_SIGN_FAILED' | 'SYNC_STALE' | 'PORTAL_PARKED' | 'READY_FOR_RELEASE'
-export type Audience = 'ADMINS' | 'FINANCE'
+export type NotificationKind =
+  | 'SYNC_FAILED' | 'AUTO_SIGN_FAILED' | 'SYNC_STALE' | 'PORTAL_PARKED' | 'READY_FOR_RELEASE'
+  | 'APPROVAL_REQUESTED' | 'APPROVAL_DECIDED'
+/** ADMINS: active Finance Admins. FINANCE: every active user. USER: the one named by `userId` (since 2026-11-05). */
+export type Audience = 'ADMINS' | 'FINANCE' | 'USER'
 export type Notice = {
   kind: NotificationKind
   audience: Audience
@@ -20,6 +23,8 @@ export type Notice = {
   link: string | null
   dedupeKey?: string
   checkId?: string
+  /** USER audience only: who is told. */
+  userId?: string
 }
 
 const SYNC_LINK = '/admin/sync'
@@ -90,18 +95,68 @@ export function readyNotice(a: {
   checks: readonly { checkNumber: string | null; amount: string | null; currency: string }[]
 }): Notice | null {
   if (a.checks.length === 0) return null
-  const totals = new Map<string, Prisma.Decimal>()
-  for (const c of a.checks) {
-    if (c.amount === null) continue
-    totals.set(c.currency, (totals.get(c.currency) ?? new Prisma.Decimal(0)).plus(c.amount))
-  }
-  const money = [...totals].map(([cur, sum]) => formatMoney(sum.toFixed(2), cur)).join(', ')
+  const money = moneyOf(a.checks)
   const what = a.checks.length === 1
     ? `check ${a.checks[0].checkNumber ?? '(no number)'}`
     : `${a.checks.length} checks`
   return {
     kind: 'READY_FOR_RELEASE', audience: 'FINANCE', link: '/?status=READY_FOR_RELEASE',
     message: `${a.actorName} marked ${what} READY FOR RELEASE${money ? `: ${money}` : ''}`,
+  }
+}
+
+/** Totals per currency, in Decimal, never a float; '' when no amount is known. */
+function moneyOf(checks: readonly { amount: string | null; currency: string }[]): string {
+  const totals = new Map<string, Prisma.Decimal>()
+  for (const c of checks) {
+    if (c.amount === null) continue
+    totals.set(c.currency, (totals.get(c.currency) ?? new Prisma.Decimal(0)).plus(c.amount))
+  }
+  return [...totals].map(([cur, sum]) => formatMoney(sum.toFixed(2), cur)).join(', ')
+}
+
+export const APPROVALS_LINK = '/approvals'
+
+/**
+ * To the approver: somebody asks for an availability change (spec
+ * 2026-11-05-availability-approval-design §8). One notice for a batch.
+ */
+export function approvalRequestedNotice(a: {
+  approverId: string
+  requesterName: string
+  kind: 'MAKE_AVAILABLE' | 'WITHDRAW'
+  checks: readonly { id: string; checkNumber: string | null; amount: string | null; currency: string }[]
+  /** MAKE_AVAILABLE: the pickup day (ISO day). WITHDRAW: the reason. */
+  pickupDay?: string | null
+  reason?: string | null
+}): Notice | null {
+  if (a.checks.length === 0) return null
+  const money = moneyOf(a.checks)
+  const what = a.checks.length === 1 ? `check ${a.checks[0].checkNumber ?? '(no number)'}` : `${a.checks.length} checks`
+  const tail = a.kind === 'MAKE_AVAILABLE'
+    ? `${money ? `: ${money}` : ''}${a.pickupDay ? ` (pickup ${a.pickupDay})` : ''}`
+    : `${money ? `: ${money}` : ''}${a.reason ? ` — ${a.reason}` : ''}`
+  return {
+    kind: 'APPROVAL_REQUESTED', audience: 'USER', userId: a.approverId, link: APPROVALS_LINK,
+    ...(a.checks.length === 1 ? { checkId: a.checks[0].id } : {}),
+    message: `${a.requesterName} requests ${a.kind === 'MAKE_AVAILABLE' ? 'READY FOR RELEASE' : 'REVERT TO SIGNED'} for ${what}${tail}`,
+  }
+}
+
+/** To the requester: the approver's verdict on one request. */
+export function approvalDecidedNotice(a: {
+  requesterId: string
+  approverName: string
+  decision: 'APPROVED' | 'REJECTED'
+  kind: 'MAKE_AVAILABLE' | 'WITHDRAW'
+  check: { id: string; checkNumber: string | null }
+  note: string | null
+}): Notice {
+  const verb = a.decision === 'APPROVED' ? 'approved' : 'rejected'
+  const what = a.kind === 'MAKE_AVAILABLE' ? 'READY FOR RELEASE' : 'REVERT TO SIGNED'
+  return {
+    kind: 'APPROVAL_DECIDED', audience: 'USER', userId: a.requesterId, link: `/checks/${a.check.id}`, checkId: a.check.id,
+    message: `${a.approverName} ${verb} your ${what} request for check ${a.check.checkNumber ?? '(no number)'}${a.note ? `: ${a.note}` : ''}`,
   }
 }
 

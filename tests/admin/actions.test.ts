@@ -320,7 +320,7 @@ describe('uploadReadyListAction', () => {
 
     const applied = await uploadReadyListAction(fd({ list: await readyList(rows), availablePickupDate: '2026-10-30', confirm: 'true' }))
     if (!applied.ok || applied.stage !== 'APPLIED') throw new Error('expected an applied upload')
-    expect(applied.summary).toEqual({ readied: 1, signed: 0, failed: [], notReached: 0 })
+    expect(applied.summary).toEqual({ readied: 1, requested: 0, signed: 0, failed: [], notReached: 0 })
     const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
     expect(after).toMatchObject({
       status: 'READY_FOR_RELEASE', readyById: currentUser.id, availablePickupDate: new Date('2026-10-30T00:00:00.000Z'),
