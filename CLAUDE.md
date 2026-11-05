@@ -387,7 +387,16 @@ cheque, then `markReadyForRelease` — so `readyAt`/`readyById`/pickup date are 
 MARK_AVAILABLE event is queued and kicked after the response, and the `ready_for_release` (and
 `marked_signed`) audit rows carry a `source` (file, sheet, row, bill; `ActionSource` in
 `lib/domain/actions.ts`). RELEASED, READY/SCHEDULED, GENERATED, non-cheques and Acumatica-Voided
-are reported, never touched; **nothing is ever demoted by a list**. A cheque whose status moved
+are reported, never touched; **nothing is ever demoted by a list on its own**. **ADD or REPLACE (2026-11-05,
+spec `2026-11-05-ready-upload-replace-design.md`):** the file box takes several .xlsx at once, read as one
+list (`mergeUploads`, sheets named `<file> › <sheet>`), so LOCAL + BROKERS go up together. ADD (default) is
+the upload as before. REPLACE adds `plan.offList` — every READY/SCHEDULED check no row names by check number
+or by any bill it carries, whatever the row's verdict — and CONFIRM is refused (`checkReplaceDecision`) until
+each one is decided KEEP READY or REVERT TO SIGNED, with a reason if any reverts. REVERT goes through
+`applyOrRequest` WITHDRAW (so `revertAvailability`, the portal REVERT, `details.source.replacement`; or a
+request to the approver), after the readies, inside the same 30 s budget. It was asked for after the
+2026-11-05 uploads (LOCAL 233 + BROKERS 23 readied, 265 READY): the 9 extra were from the 30 Oct list and the
+4 September workbook, never released, and ADD had no way to say so. A cheque whose status moved
 between preview and confirm is refused by name. The apply loop stops at 30 s and counts what it
 did not reach; the same file uploaded again finishes it (readied rows read ALREADY READY). The
 portal kick after the response has 25 s (`READY_UPLOAD_KICK_MS`), not the usual 8 — the first real

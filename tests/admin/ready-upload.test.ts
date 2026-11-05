@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { testDb, resetDb } from '../helpers/db'
 import { makeCheck, makeUser } from '../helpers/factory'
 import {
-  readReadyUpload, judgeUploadRow, planReadyUpload, applyReadyUpload,
+  readReadyUpload, judgeUploadRow, planReadyUpload, applyReadyUpload, mergeUploads, checkReplaceDecision,
   type UploadCheck, type UploadRow,
 } from '@/lib/admin/ready-upload'
 import { canonicalCheckNumber } from '@/lib/import/normalise'
@@ -202,7 +202,7 @@ describe('planReadyUpload and applyReadyUpload', () => {
     ])
 
     const summary = await applyReadyUpload(testDb, plan, { userId: admin.id, pickupDate: PICKUP, now: new Date() })
-    expect(summary).toEqual({ readied: 3, requested: 0, signed: 1, failed: [], notReached: 0 })
+    expect(summary).toEqual({ readied: 3, requested: 0, signed: 1, failed: [], notReached: 0, reverted: 0, revertRequested: 0, kept: 0 })
     for (const id of [signed.id, pending.id, reissue.id]) {
       expect((await testDb.check.findUniqueOrThrow({ where: { id } })).status).toBe('READY_FOR_RELEASE')
     }
@@ -223,7 +223,7 @@ describe('planReadyUpload and applyReadyUpload', () => {
     const summary = await applyReadyUpload(testDb, plan, {
       userId: admin.id, pickupDate: PICKUP, now, approver: { id: paolo.id, name: paolo.name, email: paolo.email },
     })
-    expect(summary).toEqual({ readied: 0, requested: 2, signed: 1, failed: [], notReached: 0 })
+    expect(summary).toEqual({ readied: 0, requested: 2, signed: 1, failed: [], notReached: 0, reverted: 0, revertRequested: 0, kept: 0 })
     // The signature is immediate; the availability waits.
     expect((await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })).status).toBe('SIGNED')
     expect(await testDb.check.findUniqueOrThrow({ where: { id: pending.id } })).toMatchObject({ status: 'SIGNED', signedById: admin.id, readyById: null })
@@ -253,7 +253,7 @@ describe('planReadyUpload and applyReadyUpload', () => {
     })
     const now = new Date('2026-10-29T02:00:00.000Z')
     const summary = await applyReadyUpload(testDb, plan, { userId: admin.id, pickupDate: PICKUP, now })
-    expect(summary).toEqual({ readied: 2, requested: 0, signed: 1, failed: [], notReached: 0 })
+    expect(summary).toEqual({ readied: 2, requested: 0, signed: 1, failed: [], notReached: 0, reverted: 0, revertRequested: 0, kept: 0 })
 
     const a = await testDb.check.findUniqueOrThrow({ where: { id: signed.id } })
     expect(a).toMatchObject({ status: 'READY_FOR_RELEASE', readyById: admin.id, readyAt: now, availablePickupDate: PICKUP, portalSyncStatus: 'PENDING' })
@@ -302,7 +302,7 @@ describe('planReadyUpload and applyReadyUpload', () => {
     const first = await applyReadyUpload(testDb, await planReadyUpload(testDb, input), {
       userId: admin.id, pickupDate: PICKUP, now: new Date(), deadline: new Date(0),
     })
-    expect(first).toEqual({ readied: 0, requested: 0, signed: 0, failed: [], notReached: 2 })
+    expect(first).toEqual({ readied: 0, requested: 0, signed: 0, failed: [], notReached: 2, reverted: 0, revertRequested: 0, kept: 0 })
 
     const again = await planReadyUpload(testDb, input)
     expect(again.toReady).toHaveLength(2)
@@ -313,5 +313,111 @@ describe('planReadyUpload and applyReadyUpload', () => {
     const third = await planReadyUpload(testDb, input)
     expect(third.toReady).toEqual([])
     expect(third.counts.ALREADY_READY).toBe(2)
+  })
+})
+
+/** ADD or REPLACE (user request 2026-11-05, spec `2026-11-05-ready-upload-replace-design.md`). */
+describe('mergeUploads', () => {
+  const one = (sheet: string, voucher: string) => ({
+    rows: [{ sheet, row: 2, keyedBy: 'BILL' as const, checkNumber: null, voucher, rawCheckNumber: null, rawVoucher: voucher }],
+    sheets: [{ sheet, read: true, rows: 1, keyedBy: 'BILL' as const }],
+  })
+  it('leaves a single file as it is', () => {
+    const l = one('local', 'AP-ST000001')
+    expect(mergeUploads([{ name: 'LOCAL.xlsx', list: l }])).toBe(l)
+  })
+  it('reads several files as one list, each sheet named after its file', () => {
+    const m = mergeUploads([{ name: 'LOCAL.xlsx', list: one('local', 'AP-ST000001') }, { name: 'BROKERS.xlsx', list: one('local', 'AP-ST000002') }])
+    expect(m.rows.map((r) => [r.sheet, r.voucher])).toEqual([['LOCAL.xlsx › local', 'AP-ST000001'], ['BROKERS.xlsx › local', 'AP-ST000002']])
+    expect(m.sheets.map((s) => s.sheet)).toEqual(['LOCAL.xlsx › local', 'BROKERS.xlsx › local'])
+  })
+})
+
+describe('checkReplaceDecision', () => {
+  const off = [{ id: 'a', checkNumber: '1' }, { id: 'b', checkNumber: '2' }]
+  it('needs every off-list check decided', () => {
+    expect(checkReplaceDecision(off, { revert: ['a'], keep: [], reason: 'x' })).toMatchObject({ ok: false, message: expect.stringContaining('1 undecided (2)') })
+    expect(checkReplaceDecision(off, { revert: ['a'], keep: ['b'], reason: 'x' })).toEqual({ ok: true })
+    expect(checkReplaceDecision(off, { revert: [], keep: ['a', 'b'], reason: '' })).toEqual({ ok: true })
+  })
+  it('refuses a check both kept and reverted, and a revert with no reason', () => {
+    expect(checkReplaceDecision(off, { revert: ['a', 'b'], keep: ['a'], reason: 'x' }).ok).toBe(false)
+    expect(checkReplaceDecision(off, { revert: ['a', 'b'], keep: [], reason: '  ' })).toEqual({ ok: false, message: 'Enter a reason for reverting checks to SIGNED.' })
+  })
+  it('has nothing to decide when every ready check is on the list', () => {
+    expect(checkReplaceDecision([], { revert: [], keep: [], reason: '' })).toEqual({ ok: true })
+  })
+})
+
+describe('REPLACE: checks ready now and not on the list', () => {
+  beforeEach(async () => { await resetDb() })
+  const billList = (vouchers: string[], numbers: string[] = []) => ({
+    rows: [
+      ...vouchers.map((voucher, i): UploadRow => ({ sheet: 'LIST', row: i + 2, keyedBy: 'BILL', checkNumber: null, voucher, rawCheckNumber: null, rawVoucher: voucher })),
+      ...numbers.map((n, i): UploadRow => ({ sheet: 'BROKERS', row: i + 2, keyedBy: 'NUMBER', checkNumber: n, voucher: 'AP-ST999999', rawCheckNumber: n, rawVoucher: 'AP-ST999999' })),
+    ],
+    sheets: [{ sheet: 'LIST', read: true, rows: vouchers.length, keyedBy: 'BILL' as const }],
+  })
+
+  async function scene() {
+    const admin = await makeUser('FINANCE_ADMIN')
+    const byBill = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000500001', apvNumbers: ['AP-ST000001'] })
+    const byNumber = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000500002', apvNumbers: ['AP-ST000002'] })
+    const off = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000500003', apvNumbers: ['AP-ST000003'] })
+    const offScheduled = await makeCheck({ status: 'SCHEDULED', checkNumber: '6000500004', apvNumbers: ['AP-ST000004'] })
+    await makeCheck({ status: 'SIGNED', checkNumber: '6000500005', apvNumbers: ['AP-ST000005'] })
+    await makeCheck({ status: 'RELEASED', checkNumber: '6000500006', apvNumbers: ['AP-ST000006'] })
+    // Named by a bill whose row is AMBIGUOUS (two live checks) — never offered.
+    const ambiguous = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000500007', apvNumbers: ['AP-ST000007'] })
+    await makeCheck({ status: 'SIGNED', checkNumber: '6000500008', apvNumbers: ['AP-ST000007'] })
+    return { admin, byBill, byNumber, off, offScheduled, ambiguous }
+  }
+
+  it('lists every READY or SCHEDULED check no row names, by number or by bill; ADD lists none', async () => {
+    const { off, offScheduled } = await scene()
+    const list = billList(['AP-ST000001', 'AP-ST000007'], ['6000500002'])
+    const replace = await planReadyUpload(testDb, { file: 'list.xlsx', pickupDate: PICKUP, list, mode: 'REPLACE' })
+    expect(replace.mode).toBe('REPLACE')
+    expect(replace.offList.map((c) => [c.id, c.status])).toEqual([[off.id, 'READY_FOR_RELEASE'], [offScheduled.id, 'SCHEDULED']])
+    const add = await planReadyUpload(testDb, { file: 'list.xlsx', pickupDate: PICKUP, list })
+    expect(add).toMatchObject({ mode: 'ADD', offList: [] })
+  })
+
+  it('reverts only the checks decided REVERT, through the domain, with the reason and a portal REVERT', async () => {
+    const { admin, off, offScheduled } = await scene()
+    const list = billList(['AP-ST000001', 'AP-ST000007'], ['6000500002'])
+    const plan = await planReadyUpload(testDb, { file: 'list.xlsx', pickupDate: PICKUP, list, mode: 'REPLACE' })
+    const summary = await applyReadyUpload(testDb, plan, {
+      userId: admin.id, pickupDate: PICKUP, now: new Date(),
+      replace: { revert: [off.id, 'not-off-list'], keep: [offScheduled.id], reason: 'Not on the 11.6 list' },
+    })
+    expect(summary).toMatchObject({ reverted: 1, revertRequested: 0, kept: 1, notReached: 0 })
+    expect(summary.failed).toEqual([{ checkNumber: 'not-off-list', message: expect.stringContaining('not reverted') }])
+    expect(await testDb.check.findUniqueOrThrow({ where: { id: off.id } })).toMatchObject({ status: 'SIGNED', availablePickupDate: null })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: offScheduled.id } })).status).toBe('SCHEDULED')
+    expect(await testDb.portalEvent.findMany({ select: { checkId: true, kind: true } })).toEqual([{ checkId: off.id, kind: 'REVERT' }])
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: off.id, action: 'reverted_availability' } })
+    expect(audit.remarks).toBe('Not on the 11.6 list')
+    expect(audit.details).toMatchObject({ source: { file: 'list.xlsx', replacement: true } })
+  })
+
+  it("a user who is not the approver sends the reverts to the approver as WITHDRAW requests; nothing moves", async () => {
+    const { admin, off, offScheduled } = await scene()
+    const paolo = await makeUser('FINANCE_ADMIN')
+    const plan = await planReadyUpload(testDb, {
+      file: 'list.xlsx', pickupDate: PICKUP, list: billList(['AP-ST000001', 'AP-ST000007'], ['6000500002']), mode: 'REPLACE',
+    })
+    const summary = await applyReadyUpload(testDb, plan, {
+      userId: admin.id, pickupDate: PICKUP, now: new Date(), approver: { id: paolo.id, name: paolo.name, email: paolo.email },
+      replace: { revert: [off.id, offScheduled.id], keep: [], reason: 'Not on the list' },
+    })
+    expect(summary).toMatchObject({ reverted: 0, revertRequested: 2, failed: [] })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: off.id } })).status).toBe('READY_FOR_RELEASE')
+    expect(await testDb.portalEvent.count()).toBe(0)
+    const requests = await testDb.availabilityRequest.findMany({ select: { kind: true, reason: true, status: true } })
+    expect(requests).toEqual([
+      { kind: 'WITHDRAW', reason: 'Not on the list', status: 'PENDING' },
+      { kind: 'WITHDRAW', reason: 'Not on the list', status: 'PENDING' },
+    ])
   })
 })

@@ -26,7 +26,8 @@ export default async function ImportPage() {
           CHECK NUMBER if the list has one; the row must find exactly one live check here before it
           is marked READY FOR RELEASE. That is the same mark the button on a check makes: it is recorded under your name
           with the pickup date, and the Supplier Portal is told. Nothing is written until you have
-          seen the preview and confirmed it, and nothing is ever demoted by a list.
+          seen the preview and confirmed it. A list marked A REPLACEMENT also shows every check ready now that it
+          does not name, and reverts to SIGNED only the ones you choose.
         </p>
       </section>
 

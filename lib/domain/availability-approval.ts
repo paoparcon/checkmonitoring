@@ -179,7 +179,7 @@ export async function applyOrRequest(db: Db, args: GateArgs): Promise<GateOutcom
           checkId: args.checkId, userId: args.actor.id, availablePickupDate: args.availablePickupDate ?? null,
           now: args.now, source: args.source,
         })
-        : revertAvailability(tx, { checkId: args.checkId, userId: args.actor.id, reason: args.reason ?? '', now: args.now })
+        : revertAvailability(tx, { checkId: args.checkId, userId: args.actor.id, reason: args.reason ?? '', now: args.now, source: args.source })
     }
     const check = '$transaction' in db && typeof db.$transaction === 'function'
       ? await (db as PrismaClient).$transaction(run)
@@ -247,6 +247,7 @@ export async function approveAvailabilityRequest(
       })
       : await revertAvailability(tx, {
         checkId: request.checkId, userId: args.actor.id, reason: request.reason ?? '', now: args.now, approval,
+        source: (request.source as ActionSource | null) ?? undefined,
       })
     const note = args.note?.trim() || null
     const decided = await tx.availabilityRequest.update({

@@ -306,6 +306,42 @@ describe('uploadReadyListAction', () => {
     expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).status).toBe('SIGNED')
   })
 
+  it('REPLACE over two files: refuses until every off-list check is decided, then reverts the ones chosen', async () => {
+    const { uploadReadyListAction } = await import('@/app/admin/actions')
+    const local = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000400001', apvNumbers: ['AP-ST000001'] })
+    const broker = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000400002', apvNumbers: ['AP-ST000002'] })
+    const dropped = await makeCheck({ status: 'READY_FOR_RELEASE', checkNumber: '6000400003', apvNumbers: ['AP-ST000003'] })
+    const files = async () => [
+      await readyList([['6000400001', 'SUPPLIER', 'AP-ST000001']], 'LOCAL.xlsx'),
+      await readyList([['6000400002', 'SUPPLIER', 'AP-ST000002']], 'BROKERS.xlsx'),
+    ]
+    const form = async (extra: [string, string][]) => {
+      const f = new FormData()
+      for (const file of await files()) f.append('list', file)
+      f.append('availablePickupDate', '2026-11-06')
+      f.append('mode', 'REPLACE')
+      for (const [k, v] of extra) f.append(k, v)
+      return f
+    }
+
+    const preview = await uploadReadyListAction(await form([]))
+    if (!preview.ok || preview.stage !== 'PREVIEW') throw new Error('expected a preview')
+    expect(preview.fileName).toBe('LOCAL.xlsx + BROKERS.xlsx')
+    expect(preview.plan.offList.map((c) => c.id)).toEqual([dropped.id])
+
+    const undecided = await uploadReadyListAction(await form([['confirm', 'true']]))
+    expect(undecided).toMatchObject({ ok: false, message: expect.stringContaining('undecided') })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: dropped.id } })).status).toBe('READY_FOR_RELEASE')
+
+    const applied = await uploadReadyListAction(await form([['confirm', 'true'], ['revert', dropped.id], ['revertReason', 'Not on the 11.6 list']]))
+    if (!applied.ok || applied.stage !== 'APPLIED') throw new Error('expected an applied upload')
+    expect(applied.summary).toMatchObject({ readied: 0, reverted: 1, kept: 0, failed: [] })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: dropped.id } })).status).toBe('SIGNED')
+    for (const id of [local.id, broker.id]) {
+      expect((await testDb.check.findUniqueOrThrow({ where: { id } })).status).toBe('READY_FOR_RELEASE')
+    }
+  })
+
   it('previews without writing, then marks ready on confirm with the pickup date and a portal event', async () => {
     const { uploadReadyListAction } = await import('@/app/admin/actions')
     const check = await makeCheck({ status: 'SIGNED', checkNumber: '6000400001', apvNumbers: ['AP-ST000001'] })
@@ -320,7 +356,7 @@ describe('uploadReadyListAction', () => {
 
     const applied = await uploadReadyListAction(fd({ list: await readyList(rows), availablePickupDate: '2026-10-30', confirm: 'true' }))
     if (!applied.ok || applied.stage !== 'APPLIED') throw new Error('expected an applied upload')
-    expect(applied.summary).toEqual({ readied: 1, requested: 0, signed: 0, failed: [], notReached: 0 })
+    expect(applied.summary).toEqual({ readied: 1, requested: 0, signed: 0, failed: [], notReached: 0, reverted: 0, revertRequested: 0, kept: 0 })
     const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
     expect(after).toMatchObject({
       status: 'READY_FOR_RELEASE', readyById: currentUser.id, availablePickupDate: new Date('2026-10-30T00:00:00.000Z'),

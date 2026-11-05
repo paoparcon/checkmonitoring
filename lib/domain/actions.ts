@@ -33,6 +33,8 @@ type Db = PrismaClient | Prisma.TransactionClient
 export type ActionSource = {
   file: string
   listRows: { sheet: string; row: number; voucher: string | null; checkNumber: string | null }[]
+  /** A REPLACE upload withdrawing a check its list does not name (2026-11-05); `listRows` is then empty. */
+  replacement?: true
 }
 
 /**
@@ -485,7 +487,7 @@ export async function markReadyForRelease(
 export const REVERTABLE_STATUSES: readonly CheckStatus[] = ['READY_FOR_RELEASE', 'SCHEDULED']
 
 export async function revertAvailability(
-  db: Db, args: { checkId: string; userId: string; reason: string; now: Date; approval?: ApprovalRef },
+  db: Db, args: { checkId: string; userId: string; reason: string; now: Date; approval?: ApprovalRef; source?: ActionSource },
 ): Promise<Check> {
   if (!args.reason || args.reason.trim() === '') {
     throw new DomainError('REASON_REQUIRED', 'A reason is required to revert availability.')
@@ -551,7 +553,9 @@ export async function revertAvailability(
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId,
       action: 'reverted_availability', remarks: args.reason,
-      ...(args.approval ? { details: approvalDetails(args.approval) } : {}),
+      ...(args.approval || args.source
+        ? { details: { ...(args.approval ? approvalDetails(args.approval) : {}), ...(args.source ? { source: args.source } : {}) } }
+        : {}),
     })
 
     return updated

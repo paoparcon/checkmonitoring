@@ -26,7 +26,8 @@ import { loadApprover } from '@/lib/approvals/approver'
 import { notifyApprovalRequested } from '@/lib/notifications/approvals'
 import { isIsoDay, dayToDate } from '@/lib/domain/details'
 import {
-  applyReadyUpload, planReadyUpload, readReadyUpload, sheetsFromWorkbook,
+  applyReadyUpload, planReadyUpload, readReadyUpload, sheetsFromWorkbook, mergeUploads, checkReplaceDecision,
+  type UploadMode,
   type ReadyUploadPlan, type ReadyUploadSummary,
 } from '@/lib/admin/ready-upload'
 
@@ -300,13 +301,17 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
   const user = await requireUser()
   if (user.role !== 'FINANCE_ADMIN') return { ok: false, message: ADMIN_ONLY_READY_UPLOAD }
 
-  const file = formData.get('list')
-  if (!(file instanceof File) || file.size === 0) {
+  // Several files are one list (2026-11-05): LOCAL + BROKERS together.
+  const files = formData.getAll('list').filter((f): f is File => f instanceof File && f.size > 0)
+  if (files.length === 0) {
     return { ok: false, message: 'Choose the list to upload.' }
   }
-  if (file.size > MAX_UPLOAD_BYTES) {
-    return { ok: false, message: `That file is larger than ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.` }
+  const tooBig = files.find((f) => f.size > MAX_UPLOAD_BYTES)
+  if (tooBig) {
+    return { ok: false, message: `${tooBig.name} is larger than ${MAX_UPLOAD_BYTES / 1024 / 1024} MB.` }
   }
+  const mode: UploadMode = String(formData.get('mode') ?? 'ADD') === 'REPLACE' ? 'REPLACE' : 'ADD'
+  const fileName = files.map((f) => f.name).join(' + ')
   // One pickup date for the batch, as on the list's MARK READY. The domain
   // requires it; refusing it here reports it once, before anything is read.
   const pickupDay = String(formData.get('availablePickupDate') ?? '').trim()
@@ -317,34 +322,59 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
   const confirmed = String(formData.get('confirm') ?? '') === 'true'
 
   try {
-    const sheets = await sheetsFromWorkbook(Buffer.from(await file.arrayBuffer()))
-    const list = readReadyUpload(sheets)
-    if (!list.sheets.some((s) => s.read)) {
-      return {
-        ok: false,
-        message:
-          'No sheet of this file has an AP BILL column in its first rows: ' +
-          list.sheets.map((s) => `${s.sheet} — ${s.reason}`).join('; ') + '.',
+    const read: { name: string; list: ReturnType<typeof readReadyUpload> }[] = []
+    for (const f of files) {
+      const list = readReadyUpload(await sheetsFromWorkbook(Buffer.from(await f.arrayBuffer())))
+      if (!list.sheets.some((s) => s.read)) {
+        return {
+          ok: false,
+          message:
+            `No sheet of ${f.name} has an AP BILL column in its first rows: ` +
+            list.sheets.map((s) => `${s.sheet} — ${s.reason}`).join('; ') + '.',
+        }
       }
+      read.push({ name: f.name, list })
     }
-    const plan = await planReadyUpload(prisma, { file: file.name, list, pickupDate })
+    const list = mergeUploads(read)
+    const plan = await planReadyUpload(prisma, { file: fileName, list, pickupDate, mode })
     if (!confirmed) {
-      return { ok: true, stage: 'PREVIEW', fileName: file.name, pickupDate: pickupDay, plan }
+      return { ok: true, stage: 'PREVIEW', fileName, pickupDate: pickupDay, plan }
+    }
+
+    // REPLACE: every off-list check decided at the preview, or nothing is written.
+    const replace = mode === 'REPLACE'
+      ? {
+        revert: formData.getAll('revert').map(String),
+        keep: formData.getAll('keep').map(String),
+        reason: String(formData.get('revertReason') ?? '').trim(),
+      }
+      : undefined
+    if (replace) {
+      const decided = checkReplaceDecision(plan.offList, replace)
+      if (!decided.ok) return { ok: false, message: decided.message }
     }
 
     const now = new Date()
     const { approver } = await loadApprover(prisma, await loadSettings(prisma))
     const summary = await applyReadyUpload(prisma, plan, {
-      userId: user.id, pickupDate, now, deadline: new Date(now.getTime() + READY_UPLOAD_BUDGET_MS), approver,
+      userId: user.id, pickupDate, now, deadline: new Date(now.getTime() + READY_UPLOAD_BUDGET_MS), approver, replace,
     })
     if (summary.requested > 0 && approver) {
       // The rows that became requests: every planned check that was not
       // readied and did not fail, in plan order — the apply loop is sequential.
       const requestedIds = (await prisma.availabilityRequest.findMany({
-        where: { status: 'PENDING', requestedById: user.id, requestedAt: now }, select: { checkId: true },
+        where: { status: 'PENDING', requestedById: user.id, requestedAt: now, kind: 'MAKE_AVAILABLE' }, select: { checkId: true },
       })).map((r) => r.checkId)
       await notifyApprovalRequested(prisma, {
         approverId: approver.id, requester: user, kind: 'MAKE_AVAILABLE', checkIds: requestedIds, pickupDay,
+      })
+    }
+    if (summary.revertRequested > 0 && approver && replace) {
+      const withdrawIds = (await prisma.availabilityRequest.findMany({
+        where: { status: 'PENDING', requestedById: user.id, requestedAt: now, kind: 'WITHDRAW' }, select: { checkId: true },
+      })).map((r) => r.checkId)
+      await notifyApprovalRequested(prisma, {
+        approverId: approver.id, requester: user, kind: 'WITHDRAW', checkIds: withdrawIds, reason: replace.reason,
       })
     }
     try {
@@ -354,7 +384,7 @@ export async function uploadReadyListAction(formData: FormData): Promise<ReadyUp
     }
     revalidatePath('/')
     revalidatePath('/admin/import')
-    return { ok: true, stage: 'APPLIED', fileName: file.name, pickupDate: pickupDay, plan, summary }
+    return { ok: true, stage: 'APPLIED', fileName, pickupDate: pickupDay, plan, summary }
   } catch (e) {
     if (isNextControlFlowError(e)) throw e
     return failure(e, 'The list could not be read. Save it as .xlsx with an AP BILL column (and a CHECK NUMBER column if the list has one) and try again.')

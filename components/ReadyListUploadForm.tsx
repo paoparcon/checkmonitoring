@@ -3,7 +3,8 @@
 import { useState, useTransition } from 'react'
 import { uploadReadyListAction, type ReadyUploadResult } from '@/app/admin/actions'
 import { formatMoney } from '@/lib/money'
-import type { LeftAlone, ReadyUploadPlan } from '@/lib/admin/ready-upload'
+import { amountToCentavos, formatAmount } from '@/lib/transmittal'
+import type { LeftAlone, OffListCheck, ReadyUploadPlan, UploadMode } from '@/lib/admin/ready-upload'
 
 /**
  * Upload → preview → confirm → READY FOR RELEASE.
@@ -16,7 +17,21 @@ import type { LeftAlone, ReadyUploadPlan } from '@/lib/admin/ready-upload'
  * Changing either control clears the report, for the same reason: a stale
  * plan next to a CONFIRM button is how somebody confirms something they are
  * no longer looking at.
+ *
+ * Several files may be chosen at once and are read as one list (2026-11-05).
+ * REPLACE adds the off-list section: every READY check the list does not
+ * name, each needing KEEP READY or REVERT TO SIGNED before CONFIRM enables.
  */
+
+type Decision = 'KEEP' | 'REVERT'
+
+/** Centavos as the decimal string `formatAmount` reads. */
+function centavosString(c: bigint): string {
+  const neg = c < BigInt(0)
+  const a = neg ? -c : c
+  const hundred = BigInt(100)
+  return `${neg ? '-' : ''}${a / hundred}.${(a % hundred).toString().padStart(2, '0')}`
+}
 
 const n = (v: number) => v.toLocaleString('en-PH')
 const ROWS_SHOWN = 300
@@ -165,24 +180,154 @@ function PlanReport({ plan, applied }: { plan: ReadyUploadPlan; applied: boolean
   )
 }
 
+function OffListSection({
+  offList, decisions, setDecision, setAll, reason, setReason, locked,
+}: {
+  offList: readonly OffListCheck[]
+  decisions: Readonly<Record<string, Decision>>
+  setDecision: (id: string, d: Decision) => void
+  setAll: (d: Decision) => void
+  reason: string
+  setReason: (v: string) => void
+  locked: boolean
+}) {
+  const reverting = offList.filter((c) => decisions[c.id] === 'REVERT').length
+  const keeping = offList.filter((c) => decisions[c.id] === 'KEEP').length
+  const undecided = offList.length - reverting - keeping
+  // Centavo-exact, PHP only (rule 8: amounts are decimal strings, never JS numbers).
+  let centavos = BigInt(0)
+  for (const c of offList) {
+    const v = c.currency === 'PHP' && c.amount ? amountToCentavos(c.amount) : null
+    if (v !== null) centavos += v
+  }
+  return (
+    <section className="rounded-2xl bg-white ring-1 ring-warning-ink/30">
+      <div className="space-y-3 px-6 py-4">
+        <h2 className="text-sm font-semibold tracking-wide text-warning-ink">
+          {n(offList.length)} · READY FOR RELEASE NOW, NOT ON THIS LIST · ₱{formatAmount(centavosString(centavos))}
+        </h2>
+        <p className="text-sm text-slate-600">
+          These checks are available to the supplier today and no row of the uploaded list names them, by check
+          number or by AP bill. Decide each one. <span className="font-medium">KEEP READY</span> leaves it as it is.
+          {' '}<span className="font-medium">REVERT TO SIGNED</span> takes it off the release list and tells the Supplier
+          Portal it is no longer available.
+        </p>
+        {!locked && (
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => setAll('KEEP')}
+              className="rounded-lg bg-navy-bg px-3 py-1.5 text-xs font-medium tracking-wide text-navy hover:bg-navy-bg/70">
+              SET ALL TO KEEP READY
+            </button>
+            <button type="button" onClick={() => setAll('REVERT')}
+              className="rounded-lg bg-warning-bg px-3 py-1.5 text-xs font-medium tracking-wide text-warning-ink hover:bg-warning-bg/70">
+              SET ALL TO REVERT TO SIGNED
+            </button>
+            <span className="text-xs font-semibold tracking-wide text-slate-600">
+              {n(keeping)} KEEP · {n(reverting)} REVERT{undecided > 0 ? ` · ${n(undecided)} NOT DECIDED` : ''}
+            </span>
+          </div>
+        )}
+        {!locked && reverting > 0 && (
+          <div>
+            <label htmlFor="revert-reason" className="block text-xs font-medium tracking-wide text-slate-600">REASON FOR REVERTING (ON EACH CHECK&apos;S RECORD)</label>
+            <input id="revert-reason" value={reason} onChange={(e) => setReason(e.currentTarget.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          </div>
+        )}
+      </div>
+      <div className="overflow-x-auto border-t border-slate-100">
+        <table className="w-full text-sm">
+          <thead className="border-b border-hairline text-left text-[11px] font-semibold tracking-widest text-slate-400">
+            <tr>
+              <th className={TH}>DECISION</th>
+              <th className={TH}>CHECK NUMBER</th>
+              <th className={TH}>COMPANY</th>
+              <th className={TH}>PAYEE</th>
+              <th className={`${TH} text-right`}>AMOUNT</th>
+              <th className={TH}>STATUS</th>
+              <th className={TH}>PICKUP DATE</th>
+              <th className={TH}>MADE READY FROM</th>
+            </tr>
+          </thead>
+          <tbody>
+            {offList.map((c) => {
+              const d = decisions[c.id]
+              return (
+                <tr key={c.id} className={`border-b border-slate-50 ${d === 'REVERT' ? 'bg-warning-bg/40' : ''}`}>
+                  <td className={TD}>
+                    {locked
+                      ? <span className="text-xs font-semibold">{d === 'REVERT' ? 'REVERT TO SIGNED' : d === 'KEEP' ? 'KEEP READY' : '—'}</span>
+                      : (
+                        <div className="flex gap-3 whitespace-nowrap text-xs font-medium">
+                          <label className="flex items-center gap-1">
+                            <input type="radio" name={`decide-${c.id}`} checked={d === 'KEEP'} onChange={() => setDecision(c.id, 'KEEP')} />
+                            KEEP READY
+                          </label>
+                          <label className="flex items-center gap-1 text-warning-ink">
+                            <input type="radio" name={`decide-${c.id}`} checked={d === 'REVERT'} onChange={() => setDecision(c.id, 'REVERT')} />
+                            REVERT TO SIGNED
+                          </label>
+                        </div>
+                      )}
+                  </td>
+                  <td className={`${TD} font-mono`}><a href={`/checks/${c.id}`} target="_blank" rel="noreferrer" className="underline decoration-slate-300">{c.checkNumber}</a></td>
+                  <td className={TD}>{c.companyCode}</td>
+                  <td className={TD}>{c.payeeName ?? '—'}</td>
+                  <td className={`${TD} text-right tabular-nums`}>{c.amount ? formatMoney(c.amount, c.currency) : '—'}</td>
+                  <td className={TD}>{c.status.replace(/_/g, ' ')}</td>
+                  <td className={`${TD} tabular-nums`}>{c.pickupDate ?? '—'}</td>
+                  <td className={`${TD} text-slate-600`}>
+                    {c.readySource ?? (c.readyAt ? `readied ${c.readyAt.slice(0, 10)}` : 'an earlier list or catch-up')}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
 export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: string }) {
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<File[]>([])
   const [pickupDate, setPickupDate] = useState(defaultPickupDate)
+  const [mode, setMode] = useState<UploadMode>('ADD')
   const [result, setResult] = useState<ReadyUploadResult | null>(null)
+  const [decisions, setDecisions] = useState<Record<string, Decision>>({})
+  const [reason, setReason] = useState('')
   const [pending, startTransition] = useTransition()
 
   const submit = (confirm: boolean) => {
-    if (!file) return
+    if (files.length === 0) return
     const formData = new FormData()
-    formData.append('list', file)
+    for (const f of files) formData.append('list', f)
     formData.append('availablePickupDate', pickupDate)
-    if (confirm) formData.append('confirm', 'true')
-    startTransition(async () => setResult(await uploadReadyListAction(formData)))
+    formData.append('mode', mode)
+    if (confirm) {
+      formData.append('confirm', 'true')
+      for (const [id, d] of Object.entries(decisions)) formData.append(d === 'REVERT' ? 'revert' : 'keep', id)
+      formData.append('revertReason', reason)
+    }
+    startTransition(async () => {
+      const r = await uploadReadyListAction(formData)
+      setResult(r)
+      if (!confirm && r.ok) {
+        // A fresh preview: no decision carries over from the last one.
+        setDecisions({})
+        setReason(`Not on the replacement release list (${r.fileName}).`)
+      }
+    })
   }
+  const clear = () => { setResult(null); setDecisions({}) }
 
   const previewed = result?.ok === true && result.stage === 'PREVIEW'
   const applied = result?.ok === true && result.stage === 'APPLIED'
-  const nothingToDo = previewed && result.plan.toReady.length === 0
+  const offList = result?.ok ? result.plan.offList : []
+  const reverting = offList.filter((c) => decisions[c.id] === 'REVERT').length
+  const undecided = offList.filter((c) => decisions[c.id] === undefined).length
+  const nothingToDo = previewed && result.plan.toReady.length === 0 && offList.length === 0
+  const confirmBlocked = undecided > 0 || (reverting > 0 && reason.trim() === '')
 
   return (
     <div className="space-y-6">
@@ -198,13 +343,17 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
         </p>
         <div className="flex flex-wrap items-end gap-4">
           <div className="min-w-[16rem] flex-1">
-            <label className="block text-xs font-medium tracking-wide text-slate-600">LIST (.XLSX)</label>
+            <label className="block text-xs font-medium tracking-wide text-slate-600">LIST (.XLSX) — ONE OR SEVERAL FILES</label>
             <input
               type="file"
               accept=".xlsx"
+              multiple
               className="mt-1 block w-full text-sm text-slate-600 file:mr-4 file:rounded-lg file:border-0 file:bg-navy-bg file:px-4 file:py-2 file:text-sm file:font-medium file:tracking-wide file:text-navy hover:file:bg-navy-bg/70"
-              onChange={(e) => { setFile(e.currentTarget.files?.[0] ?? null); setResult(null) }}
+              onChange={(e) => { setFiles([...(e.currentTarget.files ?? [])]); clear() }}
             />
+            {files.length > 1 && (
+              <p className="mt-1 text-xs text-slate-500">{files.length} files, read as one list: {files.map((f) => f.name).join(' + ')}</p>
+            )}
           </div>
           <div>
             <label className="block text-xs font-medium tracking-wide text-slate-600">AVAILABLE PICKUP DATE</label>
@@ -218,10 +367,25 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
             />
           </div>
         </div>
-        <div className="flex gap-3">
+        <fieldset className="space-y-2">
+          <legend className="text-xs font-medium tracking-wide text-slate-600">THIS LIST IS</legend>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="radio" name="mode" className="mt-1" checked={mode === 'ADD'} onChange={() => { setMode('ADD'); clear() }} />
+            <span><span className="font-medium">ADDITIONAL</span> — mark these checks ready; every check already ready stays ready.</span>
+          </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="radio" name="mode" className="mt-1" checked={mode === 'REPLACE'} onChange={() => { setMode('REPLACE'); clear() }} />
+            <span>
+              <span className="font-medium">A REPLACEMENT</span> — this is the whole release list. The preview lists every check
+              ready now that is not on it, and you decide for each whether it stays ready or reverts to SIGNED (the Supplier
+              Portal is told). Choose every file of the list together.
+            </span>
+          </label>
+        </fieldset>
+        <div className="flex flex-wrap gap-3">
           <button
             type="button"
-            disabled={!file || !pickupDate || pending}
+            disabled={files.length === 0 || !pickupDate || pending}
             onClick={() => submit(false)}
             className="rounded-lg bg-navy px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-navy/90 disabled:opacity-50"
           >
@@ -230,15 +394,23 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
           {previewed && !nothingToDo && (
             <button
               type="button"
-              disabled={pending}
+              disabled={pending || confirmBlocked}
               onClick={() => submit(true)}
               // The one control here that writes — and tells the portal — so
               // it is the one that is not navy, and it exists only once a
               // preview has been read.
               className="rounded-lg bg-success-ink px-4 py-2 text-sm font-medium tracking-wide text-white transition hover:bg-success-ink/90 disabled:opacity-50"
             >
-              {pending ? 'MARKING READY…' : `CONFIRM — MARK ${n(result.plan.toReady.length)} READY FOR RELEASE`}
+              {pending
+                ? 'WORKING…'
+                : `CONFIRM — MARK ${n(result.plan.toReady.length)} READY FOR RELEASE` +
+                  (offList.length > 0 ? ` · REVERT ${n(reverting)} TO SIGNED` : '')}
             </button>
+          )}
+          {previewed && !nothingToDo && undecided > 0 && (
+            <span className="self-center text-xs font-semibold tracking-wide text-warning-ink">
+              DECIDE THE {n(undecided)} CHECK{undecided === 1 ? '' : 'S'} NOT ON THE LIST BEFORE CONFIRMING
+            </span>
           )}
         </div>
       </section>
@@ -254,7 +426,10 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
               ? `DONE — ${result.fileName}. ${n(result.summary.readied)} check(s) marked READY FOR RELEASE with pickup ${result.pickupDate}` +
                 (result.summary.requested > 0 ? `, ${n(result.summary.requested)} sent to the approver as requests (they stay as they are until approved)` : '') +
                 (result.summary.signed > 0 ? `, ${n(result.summary.signed)} of them signed first` : '') +
-                (result.summary.readied > 0 ? '. The Supplier Portal is being told.' : '.')
+                (result.summary.reverted > 0 ? `. ${n(result.summary.reverted)} check(s) not on the list reverted to SIGNED` : '') +
+                (result.summary.revertRequested > 0 ? `, ${n(result.summary.revertRequested)} revert(s) sent to the approver` : '') +
+                (result.summary.kept > 0 ? `; ${n(result.summary.kept)} kept READY` : '') +
+                (result.summary.readied > 0 || result.summary.reverted > 0 ? '. The Supplier Portal is being told.' : '.')
               : nothingToDo
                 ? `PREVIEW ONLY — ${result.fileName}. No row of this list can be marked ready; see why below. Nothing has been written.`
                 : `PREVIEW ONLY — ${result.fileName}. Nothing has been written. Read the plan below, then confirm.`}
@@ -277,6 +452,23 @@ export function ReadyListUploadForm({ defaultPickupDate }: { defaultPickupDate: 
                 </ul>
               )}
             </section>
+          )}
+
+          {offList.length > 0 && (
+            <OffListSection
+              offList={offList}
+              decisions={decisions}
+              setDecision={(id, d) => setDecisions((prev) => ({ ...prev, [id]: d }))}
+              setAll={(d) => setDecisions(Object.fromEntries(offList.map((c) => [c.id, d])))}
+              reason={reason}
+              setReason={setReason}
+              locked={applied}
+            />
+          )}
+          {result.plan.mode === 'REPLACE' && offList.length === 0 && (
+            <p className="rounded-lg bg-success-bg p-4 text-sm text-success-ink">
+              REPLACEMENT — every check ready for release now is on this list. Nothing to revert.
+            </p>
           )}
 
           <PlanReport plan={result.plan} applied={applied} />

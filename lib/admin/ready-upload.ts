@@ -1,6 +1,6 @@
 import type { CheckStatus, Prisma, PrismaClient } from '@prisma/client'
 import ExcelJS from 'exceljs'
-import { markSigned } from '@/lib/domain/actions'
+import { markSigned, type ActionSource } from '@/lib/domain/actions'
 import { applyOrRequest } from '@/lib/domain/availability-approval'
 import type { Approver } from '@/lib/approvals/approver'
 import { checkReadyForRelease } from '@/lib/domain/check-status'
@@ -52,9 +52,14 @@ import { canonicalCheckNumber, cleanCell } from '@/lib/import/normalise'
  * `markSigned` under the same admin, and the preview says so: a list of
  * cheques ready for release is Finance saying they are signed.
  *
- * NOTHING IS DEMOTED. A ready cheque off the list stays ready; the user has
- * ruled both ways on what "dropped off a list" means (2026-09-10, 2026-10-06)
- * and a routine upload must not decide it.
+ * NOTHING IS DEMOTED BY ITSELF. In ADD mode (the default) a ready cheque off
+ * the list stays ready; the user has ruled both ways on what "dropped off a
+ * list" means (2026-09-10, 2026-10-06) and a routine upload must not decide
+ * it. In REPLACE mode (2026-11-05, spec `2026-11-05-ready-upload-replace-design.md`)
+ * the preview lists every READY / SCHEDULED cheque the list does not name
+ * (`offList`), and the admin decides each one — KEEP READY or REVERT TO
+ * SIGNED — before CONFIRM; only the ones decided REVERT are withdrawn, through
+ * the gate, so the portal hears a REVERT. The upload still decides nothing.
  *
  * NOTHING IS WRITTEN WITHOUT A PREVIEW. The action plans, shows the plan, and
  * writes only on a second submission of the same file.
@@ -178,6 +183,23 @@ export function readReadyUpload(sheets: { name: string; rows: unknown[][] }[]): 
   return { rows: out, sheets: reports }
 }
 
+/**
+ * Several files uploaded together are one list (2026-11-05): Finance's list
+ * arrives as LOCAL + BROKERS, and a REPLACE that saw only one of them would
+ * offer to withdraw the other's cheques. With more than one file every sheet
+ * is named `<file> › <sheet>`, so the report and the audit rows say which.
+ */
+export function mergeUploads(
+  files: readonly { name: string; list: { rows: UploadRow[]; sheets: SheetReport[] } }[],
+): { rows: UploadRow[]; sheets: SheetReport[] } {
+  if (files.length === 1) return files[0].list
+  const tag = (file: string, sheet: string) => `${file} › ${sheet}`
+  return {
+    rows: files.flatMap((f) => f.list.rows.map((r) => ({ ...r, sheet: tag(f.name, r.sheet) }))),
+    sheets: files.flatMap((f) => f.list.sheets.map((s) => ({ ...s, sheet: tag(f.name, s.sheet) }))),
+  }
+}
+
 /** I/O only: every sheet of an .xlsx, every cell, as the grid `readReadyUpload` reads. */
 export async function sheetsFromWorkbook(buffer: Buffer): Promise<{ name: string; rows: unknown[][] }[]> {
   const wb = new ExcelJS.Workbook()
@@ -293,6 +315,19 @@ export type ReadyUploadPlan = {
   toReady: { check: UploadCheck; signFirst: boolean; rows: UploadRow[] }[]
   leftAlone: LeftAlone[]
   counts: Record<UploadVerdict['kind'], number>
+  mode: UploadMode
+  /** REPLACE only: every READY / SCHEDULED cheque no row names, by number or by bill. Empty in ADD. */
+  offList: OffListCheck[]
+}
+
+export type UploadMode = 'ADD' | 'REPLACE'
+
+export type OffListCheck = UploadCheck & {
+  /** ISO day. */
+  pickupDate: string | null
+  readyAt: string | null
+  /** The file on its latest `ready_for_release` audit row, when it came from an upload. */
+  readySource: string | null
 }
 
 const SELECT = {
@@ -347,9 +382,10 @@ async function holdersOf(db: PrismaClient, vouchers: string[]): Promise<Loaded[]
  */
 export async function planReadyUpload(
   db: PrismaClient,
-  args: { file: string; list: { rows: UploadRow[]; sheets: SheetReport[] }; pickupDate: Date },
+  args: { file: string; list: { rows: UploadRow[]; sheets: SheetReport[] }; pickupDate: Date; mode?: UploadMode },
 ): Promise<ReadyUploadPlan> {
   const { file, list, pickupDate } = args
+  const mode = args.mode ?? 'ADD'
   const numbers = [...new Set(list.rows.map((r) => r.checkNumber).filter((n): n is string => n !== null))]
   const held = numbers.length === 0 ? [] : await db.check.findMany({ where: { checkNumber: { in: numbers } }, select: SELECT })
   const byNumber = new Map<string, UploadCheck[]>()
@@ -362,7 +398,9 @@ export async function planReadyUpload(
     for (const v of u.vouchers) if (billKeyed.includes(v)) byBill.set(v, [...(byBill.get(v) ?? []), u])
   }
 
-  const plan: ReadyUploadPlan = { file, sheets: list.sheets, rows: list.rows.length, toReady: [], leftAlone: [], counts: emptyCounts() }
+  const plan: ReadyUploadPlan = {
+    file, sheets: list.sheets, rows: list.rows.length, toReady: [], leftAlone: [], counts: emptyCounts(), mode, offList: [],
+  }
   const ready = new Map<string, { check: UploadCheck; signFirst: boolean; rows: UploadRow[] }>()
   const strays: { row: UploadRow; check: UploadCheck }[] = []
 
@@ -397,7 +435,48 @@ export async function planReadyUpload(
       })
     }
   }
+  if (mode === 'REPLACE') plan.offList = await offListChecks(db, list.rows)
   return plan
+}
+
+/**
+ * REPLACE: the cheques available now that the list does not name. NAMED is
+ * generous on purpose — a check number on any row, or any bill the cheque
+ * carries on any row, whatever that row's verdict — so a cheque the list
+ * names ambiguously, or with its bill on the wrong row, is never offered for
+ * withdrawal. Ordered by check number.
+ */
+async function offListChecks(db: PrismaClient, rows: readonly UploadRow[]): Promise<OffListCheck[]> {
+  const numbers = new Set(rows.map((r) => r.checkNumber).filter((n): n is string => n !== null))
+  const vouchers = new Set(rows.map((r) => r.voucher).filter((v): v is string => v !== null))
+  const available = await db.check.findMany({
+    where: { status: { in: ['READY_FOR_RELEASE', 'SCHEDULED'] } },
+    select: { ...SELECT, readyAt: true, availablePickupDate: true },
+    orderBy: { checkNumber: 'asc' },
+  })
+  const off = available.filter((c) => {
+    if (numbers.has(c.checkNumber)) return false
+    const u = toUploadCheck(c)
+    return !u.vouchers.some((v) => vouchers.has(v))
+  })
+  if (off.length === 0) return []
+  const audits = await db.auditLog.findMany({
+    where: { checkId: { in: off.map((c) => c.id) }, action: 'ready_for_release' },
+    orderBy: { createdAt: 'desc' },
+    select: { checkId: true, details: true },
+  })
+  const sourceOf = new Map<string, string | null>()
+  for (const a of audits) {
+    if (!a.checkId || sourceOf.has(a.checkId)) continue
+    const d = a.details as { source?: { file?: unknown } } | null
+    sourceOf.set(a.checkId, typeof d?.source?.file === 'string' ? d.source.file : null)
+  }
+  return off.map((c) => ({
+    ...toUploadCheck(c),
+    pickupDate: c.availablePickupDate ? c.availablePickupDate.toISOString().slice(0, 10) : null,
+    readyAt: c.readyAt ? c.readyAt.toISOString() : null,
+    readySource: sourceOf.get(c.id) ?? null,
+  }))
 }
 
 function describe(row: UploadRow, v: Exclude<UploadVerdict, { kind: 'READY' | 'BILL_NOT_ON_CHECK' }>): LeftAlone {
@@ -442,6 +521,11 @@ export type ReadyUploadSummary = {
   failed: { checkNumber: string; message: string }[]
   /** Left for a second upload because the time budget ran out. The upload is idempotent. */
   notReached: number
+  /** REPLACE: off-list cheques reverted to SIGNED (the portal told), and those sent to the approver as WITHDRAW requests. */
+  reverted: number
+  revertRequested: number
+  /** REPLACE: off-list cheques the admin chose KEEP READY for. */
+  kept: number
 }
 
 /**
@@ -460,11 +544,21 @@ export async function applyReadyUpload(
     userId: string; pickupDate: Date; now: Date; deadline?: Date
     /** The approver in force (`loadApprover`); omitted or null means every row is readied at once. */
     approver?: Approver | null
+    /**
+     * REPLACE: the off-list cheques the admin chose REVERT TO SIGNED for, and the
+     * reason. Every off-list cheque must be decided — `keep` holds the rest — and
+     * an id that is not in the re-planned `offList` is refused by name.
+     */
+    replace?: { revert: readonly string[]; keep: readonly string[]; reason: string }
   },
 ): Promise<ReadyUploadSummary> {
-  const summary: ReadyUploadSummary = { readied: 0, requested: 0, signed: 0, failed: [], notReached: 0 }
+  const summary: ReadyUploadSummary = {
+    readied: 0, requested: 0, signed: 0, failed: [], notReached: 0, reverted: 0, revertRequested: 0, kept: 0,
+  }
+  const pastDeadline = () => args.deadline !== undefined && Date.now() > args.deadline.getTime()
+  let stopped = false
   for (const [i, { check, signFirst, rows }] of plan.toReady.entries()) {
-    if (args.deadline && Date.now() > args.deadline.getTime()) { summary.notReached = plan.toReady.length - i; break }
+    if (pastDeadline()) { summary.notReached = plan.toReady.length - i; stopped = true; break }
     const source = {
       file: plan.file,
       listRows: rows.map((r) => ({ sheet: r.sheet, row: r.row, voucher: r.voucher, checkNumber: r.rawCheckNumber })),
@@ -496,5 +590,64 @@ export async function applyReadyUpload(
       summary.failed.push({ checkNumber: check.checkNumber, message: e.message })
     }
   }
+
+  if (plan.mode === 'REPLACE' && args.replace) {
+    const offById = new Map(plan.offList.map((c) => [c.id, c]))
+    summary.kept = args.replace.keep.filter((id) => offById.has(id)).length
+    const source: ActionSource = { file: plan.file, listRows: [], replacement: true }
+    const revert = [...new Set(args.replace.revert)]
+    for (const [i, id] of revert.entries()) {
+      if (stopped || pastDeadline()) { summary.notReached += revert.length - i; break }
+      const check = offById.get(id)
+      if (!check) {
+        summary.failed.push({ checkNumber: id, message: 'is no longer READY FOR RELEASE off this list; not reverted — preview the list again' })
+        continue
+      }
+      try {
+        await db.$transaction(async (tx) => {
+          const live = await tx.check.findUnique({ where: { id }, select: { status: true } })
+          if (!live) throw new DomainError('NOT_FOUND', 'Check not found.')
+          if (live.status !== check.status) {
+            throw new DomainError('MOVED_SINCE_PREVIEW', `was ${check.status} at the preview and is now ${live.status}; not reverted — preview the list again`)
+          }
+          const outcome = await applyOrRequest(tx, {
+            kind: 'WITHDRAW', checkId: id, actor: { id: args.userId }, approver: args.approver ?? null,
+            reason: args.replace!.reason, now: args.now, source,
+          })
+          if (outcome.applied) summary.reverted++
+          else summary.revertRequested++
+        }, { timeout: 30_000, maxWait: 15_000 })
+      } catch (e) {
+        if (!(e instanceof DomainError)) throw e
+        summary.failed.push({ checkNumber: check.checkNumber, message: e.message })
+      }
+    }
+  }
   return summary
+}
+
+/**
+ * REPLACE's confirmation, checked before anything is written: every off-list
+ * cheque decided exactly once, and a reason when any is reverted. Pure.
+ */
+export function checkReplaceDecision(
+  offList: readonly { id: string; checkNumber: string }[],
+  decision: { revert: readonly string[]; keep: readonly string[]; reason: string },
+): { ok: true } | { ok: false; message: string } {
+  const revert = new Set(decision.revert)
+  const keep = new Set(decision.keep)
+  const both = [...revert].filter((id) => keep.has(id))
+  if (both.length > 0) return { ok: false, message: 'A check cannot be both kept and reverted.' }
+  const undecided = offList.filter((c) => !revert.has(c.id) && !keep.has(c.id))
+  if (undecided.length > 0) {
+    return {
+      ok: false,
+      message: `Decide KEEP READY or REVERT TO SIGNED for every check not on the list — ${undecided.length} undecided` +
+        ` (${undecided.slice(0, 5).map((c) => c.checkNumber).join(', ')}${undecided.length > 5 ? ', …' : ''}). Preview again if the list changed.`,
+    }
+  }
+  if (revert.size > 0 && decision.reason.trim() === '') {
+    return { ok: false, message: 'Enter a reason for reverting checks to SIGNED.' }
+  }
+  return { ok: true }
 }
