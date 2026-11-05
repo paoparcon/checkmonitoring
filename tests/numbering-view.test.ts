@@ -3,6 +3,7 @@ import {
   numberingHref, isMissingOnly, visibleEntries, describeNumberingFilters, missingLabel, numberingFilename,
   parseShow, showFilters,
   registerOnlyLine, noBookLine, unbookedShown, numberingTotals, totalChecksLine, NUMBERING_EXPORT_PATH, NUMBERING_SCOPE_NOTE,
+  missingPanel, formatCount,
 } from '@/lib/numbering-view'
 import type { SeriesEntry } from '@/lib/numbering/series'
 
@@ -129,5 +130,34 @@ describe('show — a SUMMARY count clicked (user request 2026-11-03)', () => {
     expect(showFilters('noBook')).toEqual({ status: 'NO CHECK BOOK' })
     expect(showFilters('ticked')).toEqual({ inventory: '=TICKED' })
     expect(showFilters(undefined)).toEqual({})
+  })
+})
+
+describe('missingPanel — the dashboard figure (admin request 2026-11-05)', () => {
+  const acct = (accountId: string, account: string, missingNumbers: string, missingRuns: number) =>
+    ({ accountId, account, series: { summary: { missingNumbers, missingRuns } } })
+
+  it('totals every book, lists only books with a gap, most missing first, each linking to its gaps', () => {
+    const p = missingPanel([
+      acct('b1', 'BPI-S-8879', '48654', 142),
+      acct('b2', 'MBT-S-1121', '0', 0),
+      acct('b3', 'BPI-A-5713', '265052', 158),
+      acct('b4', 'BDO-A-3838', '48654', 29),
+    ])
+    expect(p.total).toBe('362360')
+    expect(p.runs).toBe(329)
+    expect(p.bookCount).toBe(4)
+    expect(p.books.map((b) => b.account)).toEqual(['BPI-A-5713', 'BDO-A-3838', 'BPI-S-8879'])
+    expect(p.books[0]).toEqual({ accountId: 'b3', account: 'BPI-A-5713', missing: '265052', runs: 158, href: '/numbering?account=b3&missing=1' })
+  })
+
+  it('stays exact past 2^53 and is empty for no books', () => {
+    expect(missingPanel([acct('a', 'A', '9007199254740993', 1), acct('b', 'B', '2', 1)]).total).toBe('9007199254740995')
+    expect(missingPanel([])).toEqual({ total: '0', runs: 0, books: [], bookCount: 0 })
+  })
+
+  it('formatCount groups thousands without losing digits', () => {
+    expect(formatCount('695814')).toBe('695,814')
+    expect(formatCount('9007199254740993')).toBe('9,007,199,254,740,993')
   })
 })

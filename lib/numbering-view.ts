@@ -158,3 +158,48 @@ export const NUMBERING_SCOPE_NOTE =
   'INVENTORY: every number, held by a check or MISSING, has a tick box and a remarks field, so the physical ' +
   'count is recorded here; a run of more than 100 missing numbers is one line with one tick and one remark for ' +
   'the whole run, and opens on a click. SAVE INVENTORY records the changes; every tick and remark is on the audit trail.'
+
+/** One check book's line on the dashboard's MISSING CHECK NUMBERS panel. */
+export type MissingPanelBook = { accountId: string; account: string; missing: string; runs: number; href: string }
+export type MissingPanel = { total: string; runs: number; books: MissingPanelBook[]; bookCount: number }
+
+/**
+ * The dashboard's MISSING CHECK NUMBERS panel (admin request 2026-11-05: "sa
+ * numbering lang sya nakikita"). A MISSING number has no check, so it cannot be
+ * a row on ALL CHECKS (no amount, payee or status); the dashboard shows the
+ * count instead, per book, each linking to that book's gaps on NUMBERING.
+ * User ruling the same day: "Acumatica will prevail. No acu records, no portal
+ * existence." — a found check is posted in Acumatica and the sync brings it;
+ * nothing here gives a missing number a status or a payee.
+ *
+ * Books with no gap are left off the list but counted in `bookCount`. Most
+ * missing first; the count is a decimal string (a run can exceed 2^53). Pure.
+ */
+export function missingPanel(
+  accounts: readonly { accountId: string; account: string; series: { summary: { missingNumbers: string; missingRuns: number } } }[],
+): MissingPanel {
+  let total = BigInt(0)
+  let runs = 0
+  const books: MissingPanelBook[] = []
+  for (const a of accounts) {
+    const n = BigInt(a.series.summary.missingNumbers)
+    total += n
+    runs += a.series.summary.missingRuns
+    if (n > BigInt(0)) {
+      books.push({
+        accountId: a.accountId, account: a.account, missing: n.toString(), runs: a.series.summary.missingRuns,
+        href: numberingHref({ account: a.accountId, missing: true }),
+      })
+    }
+  }
+  books.sort((x, y) => {
+    const d = BigInt(y.missing) - BigInt(x.missing)
+    return d > BigInt(0) ? 1 : d < BigInt(0) ? -1 : x.account.localeCompare(y.account)
+  })
+  return { total: total.toString(), runs, books, bookCount: accounts.length }
+}
+
+/** A decimal-string count with thousands separators, exact past 2^53. */
+export function formatCount(n: string): string {
+  return BigInt(n).toLocaleString('en-PH')
+}

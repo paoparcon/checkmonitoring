@@ -464,8 +464,9 @@ on every page). **Closed with it:** `markSigned` refuses anything but SIGNATURE_
 SIGNED on the list, pickup date kept, portal told nothing, suppliers reminded seven more times — and
 `revertAvailability` refuses anything but READY/SCHEDULED (`NOT_AVAILABLE`; RELEASED → SIGNED is
 `reverseRelease`'s). Not gated: MARK RELEASED / RELEASE ALL, REVERSE RELEASE, the one-off catch-up
-scripts. **Still open from the same day:** the 36 SIGNED-by-mistake checks are to be re-readied by the
-user (an upload-shaped list was provided); the portal's deployed code ignores a REVERT on a RELEASED bill,
+scripts. **Still open from the same day:** ~~the 36 SIGNED-by-mistake checks are to be re-readied~~ — done
+2026-11-05 (measured: the 33 traceable by an earlier ready row were readied again that day, one
+`ready_for_release` row and one synced portal event each; 81 READY after, the count Finance sees); the portal's deployed code ignores a REVERT on a RELEASED bill,
 so the four RELEASED → SIGNED reversals of 2026-11-04 (`6000353231`, `6000353362`, `6000353678`,
 `6000354854`) are still paid there until the portal fix in `~/Downloads/Supplier-Database-claude-reissue-revives-cancelled-row`
 is carried into its repo and deployed; this app records the portal's `noop` answer as a clean SYNCED.
@@ -701,6 +702,21 @@ number the book does not hold — tagged `IN ANOTHER BOOK · <book>`, violet, co
 duplicate here. Measured on production that day: 18,402 lines (BPI-S-8879 MISSING 54,048 → 48,653). The
 PAYROLL case (§I, NO CHECK BOOK) was already handled. An inventory note on such a number records the
 other book's check id.
+
+**No Acumatica record, no check — and MISSING is a count on the dashboard (2026-11-05).** The admin asked
+for MISSING outside NUMBERING, and for a found missing number to take a status (Released/Available) and a
+payee. User ruling: *"Acumatica will prevail. No acu records, no portal existence."* Nothing in this app
+creates a check or gives a MISSING number a status, payee or amount; a found leaf is in another book or
+PAYROLL (NUMBERING shows it), unused or spoiled (inventory tick + remark), or unposted (Finance posts it in
+Acumatica and the sync brings it). A missing number has no row to show on ALL CHECKS, so the TOTALS screen
+has a MISSING CHECK NUMBERS panel (`components/MissingNumbersPanel.tsx`, `missingPanel` in
+`lib/numbering-view.ts`): the total, the gap count, and each book with a gap linking to
+`/numbering?account=<id>&missing=1`. It narrows like NUMBERING — a company selects the books it uses, a
+`cashAccount` that is a check book shows that book, one that is a cash account says it has no series —
+and states that eligibility does not narrow it. It reads every book's series (2.8 s from the Mac against
+production; 695,814 missing in 755 gaps across 8 books that day), so the page streams it in `<Suspense>`
+and a failure is stated in the panel, never thrown. In the hidden built-in browser pane the streamed panel
+stays on its loading text: React reveals it on `requestAnimationFrame`, which a hidden pane never fires.
 
 **A time shown to Finance is formatted in Manila, by name** (`formatManila`, `lib/manila-format.ts`, 2026-11-03). Every page renders on the server and Vercel's clock is UTC: /admin/portal said "Last push Nov 3, 9:23 AM" for the 5:23 PM push that completed the check list, and the sync, users, print, check, receipt, staged, voucher and import-preview pages, the audit trail and the dashboard workbook's stamp were the same 8 hours behind. A day stored at Manila midnight (`manilaDayStart`) is the evening before in UTC, so an unzoned date-only format is a day early too. Every `toLocaleString('en-PH', …)` in server code now goes through `formatManila` or names `timeZone: 'Asia/Manila'`; a new formatter without the zone repeats the defect, and `tests/manila-format.test.ts` pins the rule. Client components (`CheckTable`) format in the browser, which is already Manila.
 

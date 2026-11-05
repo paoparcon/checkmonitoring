@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { Suspense } from 'react'
 import { cookies } from 'next/headers'
 import { requireUser } from '@/lib/auth'
 import { prisma } from '@/lib/db'
@@ -19,6 +20,7 @@ import { TotalsFilterBar } from '@/components/TotalsFilterBar'
 import { StatusSelect } from '@/components/StatusSelect'
 import { buildStatusOptions } from '@/lib/status-options'
 import { WorkflowRow } from '@/components/WorkflowRow'
+import { MissingNumbersPanel, MissingNumbersPanelLoading } from '@/components/MissingNumbersPanel'
 import { TodaysReleasePanel } from '@/components/TodaysReleasePanel'
 import { DashboardHero } from '@/components/DashboardHero'
 import { ConfirmAllForm } from '@/components/ConfirmAllForm'
@@ -252,6 +254,12 @@ export default async function DashboardPage({
             SEARCH
           </button>
         </form>
+
+        {/* MISSING CHECK NUMBERS (admin request 2026-11-05): streamed, so the
+            cards above never wait for every book's series to be read. */}
+        <Suspense fallback={<MissingNumbersPanelLoading />}>
+          <MissingNumbersPanel companyId={companyId} cashAccountId={cashAccountId} eligibility={eligibility} />
+        </Suspense>
       </main>
     )
   }
