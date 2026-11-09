@@ -729,6 +729,41 @@ stays on its loading text: React reveals it on `requestAnimationFrame`, which a 
 
 **A time shown to Finance is formatted in Manila, by name** (`formatManila`, `lib/manila-format.ts`, 2026-11-03). Every page renders on the server and Vercel's clock is UTC: /admin/portal said "Last push Nov 3, 9:23 AM" for the 5:23 PM push that completed the check list, and the sync, users, print, check, receipt, staged, voucher and import-preview pages, the audit trail and the dashboard workbook's stamp were the same 8 hours behind. A day stored at Manila midnight (`manilaDayStart`) is the evening before in UTC, so an unzoned date-only format is a day early too. Every `toLocaleString('en-PH', …)` in server code now goes through `formatManila` or names `timeZone: 'Asia/Manila'`; a new formatter without the zone repeats the defect, and `tests/manila-format.test.ts` pins the rule. Client components (`CheckTable`) format in the browser, which is already Manila.
 
+**BANK RECONCILIATION (`/recon/bank`, 2026-11-09, user: "we will integrate bank recon i think this is
+important").** RECON has two screens (`components/ReconTabs.tsx`): OUTSTANDING CHECKS (`/recon`, unchanged)
+and BANK RECONCILIATION. Per account of Finance's cash schedule, for a day: **BANK BALANCE + DEPOSITS IN
+TRANSIT − OUTSTANDING CHECKS = ADJUSTED BANK BALANCE; ADJUSTED − BOOK BALANCE = VARIANCE** (0.00 reads
+RECONCILED). `lib/bank-recon/recon.ts` (pure) is the one definition. **The BANK balance comes from the
+monthly `Cash <MONTH> <YEAR>.xlsx` workbook's `CASH` sheet — user ruling 2026-11-09: "those are bank
+balance."** (Claude had first read them as book balances, from the GL account codes and the "Cash and cash
+equivalents" classification on each line, and built the formula the other way round; do not repeat that
+inference.) So the adjusted balance — the cash actually available — needs nothing typed: the bank's figure
+less the checks this system knows are still out. `lib/bank-recon/cash-sheet.ts` (pure) reads the sheet:
+one line per bank account or cash fund, one DATE-headed column per month-end, in PESOS (a USD/EUR account
+is already at its peso equivalent). Measured over the eleven workbooks in `Cash Balances/` (Dec 2025 – Oct
+2026, not committed, rule 9): 29–32 lines, 18–28 month-ends back to 2024-07-31, **0 differences where two
+files state the same account and month, so the newest file carries the whole history** (`Cash OCT 2026.xlsx`:
+32 lines, 635 balances, 30 Oct total 63,472,403.13 — the sheet's own total). Columns are found by header,
+never position; an account is keyed by the digits of its account number (the GL account is NOT a key —
+11120010 is on two lines), a fund with no number by company + name; two lines sharing a key are both left
+out by name; a blank cell is no balance, 0 is zero; the sheet's own TOTAL row is compared per day and a
+difference is shown before confirming. Upload on the page (every Finance user, preview → confirm, the same
+file re-read on confirm, `uploadCashWorkbookAction`): writes the BANK side only (`bankBalance`, `bankSource`
+= file › cell) into `CashLedgerAccount` / `CashBalance`, NEW / CHANGED (before and after shown) / SAME, one
+`cash_balances_imported` audit row, nothing deleted, the typed figures never touched. **The BOOK balance
+and the deposits in transit are typed** per account for the day, with a note (`recordBookFigures`,
+`bank_recon_recorded` per changed row; blank = not known, never zero; a future day refused). **Outstanding
+checks are NOT stored**: they are `/recon`'s, struck for the day over the same rows, so a clearing recorded
+later corrects every past reconciliation. **Which check book draws on which account is read off the book's
+code** (`matchBooks`): `BPI-S-4636` is the account ending 4636 — all eight books match exactly one line
+(BPI-A-8879 and BPI-S-8879 both the STPP account 3371008879); a book whose digits end two accounts or none
+matches nothing. Outstanding checks on an account no line matches (PAYROLL, a register label, no account)
+are listed under the count line, never added to a line. Not built: an Excel extract, the bank statement
+import, daily bank balances (the workbook states month-ends only; any other day shows the outstanding
+checks and whatever was typed), a book balance read from Acumatica. Migrations `20261109000000_bank_recon`
+and `20261109000100_cash_balance_bank_source` (the source column renamed when the ruling came) must reach
+production BEFORE the deploy.
+
 **Ticked checks have no limit (2026-11-05, user: "dont limit 50 tick at a time. i can select all").**
 `parseSelection` (`lib/bulk.ts`) only cleans and de-duplicates; the 50-check refusal and `chunkSelection`
 are gone, and RELEASE ALL / SIGN ALL run their set in one `runEach`. The list's bulk bar, AGING and
@@ -821,6 +856,7 @@ category not on it.
 | `lib/forecast/` | Cash outflow by check date: `buckets.ts` (the ageing buckets, pure), `query.ts` (the population — live, real, with an amount), `matrix.ts` (bucket × bank and bucket × stage, centavo-exact, pure). `/forecast` and `/api/export/forecast` sit on it. Since 2026-09-12 a check's typed `expectedOutflowDate` wins over its check date, and `PlannedOutflow` lines (`lib/planned-outflow/`, `/forecast/planned`) join the population as their own PLANNED column. |
 | `lib/aging/` | AGING: `buckets.ts` (the portal's buckets, pure), `query.ts` (SIGNED, aged). `lib/aging-picker.ts` (strip, selection, pure). `/aging` and `/api/export/aging` sit on it (`lib/export/aging-workbook.ts`). |
 | `lib/notifications/` | `messages.ts` (pure: what each notice says and to whom), `notify.ts` (the one writer; `safeNotify` for callers whose work has committed), `queries.ts` (bell count, page, mark read), `cron.ts`, `ready.ts`. `/notifications` and the header's NOTIFICATIONS link sit on it. |
+| `lib/bank-recon/` | BANK RECONCILIATION: `cash-sheet.ts` (the CASH sheet read, pure), `recon.ts` (the arithmetic and the book ↔ account match, pure), `import.ts` (plan / apply the bank balances), `entries.ts` (the typed book balance and deposits in transit), `query.ts`. `/recon/bank` sits on it; `lib/bank-recon-view.ts` holds its parameters. |
 | `lib/recon/` | Outstanding checks: `outstanding.ts` (the as-of rule, pure), `summary.ts` (per account, centavo-exact, pure), `query.ts` (the released population). `/recon` and `/api/export/recon` sit on it. |
 | `lib/list-sort.ts` | The list's order: params, the `cm_sort` cookie, database and in-app keys. Pure. |
 | `lib/column-filters.ts` | The filter row's `f.*` parameters: parsing, refusal, description. Pure. |
@@ -1074,7 +1110,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+**2,428 tests across 173 files** (arithmetic: 2,380 plus 48 for BANK RECONCILIATION on 2026-11-09 — `bank-recon/cash-sheet`, `bank-recon/recon`, `bank-recon-view` (pure, 32) and `bank-recon/import`, `bank-recon/entries`, `bank-recon/query` (database, 16), all new; those six ran green, 48/48, with `recon/*`, `recon-view`, `schema` and `module-nav` green beside them earlier the same day, not a full run; browser-checked on the TEST database — the screen, SAVE BOOK BALANCES to RECONCILED, and an upload preview and confirm). **2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
 `numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
 `numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
 in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on

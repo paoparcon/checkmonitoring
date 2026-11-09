@@ -906,6 +906,8 @@ model User {
   notifications            Notification[]
   availabilityRequestsMade    AvailabilityRequest[] @relation("availabilityRequestedBy")
   availabilityRequestsDecided AvailabilityRequest[] @relation("availabilityDecidedBy")
+  cashBankBalancesUploaded    CashBalance[] @relation("cashBankBalanceRecordedBy")
+  cashBookFiguresRecorded     CashBalance[] @relation("cashBookFiguresRecordedBy")
 }
 
 /// An outflow that is not a cheque — payroll, a tax remittance, loan
@@ -1066,4 +1068,69 @@ model AvailabilityRequest {
   @@unique([checkId, pendingKey])
   @@index([status, requestedAt])
   @@index([requestedById])
+}
+
+/// BANK RECON (2026-11-09, user: "we will integrate bank recon i think this is
+/// important"). One line of Finance's CASH schedule — the `CASH` sheet of the
+/// monthly `Cash <MONTH> <YEAR>.xlsx` workbook: a bank account, or a cash fund
+/// (petty cash, revolving fund, GCash). `key` is the account number's digits
+/// when the line states one, else `FUND:<company>:<description>`; the sheet's
+/// GL account is NOT a key (11120010 is on two lines, 11110020 on two more).
+/// Everything else is the sheet's own wording, kept as the last upload wrote
+/// it. Which CHECK BOOK draws on the account is not stored: it is read from
+/// the book's code (`BPI-S-4636` is the account ending 4636) by
+/// `lib/bank-recon/accounts.ts`, so a book Acumatica adds later is matched
+/// without a write. Never deleted.
+model CashLedgerAccount {
+  id            String   @id @default(cuid())
+  key           String   @unique
+  label         String
+  companyLabel  String?
+  glAccount     String?
+  description   String?
+  accountNumber String?
+  /// PHP | USD | EUR, as the sheet's description says. The BALANCE is in pesos
+  /// whatever this says: the CASH sheet carries the peso equivalent.
+  currency      String   @default("PHP")
+  /// The line's row on the sheet last read — the screen keeps Finance's order.
+  position      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  balances CashBalance[]
+}
+
+/// One account on one day: the BANK balance Finance's CASH sheet states (in
+/// pesos, written only by the workbook upload, with the cell it came from —
+/// user ruling 2026-11-09: "those are bank balance") and the figures Finance
+/// types on `/recon/bank` — the BOOK balance per the ledger and the deposits in
+/// transit. The outstanding checks are NOT stored: they are computed for the
+/// day from the checks themselves (`lib/recon/outstanding.ts`), so a clearing
+/// recorded later corrects every past reconciliation. Amounts are
+/// Decimal(18,2) and travel as strings (rule 8). Never deleted; every change is
+/// on the audit trail (`cash_balances_imported`, `bank_recon_recorded`).
+model CashBalance {
+  id                String    @id @default(cuid())
+  accountId         String
+  asOf              DateTime  @db.Date
+  /// From the workbook upload.
+  bankBalance       Decimal?  @db.Decimal(18, 2)
+  bankSource        String?
+  bankRecordedById  String?
+  bankRecordedAt    DateTime?
+  /// Typed by Finance.
+  bookBalance       Decimal?  @db.Decimal(18, 2)
+  depositsInTransit Decimal?  @db.Decimal(18, 2)
+  note              String?
+  bookRecordedById  String?
+  bookRecordedAt    DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  account        CashLedgerAccount @relation(fields: [accountId], references: [id])
+  bankRecordedBy User?             @relation("cashBankBalanceRecordedBy", fields: [bankRecordedById], references: [id])
+  bookRecordedBy User?             @relation("cashBookFiguresRecordedBy", fields: [bookRecordedById], references: [id])
+
+  @@unique([accountId, asOf])
+  @@index([asOf])
 }

@@ -62,6 +62,10 @@ export async function resetDb() {
     await tx.acumaticaBill.deleteMany()
     await tx.acumaticaBillTerms.deleteMany()
     await tx.cashAccount.deleteMany()
+    // BANK RECON (2026-11-09): balances hang off a ledger account and two
+    // users (RESTRICT), so they go before the users do.
+    await tx.cashBalance.deleteMany()
+    await tx.cashLedgerAccount.deleteMany()
     // Finance's inventory notes hang off a check book and a user (RESTRICT
     // both ways), so they go before either.
     await tx.checkInventoryNote.deleteMany()
