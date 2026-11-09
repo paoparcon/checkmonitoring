@@ -11,6 +11,7 @@ import { AppHeader } from '@/components/AppHeader'
 import { EmptyState } from '@/components/EmptyState'
 import { ReconTable } from '@/components/ReconTable'
 import { OutstandingList } from '@/components/OutstandingList'
+import { ReconTabs } from '@/components/recon/ReconTabs'
 
 /**
  * OUTSTANDING CHEQUES — the cheque side of the bank reconciliation.
@@ -55,6 +56,7 @@ export default async function ReconPage({
   return (
     <main className="space-y-4 px-4 py-5">
       <AppHeader user={user} title="OUTSTANDING CHECKS" back={{ href: '/', label: '← DASHBOARD' }} />
+      <ReconTabs />
 
       <p className="rounded-xl bg-white px-4 py-3 text-sm leading-relaxed text-slate-600 ring-1 ring-hairline">
         Outstanding means released and not yet cleared by the bank as of the date. Where no release date

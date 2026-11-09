@@ -166,6 +166,8 @@ model CashAccount {
   bank      Bank    @relation(fields: [bankId], references: [id])
   company   Company @relation(fields: [companyId], references: [id])
   checks    Check[]
+  reconOpening ReconOpeningBalance?
+  reconPeriods ReconPeriod[]
 }
 
 model CheckBook {
@@ -177,6 +179,8 @@ model CheckBook {
   company   Company @relation(fields: [companyId], references: [id])
   checks    Check[]
   inventoryNotes CheckInventoryNote[]
+  reconOpening ReconOpeningBalance?
+  reconPeriods ReconPeriod[]
 }
 
 /// Finance's check inventory on NUMBERING (2026-11-03, spec
@@ -403,6 +407,7 @@ model Check {
   portalEvents       PortalEvent[]
   availabilityRequests AvailabilityRequest[]
   notifications      Notification[]
+  reconStatementLine ReconStatementLine?
 
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
@@ -906,6 +911,20 @@ model User {
   notifications            Notification[]
   availabilityRequestsMade    AvailabilityRequest[] @relation("availabilityRequestedBy")
   availabilityRequestsDecided AvailabilityRequest[] @relation("availabilityDecidedBy")
+  reconOpeningsCreated     ReconOpeningBalance[] @relation("reconOpeningCreatedBy")
+  reconOpeningsUpdated     ReconOpeningBalance[] @relation("reconOpeningUpdatedBy")
+  reconPeriodsCreated      ReconPeriod[] @relation("reconPeriodCreatedBy")
+  reconPeriodsSubmitted    ReconPeriod[] @relation("reconPeriodSubmittedBy")
+  reconPeriodsReviewed     ReconPeriod[] @relation("reconPeriodReviewedBy")
+  reconPeriodsApproved     ReconPeriod[] @relation("reconPeriodApprovedBy")
+  reconPeriodsClosed       ReconPeriod[] @relation("reconPeriodClosedBy")
+  reconLinesCreated        ReconStatementLine[] @relation("reconLineCreatedBy")
+  reconLinesResolved       ReconStatementLine[] @relation("reconLineResolvedBy")
+  reconBookEntriesCreated  ReconBookEntry[] @relation("reconBookEntryCreatedBy")
+  reconAdjustmentsCreated  ReconAdjustment[] @relation("reconAdjustmentCreatedBy")
+  reconAdjustmentsResolved ReconAdjustment[] @relation("reconAdjustmentResolvedBy")
+  reconReopensRequested    ReconReopenRequest[] @relation("reconReopenRequestedBy")
+  reconReopensDecided      ReconReopenRequest[] @relation("reconReopenDecidedBy")
 }
 
 /// An outflow that is not a cheque — payroll, a tax remittance, loan
@@ -1066,4 +1085,289 @@ model AvailabilityRequest {
   @@unique([checkId, pendingKey])
   @@index([status, requestedAt])
   @@index([requestedById])
+}
+
+// ─── MONTHLY BANK RECONCILIATION (spec 2026-11-09-monthly-bank-reconciliation-design.md) ───
+//
+// A reconciliation ACCOUNT is what `accountWhere` (lib/queries.ts) already
+// calls one: a CheckBook, else a CashAccount. No new bank-account table — every
+// row below names exactly one of the two (a CHECK constraint in the migration)
+// and repeats its id in `accountKey`, so one unique index serves both kinds.
+// Amounts are Decimal(18,2) and travel as decimal strings (rule 8).
+
+enum ReconPeriodStatus {
+  DRAFT
+  FOR_REVIEW
+  FOR_APPROVAL
+  RECONCILED
+  CLOSED
+}
+
+/// Where a period's beginning balances came from.
+enum ReconBalanceSource {
+  /// The account's established beginning balance (the first period).
+  OPENING
+  /// The previous period's approved ending balances.
+  CARRIED_FORWARD
+}
+
+/// What a bank statement line is, once matched or classified.
+enum ReconLineKind {
+  /// A cheque this system holds, cleared by the line.
+  CHECK
+  /// A book entry (deposit or non-cheque disbursement) recorded on the recon.
+  BOOK_ENTRY
+  /// A charge, fee or tax the bank took and the books have not recorded.
+  BANK_CHARGE
+  /// A credit (interest, credit memo) the books have not recorded.
+  BANK_CREDIT
+  UNIDENTIFIED_DEBIT
+  UNIDENTIFIED_CREDIT
+  /// The bank's own error: reversed out of the adjusted bank balance until resolved.
+  BANK_ERROR
+}
+
+enum ReconMatchMethod {
+  AUTO
+  MANUAL
+}
+
+enum ReconBookEntryKind {
+  /// Money recorded in the books as received; unmatched at month end = deposit in transit.
+  DEPOSIT
+  /// A non-cheque payment recorded in the books (transfer, debit memo); unmatched = outstanding.
+  DISBURSEMENT
+}
+
+enum ReconAdjustmentSide {
+  BANK
+  BOOK
+}
+
+enum ReconDirection {
+  ADD
+  LESS
+}
+
+enum ReconReopenStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// The established beginning balance of one account: the first reconciliation
+/// month starts from it. Later months start from the previous month's approved
+/// ending balances, never from this. Changed only by `correctBeginningBalance`,
+/// FINANCE_ADMIN, with a reason, and only while the first period is DRAFT (or
+/// none exists); every change is an audit row carrying the old and new figures.
+model ReconOpeningBalance {
+  id                 String   @id @default(cuid())
+  accountKey         String   @unique
+  checkBookId        String?  @unique
+  cashAccountId      String?  @unique
+  /// The 1st of the first reconciliation month (UTC midnight, as every date column).
+  effectiveDate      DateTime
+  currency           String   @default("PHP")
+  bankBalance        Decimal  @db.Decimal(18, 2)
+  bookBalance        Decimal  @db.Decimal(18, 2)
+  /// The statement / ledger reference the figures were taken from. Required.
+  reference          String
+  /// Where the supporting document is kept (file name, folder, ticket). Optional.
+  supportingDocument String?
+  createdById        String
+  createdAt          DateTime @default(now())
+  updatedById        String?
+  updatedAt          DateTime @updatedAt
+
+  checkBook   CheckBook?   @relation(fields: [checkBookId], references: [id], onDelete: Restrict)
+  cashAccount CashAccount? @relation(fields: [cashAccountId], references: [id], onDelete: Restrict)
+  createdBy   User         @relation("reconOpeningCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedBy   User?        @relation("reconOpeningUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
+}
+
+/// One account's reconciliation for one calendar month. Editable only while
+/// DRAFT. On approval the computed figures are frozen into the columns and
+/// `snapshot`; a RECONCILED or CLOSED period is read from them and never
+/// recomputed, so a later clearing cannot rewrite an approved month.
+model ReconPeriod {
+  id                        String             @id @default(cuid())
+  accountKey                String
+  checkBookId               String?
+  cashAccountId             String?
+  /// The 1st of the month (UTC midnight).
+  periodStart               DateTime
+  currency                  String             @default("PHP")
+  status                    ReconPeriodStatus  @default(DRAFT)
+  beginningSource           ReconBalanceSource
+  /// The month before, when this one was carried forward from it.
+  previousPeriodId          String?            @unique
+  beginningBankBalance      Decimal            @db.Decimal(18, 2)
+  beginningBookBalance      Decimal            @db.Decimal(18, 2)
+  /// As printed on the bank statement — compared, never used, against the carried figure.
+  statementBeginningBalance Decimal?           @db.Decimal(18, 2)
+  /// The bank statement's ending balance. Required before the period is submitted.
+  statementEndingBalance    Decimal?           @db.Decimal(18, 2)
+
+  // Frozen on approval.
+  endingBankBalance      Decimal? @db.Decimal(18, 2)
+  /// The book balance after this month's reconciliation adjustments — what the next month begins from.
+  endingBookBalance      Decimal? @db.Decimal(18, 2)
+  adjustedBankBalance    Decimal? @db.Decimal(18, 2)
+  adjustedBookBalance    Decimal? @db.Decimal(18, 2)
+  difference             Decimal? @db.Decimal(18, 2)
+  totalOutstandingChecks Decimal? @db.Decimal(18, 2)
+  totalDepositsInTransit Decimal? @db.Decimal(18, 2)
+  unidentifiedCount      Int?
+  snapshot               Json?
+
+  createdById   String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  submittedById String?
+  submittedAt   DateTime?
+  reviewedById  String?
+  reviewedAt    DateTime?
+  approvedById  String?
+  approvedAt    DateTime?
+  closedById    String?
+  closedAt      DateTime?
+  reopenCount   Int       @default(0)
+
+  checkBook      CheckBook?   @relation(fields: [checkBookId], references: [id], onDelete: Restrict)
+  cashAccount    CashAccount? @relation(fields: [cashAccountId], references: [id], onDelete: Restrict)
+  previousPeriod ReconPeriod? @relation("reconCarry", fields: [previousPeriodId], references: [id], onDelete: Restrict)
+  nextPeriod     ReconPeriod? @relation("reconCarry")
+  createdBy      User         @relation("reconPeriodCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  submittedBy    User?        @relation("reconPeriodSubmittedBy", fields: [submittedById], references: [id], onDelete: Restrict)
+  reviewedBy     User?        @relation("reconPeriodReviewedBy", fields: [reviewedById], references: [id], onDelete: Restrict)
+  approvedBy     User?        @relation("reconPeriodApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  closedBy       User?        @relation("reconPeriodClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
+
+  lines          ReconStatementLine[]
+  bookEntries    ReconBookEntry[]
+  adjustments    ReconAdjustment[]
+  reopenRequests ReconReopenRequest[]
+
+  @@unique([accountKey, periodStart])
+  @@index([status])
+  @@index([periodStart])
+}
+
+/// One line of an uploaded bank statement. `fingerprint` is unique per
+/// ACCOUNT, not per period, so the same line uploaded again — this month or
+/// next — is refused rather than counted twice. A line clears at most one
+/// cheque (`checkId` unique) and matches at most one book entry.
+model ReconStatementLine {
+  id                  String            @id @default(cuid())
+  periodId            String
+  accountKey          String
+  lineDate            DateTime
+  description         String
+  reference           String?
+  checkNumber         String?
+  debit               Decimal?          @db.Decimal(18, 2)
+  credit              Decimal?          @db.Decimal(18, 2)
+  balance             Decimal?          @db.Decimal(18, 2)
+  sourceFile          String
+  sourcePlace         String
+  fingerprint         String
+  kind                ReconLineKind
+  matchMethod         ReconMatchMethod?
+  checkId             String?           @unique
+  bookEntryId         String?           @unique
+  /// Mandatory for a MANUAL match or classification.
+  remarks             String?
+  /// BANK_ERROR and UNIDENTIFIED lines stay open until resolved in a later (or the same) month.
+  resolvedPeriodStart DateTime?
+  resolvedById        String?
+  resolvedAt          DateTime?
+  resolution          String?
+  createdById         String
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  period     ReconPeriod     @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  check      Check?          @relation(fields: [checkId], references: [id], onDelete: Restrict)
+  bookEntry  ReconBookEntry? @relation(fields: [bookEntryId], references: [id], onDelete: Restrict)
+  createdBy  User            @relation("reconLineCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  resolvedBy User?           @relation("reconLineResolvedBy", fields: [resolvedById], references: [id], onDelete: Restrict)
+
+  @@unique([accountKey, fingerprint])
+  @@index([periodId])
+  @@index([accountKey, kind])
+}
+
+/// A book-side transaction that is not a cheque: a deposit, or a non-cheque
+/// disbursement already recorded in the books. Dated inside its period; the
+/// first period also takes OPENING items dated before it (deposits in transit
+/// at the beginning balance date).
+model ReconBookEntry {
+  id          String             @id @default(cuid())
+  periodId    String
+  accountKey  String
+  kind        ReconBookEntryKind
+  entryDate   DateTime
+  amount      Decimal            @db.Decimal(18, 2)
+  reference   String
+  description String?
+  createdById String
+  createdAt   DateTime           @default(now())
+
+  period      ReconPeriod         @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  createdBy   User                @relation("reconBookEntryCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  matchedLine ReconStatementLine?
+
+  @@index([accountKey, entryDate])
+  @@index([periodId])
+}
+
+/// An "other adjustment" on either side of the reconciliation. BANK: a timing
+/// or bank-error item that carries forward until resolved. BOOK: a correction
+/// to the books, counted in its own period only (the carried book balance
+/// includes it).
+model ReconAdjustment {
+  id                  String              @id @default(cuid())
+  periodId            String
+  accountKey          String
+  side                ReconAdjustmentSide
+  direction           ReconDirection
+  amount              Decimal             @db.Decimal(18, 2)
+  description         String
+  reference           String?
+  resolvedPeriodStart DateTime?
+  resolvedById        String?
+  resolvedAt          DateTime?
+  resolution          String?
+  createdById         String
+  createdAt           DateTime            @default(now())
+
+  period     ReconPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  createdBy  User        @relation("reconAdjustmentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  resolvedBy User?       @relation("reconAdjustmentResolvedBy", fields: [resolvedById], references: [id], onDelete: Restrict)
+
+  @@index([accountKey, side])
+  @@index([periodId])
+}
+
+/// Re-opening a RECONCILED or CLOSED month: one FINANCE_ADMIN asks with a
+/// reason, a DIFFERENT one approves. At most one pending per period
+/// (`pendingKey`, the AvailabilityRequest pattern).
+model ReconReopenRequest {
+  id            String            @id @default(cuid())
+  periodId      String
+  status        ReconReopenStatus @default(PENDING)
+  pendingKey    String?
+  reason        String
+  requestedById String
+  requestedAt   DateTime
+  decidedById   String?
+  decidedAt     DateTime?
+  decisionNote  String?
+
+  period      ReconPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  requestedBy User        @relation("reconReopenRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy   User?       @relation("reconReopenDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
+
+  @@unique([periodId, pendingKey])
+  @@index([status])
 }
