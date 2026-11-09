@@ -33,6 +33,16 @@ export async function resetDb() {
     // to purge audit history; SET LOCAL scopes this to the transaction.
     await tx.$executeRawUnsafe(`SET LOCAL app.allow_audit_purge = 'on'`)
     await tx.auditLog.deleteMany()
+    // The monthly bank reconciliation (2026-11-09): every FK is RESTRICT, so
+    // children first, and the self-referencing carry link is cut before the
+    // periods go — RESTRICT is checked per row, not at the statement's end.
+    await tx.reconStatementLine.deleteMany()
+    await tx.reconBookEntry.deleteMany()
+    await tx.reconAdjustment.deleteMany()
+    await tx.reconReopenRequest.deleteMany()
+    await tx.reconPeriod.updateMany({ data: { previousPeriodId: null } })
+    await tx.reconPeriod.deleteMany()
+    await tx.reconOpeningBalance.deleteMany()
     await tx.portalEvent.deleteMany()
     await tx.notification.deleteMany()
     await tx.checkBill.deleteMany()

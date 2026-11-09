@@ -739,6 +739,33 @@ pages hosting bulk actions (`/`, `/aging`, `/approvals`) declare `maxDuration = 
 kick takes what is left of the minute, up to 25 s. The setting `caps.bulkSelection` (key kept) now caps
 only the CLEARING paste box and is labelled LINES PER CLEARING PASTE.
 
+**MONTHLY BANK RECONCILIATION (`/recon/monthly`, `/recon/periods/[id]`, `/recon/balances`, 2026-11-09,
+spec `2026-11-09-monthly-bank-reconciliation-design.md`).** An enhancement of RECON, not a replacement:
+`/recon` (OUTSTANDING CHECKS) keeps its URL and export and gains a tab bar. The account is a check book,
+else a cash account (`accountWhere`) — no bank-account table; every recon row carries `accountKey` and
+exactly one FK (CHECK constraint). `lib/recon/monthly/compute.ts` is the one computation (pure; page,
+dashboard, export and approval snapshot all call it). **Nothing carries by copying**: outstanding checks
+are `isOutstandingAsOf` at month end, deposits in transit are unmatched DEPOSIT entries, BANK adjustments
+and BANK_ERROR lines stay open until resolved — so a new month never resets or duplicates them. Next
+month begins from the previous APPROVED month: bank = its statement ending balance, book = its adjusted
+book balance. `lib/recon/monthly/actions.ts` is the only writer (one transaction + one `recon_*` audit
+row with `periodId` each); only DRAFT is editable; status moves are conditional `updateMany`s. Reviewer ≠
+submitter; approver is a FINANCE_ADMIN ≠ both; approval needs difference 0.00 and the previous month
+approved, freezes `snapshot` and opens the next month. An approved month is read from its snapshot,
+never recomputed (live drift is shown, not applied). Re-open = request by one FINANCE_ADMIN, approval
+by ANOTHER, refused while the next month is past DRAFT. Statement lines: `fingerprint` unique per account
+(never counted twice in any month), `checkId` unique; an AUTO check match clears through `recordClearing`
+(cleared date = line date) and a clearing is never undone, so a CHECK line cannot be re-classified.
+`lib/recon/monthly/labels.ts` exists so the client upload preview does not import server code (`match.ts`
+pulls `node:crypto` via `clearing-upload`). Migration `20261109000000_monthly_bank_reconciliation` must
+reach production BEFORE the deploy. Open with Finance: the book basis is RELEASED (not Acumatica's GL
+payment date), and historical released checks with no clearing recorded show as outstanding in an
+account's first month until cleared.
+
+**The test suite runs in ~2 minutes against a local Postgres** (measured 2026-11-09 in a cloud session:
+2,464 tests across 176 files, 0 failures): `DATABASE_URL_TEST` pointing at a local `postgres` 16 with
+`npx prisma migrate deploy` applied. Neon remains the shared test database; the local one is for speed.
+
 **A `|` inside `-t` breaks `npx.cmd vitest` under Git Bash.** `npx.cmd vitest run file -t "a|b"`
 mis-tokenises the pipe; `node node_modules/vitest/vitest.mjs run file -t "a|b"` is the same
 runner without the `.cmd` shim and works.
@@ -821,6 +848,7 @@ category not on it.
 | `lib/forecast/` | Cash outflow by check date: `buckets.ts` (the ageing buckets, pure), `query.ts` (the population — live, real, with an amount), `matrix.ts` (bucket × bank and bucket × stage, centavo-exact, pure). `/forecast` and `/api/export/forecast` sit on it. Since 2026-09-12 a check's typed `expectedOutflowDate` wins over its check date, and `PlannedOutflow` lines (`lib/planned-outflow/`, `/forecast/planned`) join the population as their own PLANNED column. |
 | `lib/aging/` | AGING: `buckets.ts` (the portal's buckets, pure), `query.ts` (SIGNED, aged). `lib/aging-picker.ts` (strip, selection, pure). `/aging` and `/api/export/aging` sit on it (`lib/export/aging-workbook.ts`). |
 | `lib/notifications/` | `messages.ts` (pure: what each notice says and to whom), `notify.ts` (the one writer; `safeNotify` for callers whose work has committed), `queries.ts` (bell count, page, mark read), `cron.ts`, `ready.ts`. `/notifications` and the header's NOTIFICATIONS link sit on it. |
+| `lib/recon/monthly/` | The monthly bank reconciliation: `period.ts` (months, amounts, the status ladder — pure), `compute.ts` (both calculations, carry-forward, variance — pure), `statement.ts` (statement parsing — pure), `match.ts` (auto-matching — pure), `labels.ts` (client-safe), `query.ts` (reads, dashboard, snapshots), `actions.ts` (the only writer). `/recon/monthly`, `/recon/periods/[id]`, `/recon/balances`, `/api/export/recon-period`. |
 | `lib/recon/` | Outstanding checks: `outstanding.ts` (the as-of rule, pure), `summary.ts` (per account, centavo-exact, pure), `query.ts` (the released population). `/recon` and `/api/export/recon` sit on it. |
 | `lib/list-sort.ts` | The list's order: params, the `cm_sort` cookie, database and in-app keys. Pure. |
 | `lib/column-filters.ts` | The filter row's `f.*` parameters: parsing, refusal, description. Pure. |
