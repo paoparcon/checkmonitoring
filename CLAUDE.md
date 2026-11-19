@@ -1333,7 +1333,16 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    The change was made in the 2026-10-29 ZIP extract (`~/Downloads/Supplier-Database-claude-reissue-revives-cancelled-row`,
    tests green there) and is in `docs/portal-patches/2026-11-11-internal-reversal-not-available.patch`
    for the portal checkout that holds migration 096 — **that extract lacks 096 and must not be
-   deployed**. When the two counts disagree, compare READY here with the last DELIVERED status-lane
+   deployed**. **2026-11-20: the patch is applied in the portal checkout on this Mac
+   (`~/Desktop/RCL PROJECTS/Supplier Portal`, branch `main`, level with origin), its migration
+   renumbered `098_internal_reversal_not_available.sql` because that checkout already held
+   `097_rr_holiday_location`; portal tests 2,561 of 2,561. Read-only on the portal's production
+   database that day: 098 is the only pending migration, it would move exactly the three rows, and the
+   portal held 76 AVAILABLE_FOR_RELEASE rows (73 after it). NOT yet run: `npm run migrate` and
+   `npx vercel --prod` in that checkout — both refused to Claude, so they are the user's to run. Deploy
+   from THAT working tree: its uncommitted BRS gendocs changes (edited 12 Nov 09:45) were in the portal
+   deploy of 12 Nov 09:47, so a deploy from a clean `main` would take them back out. The patch is
+   uncommitted there too.** When the two counts disagree, compare READY here with the last DELIVERED status-lane
    event per check before assuming a sync fault; the read-only comparison took one query.
 9. The test suite takes ~20 minutes because every test crosses the South China Sea. A local Postgres
    would make it ~2. It is the tax on every deploy.
