@@ -159,6 +159,7 @@ npx tsx scripts/revert-detail1-ready.ts "<for-release>.xlsx" <ready-from-list sn
 npx tsx scripts/void-acumatica-voided.ts [--apply]                # void what Acumatica voided (live or RELEASED here)
 npx tsx scripts/close-unmatchable-cancelled.ts [--apply]         # parked CANCELLED events whose check has no APV: close unsent
 npx tsx scripts/detach-cancelled-apvs.ts [--apply]               # CANCELLED/VOIDED checks still on an AP bill: detach, close their open CANCELLED events (ruling 2026-10-29)
+npx tsx scripts/withdraw-dead-available.ts [--apply]             # CANCELLED/VOIDED checks the portal still lists as available: queue a REVERT each (ruling 2026-11-19)
 npx tsx scripts/reinstate-register-cancelled.ts [--apply --check <number>]   # CANCELLED by the register only, live in Acumatica: list; put NAMED ones back to SIGNED with their bills
 npx tsx scripts/backfill-check-books.ts GOLIVE [--apply]       # record a missing check book from CashAccount; also moves or clears a book that differs from Acumatica's (§G1) (MANUFACTURING likewise)
 npx tsx scripts/link-vouchers-from-acumatica.ts "<for-release>.xlsx" [--apply]  # link list vouchers via AP-PAYMENTS-WITH-BILLS, ready their checks
@@ -524,6 +525,34 @@ must not be run again. **The user's scripts now run from a Mac** (`~/Projects/ch
 plain `npx`); the `npx.cmd` note above is for the Windows machine. The Neon address has two
 databases on one project: `check_monitoring` is NOT production and lacks recent columns —
 `check_monitoring_prod` is. The 2026-10-01 guard below is subsumed: a cancelled check never has an APV now.
+
+**A cancelled or voided check the portal lists as AVAILABLE is withdrawn there with a REVERT**
+(user ruling 2026-11-19, "Yes, build it"; it narrows the 2026-10-29 rule above, which still stands for
+every other cancellation). Measured that day: 73 READY FOR RELEASE here, 78 CHECKS AVAILABLE in the
+portal — the three INTERNAL reversals of 2026-11-09 (portal patch of 2026-11-11 still not deployed) and
+**`1791406353` (AP-A1035183) and `6000318593` (AP-ST028422), announced available on 5 November and
+voided by the Acumatica sync on 12 and 13 November**. Nothing withdrew them, so the portal kept listing
+and reminding, and would answer `already` to the replacement's MARK_AVAILABLE, keeping the dead check's
+number and pickup date. `withdrawOnCancel` (`lib/domain/actions.ts`, called by `voidCheck` and
+`cancelCheck` after `detachFromBills`): when the check's newest status-lane event that is delivered or
+IN_FLIGHT is MARK_AVAILABLE or RELEASE_REVERSED — read off the outbox, not the status, so a SIGNED check
+whose REVERT had not gone out is covered — it queues ONE REVERT. **Never CANCELLED** (that cancels the
+bill's row and refuses the re-issue). The detach leaves the check no APV, so the vouchers and POs ride in
+the event payload (`withdrawnOnCancel`, `lib/integrations/portal/withdrawal.ts`) — the one event not
+built from the check as it stands: `buildPortalEventBody` reads them for a REVERT only, and
+`eventMatchesCheck` (`lib/sync/portal-outbox.ts`) lets that REVERT through on a CANCELLED/VOIDED check
+where `kindMatchesStatus` alone would close it stale. **A voucher another check already holds at READY,
+SCHEDULED or RELEASED is left out** (the portal's row for that bill is that check's; a REVERT would
+withdraw or un-release it) — `portalHeldByAnother` on the audit row, and `portalSkipReason:
+HELD_BY_ANOTHER_SKIP_REASON` when that is all of them. The `cancelled` / `voided` row says
+`portalNotified: true, portalEvent: 'REVERT', portalWithdrawn: [...]`; `portalSyncStatus` is PENDING
+until it is delivered. INTERNAL never (rule 2). The supplier gets the portal's "check pickup reverted"
+notice. `scripts/withdraw-dead-available.ts [--apply]` (`lib/admin/withdraw-dead-available.ts`) queues
+the same REVERT for checks cancelled before this rule, vouchers read from the cancel/void audit row,
+snapshot first, one `availability_withdrawn_after_cancel` row each — **dry run 2026-11-19 lists exactly
+those two; `--apply` NOT yet run, and it is useful only once this code is deployed** (the deployed
+outbox would close the event as stale). When the two counts disagree again, the read-only comparison is:
+READY/SCHEDULED here against the last delivered status-lane event per check.
 
 **Every check, cancelled and voided included, is mirrored into the portal's own check list**
 (user ruling 2026-11-03: *"make sure all the checks including cancelled, void from the system are
@@ -1110,7 +1139,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,428 tests across 173 files** (arithmetic: 2,380 plus 48 for BANK RECONCILIATION on 2026-11-09 — `bank-recon/cash-sheet`, `bank-recon/recon`, `bank-recon-view` (pure, 32) and `bank-recon/import`, `bank-recon/entries`, `bank-recon/query` (database, 16), all new; those six ran green, 48/48, with `recon/*`, `recon-view`, `schema` and `module-nav` green beside them earlier the same day, not a full run; browser-checked on the TEST database — the screen, SAVE BOOK BALANCES to RECONCILED, and an upload preview and confirm). **2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+**2,446 tests across 174 files** (arithmetic: 2,428 plus 18 for the cancel-withdrawal on 2026-11-19 — `actions/portal-cancel` +11, `integrations/portal-client` +1, `sync/portal-outbox` +3, `admin/withdraw-dead-available` 3, new; those four files and every other file touching void or cancel ran green that day, not a full run). **2,428 tests across 173 files** (arithmetic: 2,380 plus 48 for BANK RECONCILIATION on 2026-11-09 — `bank-recon/cash-sheet`, `bank-recon/recon`, `bank-recon-view` (pure, 32) and `bank-recon/import`, `bank-recon/entries`, `bank-recon/query` (database, 16), all new; those six ran green, 48/48, with `recon/*`, `recon-view`, `schema` and `module-nav` green beside them earlier the same day, not a full run; browser-checked on the TEST database — the screen, SAVE BOOK BALANCES to RECONCILED, and an upload preview and confirm). **2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
 `numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
 `numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
 in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on
@@ -1286,6 +1315,22 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    until then that REVERT is a noop at the portal and the bill stays paid there). An INTERNAL
    check gets the quiet RELEASE_REVERSED for either destination (REVERT is never sent for one,
    rule 2), which is why `kindMatchesStatus` admits RELEASE_REVERSED on a SIGNED check.
+   **An INTERNAL reversal must not show as available in the portal (2026-11-11).** Measured that
+   day: the dashboard said 106 READY FOR RELEASE (₱5,847,506.53), the portal's tile 109 CHECKS
+   AVAILABLE. The three extra — `6000363516`, `6000363517`, `6000363518` (STK, HAMFI, STK; INTERNAL;
+   AP-ST045586 / AP-HF002250 / AP-ST045588) — were signed, readied and released in one action on
+   2026-11-09 15:48 Manila and reversed to SIGNED six minutes later; the portal's RELEASE_REVERSED
+   case (spec 2026-10-19) put their rows at AVAILABLE_FOR_RELEASE, quietly, and its tile counts every
+   row at that status. An internal bill never legitimately holds that status, since MARK_AVAILABLE is
+   never sent for one. Spec `2026-11-11-cm-internal-reversal-not-available-design.md` (identical in
+   both repos): the portal lands an internal reversal on READY_FOR_SIGNATURE (IN PROCESS on its tiles)
+   whatever the destination, and its migration 097 moves the rows already wrong (internal,
+   AVAILABLE_FOR_RELEASE, never announced), one audit row each. Nothing changes here but comments.
+   The change was made in the 2026-10-29 ZIP extract (`~/Downloads/Supplier-Database-claude-reissue-revives-cancelled-row`,
+   tests green there) and is in `docs/portal-patches/2026-11-11-internal-reversal-not-available.patch`
+   for the portal checkout that holds migration 096 — **that extract lacks 096 and must not be
+   deployed**. When the two counts disagree, compare READY here with the last DELIVERED status-lane
+   event per check before assuming a sync fault; the read-only comparison took one query.
 9. The test suite takes ~20 minutes because every test crosses the South China Sea. A local Postgres
    would make it ~2. It is the tax on every deploy.
 10. **The cash-outflow forecast is BUILT** (2026-09-11) — `/forecast`, on the check date read as

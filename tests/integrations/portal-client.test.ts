@@ -21,6 +21,20 @@ describe('manilaDay', () => {
 })
 
 describe('buildPortalEventBody', () => {
+  it('a cancel-withdrawal REVERT takes its vouchers and POs from the event, the cheque having none left (ruling 2026-11-19)', () => {
+    const payload = { action: 'REVERT', checkNumber: '6000353106', withdrawnOnCancel: true, apvs: ['AP-1001', 'AP-1002'], poNumbers: ['PO-77', ''] }
+    const dead = check({ apvNumbers: [], bills: [] })
+    expect(buildPortalEventBody({ id: 'ev9', kind: 'REVERT', payload }, dead)).toEqual({
+      eventId: 'ev9', kind: 'REVERT', apvs: ['AP-1001', 'AP-1002'], poNumbers: ['PO-77', ''], checkNo: '6000353106', bank: 'BPI',
+    })
+    // Only a REVERT reads the payload; any other kind is built from the cheque and refused for having no APV.
+    expect(() => buildPortalEventBody({ id: 'ev9', kind: 'MARK_AVAILABLE', payload }, dead)).toThrow(PortalPayloadError)
+    // An ordinary REVERT payload changes nothing.
+    expect(buildPortalEventBody({ id: 'ev9', kind: 'REVERT', payload: { action: 'REVERT' } }, check()).apvs).toEqual(['AP-1001', 'AP-1002'])
+    // Rule 2 still comes first: an INTERNAL cheque's REVERT is refused whatever it carries.
+    expect(() => buildPortalEventBody({ id: 'ev9', kind: 'REVERT', payload }, check({ eligibility: 'INTERNAL' }))).toThrow(/must never reach the portal/)
+  })
+
   it('MARK_AVAILABLE carries apvs, positional PO numbers, check number, bank and the pickup date', () => {
     expect(buildPortalEventBody({ id: 'ev1', kind: 'MARK_AVAILABLE' }, check())).toEqual({
       eventId: 'ev1', kind: 'MARK_AVAILABLE', apvs: ['AP-1001', 'AP-1002'], poNumbers: ['PO-77', ''],

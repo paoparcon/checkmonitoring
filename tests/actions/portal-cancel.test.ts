@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { testDb, resetDb } from '../helpers/db'
 import { makeUser, makeCheck } from '../helpers/factory'
-import { cancelCheck, voidCheck, DETACHED_SKIP_REASON } from '@/lib/domain/actions'
+import { cancelCheck, voidCheck, DETACHED_SKIP_REASON, HELD_BY_ANOTHER_SKIP_REASON } from '@/lib/domain/actions'
 
 const NOW = new Date('2026-10-29T10:00:00+08:00')
 
@@ -110,5 +110,120 @@ describe('a cancelled or voided cheque is detached from its AP bills, and the po
     expect((await testDb.check.findUniqueOrThrow({ where: { id: old.id } })).apvNumbers).toEqual([])
     expect((await testDb.check.findUniqueOrThrow({ where: { id: reissue.id } })).apvNumbers).toEqual(['AP-ST039907'])
     expect(await testDb.portalEvent.count()).toBe(0)
+  })
+})
+
+// USER RULING 2026-11-19: 73 READY FOR RELEASE here, 78 CHECKS AVAILABLE in the
+// portal. Two of the five (1791406353, 6000318593) were announced available on
+// 5 November and voided by the Acumatica sync a week later; nothing withdrew
+// them. A cancel or void of a cheque the portal LISTS AS AVAILABLE queues one
+// REVERT carrying the vouchers the detach is about to take off the cheque.
+describe('a cheque the portal lists as available is withdrawn there when it is cancelled or voided', () => {
+  const told = (checkId: string, kind: 'MARK_AVAILABLE' | 'REVERT' | 'RELEASED' | 'RELEASE_REVERSED', at: string, extra: Record<string, unknown> = {}) =>
+    testDb.portalEvent.create({
+      data: {
+        checkId, direction: 'OUT', kind, status: 'SYNCED', createdAt: new Date(at), nextAttemptAt: new Date(at),
+        idempotencyKey: `${checkId}:${kind}:${at}`, payload: { action: kind }, ...extra,
+      },
+    })
+
+  it('voidCheck queues a REVERT with the detached vouchers and their POs, and says so on the audit row', async () => {
+    const check = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-A1035183', 'AP-A1035184'], checkNumber: '1791406353' })
+    await testDb.checkBill.create({ data: { checkId: check.id, apvNumber: 'AP-A1035184', poNumber: 'PO-9', amount: '671.96' } })
+    await told(check.id, 'MARK_AVAILABLE', '2026-11-05T08:54:51Z')
+    await voidCheck(testDb, { checkId: check.id, reason: 'Voided in Acumatica', now: NOW })
+
+    const ev = await testDb.portalEvent.findFirstOrThrow({ where: { checkId: check.id, kind: 'REVERT' } })
+    expect(ev.status).toBe('PENDING')
+    expect(ev.idempotencyKey).toBe(`${check.id}:REVERT:${NOW.toISOString()}`)
+    expect(ev.payload).toEqual({
+      action: 'REVERT', checkNumber: '1791406353', withdrawnOnCancel: true,
+      apvs: ['AP-A1035183', 'AP-A1035184'], poNumbers: ['', 'PO-9'],
+    })
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+    expect(after).toMatchObject({ status: 'VOIDED', apvNumbers: [], portalSyncStatus: 'PENDING', portalDomain: 'LOCAL' })
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: check.id, action: 'voided' } })
+    expect(audit.details).toMatchObject({
+      portalNotified: true, portalEvent: 'REVERT', portalWithdrawn: ['AP-A1035183', 'AP-A1035184'],
+      apvNumbersDetached: ['AP-A1035183', 'AP-A1035184'],
+    })
+    expect(audit.details).not.toHaveProperty('portalSkipReason')
+    expect(audit.remarks).toContain('Its availability is withdrawn at the portal (user ruling 2026-11-19).')
+  })
+
+  it('cancelCheck does the same', async () => {
+    const user = await makeUser('FINANCE_ADMIN')
+    const check = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'BROKER', apvNumbers: ['AP-ST000020'] })
+    await told(check.id, 'MARK_AVAILABLE', '2026-10-28T00:00:00Z')
+    await cancelCheck(testDb, { checkId: check.id, userId: user.id, reason: 'spoiled', now: NOW })
+    const ev = await testDb.portalEvent.findFirstOrThrow({ where: { checkId: check.id, kind: 'REVERT' } })
+    expect(ev.payload).toMatchObject({ withdrawnOnCancel: true, apvs: ['AP-ST000020'] })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: check.id } })).portalSyncStatus).toBe('PENDING')
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: check.id, action: 'cancelled' } })
+    expect(audit.details).toMatchObject({ portalNotified: true, portalEvent: 'REVERT', portalWithdrawn: ['AP-ST000020'] })
+  })
+
+  it('a release reversed back to available counts as listed', async () => {
+    const check = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000021'] })
+    await told(check.id, 'RELEASED', '2026-10-27T00:00:00Z')
+    await told(check.id, 'RELEASE_REVERSED', '2026-10-28T00:00:00Z')
+    await voidCheck(testDb, { checkId: check.id, reason: 'Voided in Acumatica', now: NOW })
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id, kind: 'REVERT' } })).toBe(1)
+  })
+
+  it('a cheque reverted to SIGNED whose REVERT has not gone out is still withdrawn', async () => {
+    const check = await makeCheck({ status: 'SIGNED', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000022'] })
+    await told(check.id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z')
+    await told(check.id, 'REVERT', '2026-10-28T00:00:00Z', { status: 'PENDING' })
+    await voidCheck(testDb, { checkId: check.id, reason: 'Voided in Acumatica', now: NOW })
+    const reverts = await testDb.portalEvent.findMany({ where: { checkId: check.id, kind: 'REVERT' }, orderBy: { createdAt: 'desc' } })
+    expect(reverts).toHaveLength(2)
+    expect(reverts[0]!.payload).toMatchObject({ withdrawnOnCancel: true, apvs: ['AP-ST000022'] })
+  })
+
+  it.each([
+    ['never announced', async (_id: string) => {}],
+    ['announced only in a row closed unsent', async (id: string) => { await told(id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z', { lastError: 'stale: check is now SIGNED' }) }],
+    ['announced but still waiting to be sent', async (id: string) => { await told(id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z', { status: 'PENDING' }) }],
+    ['already withdrawn', async (id: string) => { await told(id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z'); await told(id, 'REVERT', '2026-10-28T00:00:00Z') }],
+    ['released', async (id: string) => { await told(id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z'); await told(id, 'RELEASED', '2026-10-28T00:00:00Z') }],
+  ])('queues nothing for a cheque %s', async (_name, seed) => {
+    const check = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000023'] })
+    await seed(check.id)
+    const before = await testDb.portalEvent.count({ where: { checkId: check.id } })
+    await voidCheck(testDb, { checkId: check.id, reason: 'Voided in Acumatica', now: NOW })
+    expect(await testDb.portalEvent.count({ where: { checkId: check.id } })).toBe(before)
+    const after = await testDb.check.findUniqueOrThrow({ where: { id: check.id } })
+    expect(after.portalSyncStatus).toBe('NOT_APPLICABLE')
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: check.id, action: 'voided' } })
+    expect(audit.details).toMatchObject({ portalNotified: false, portalSkipReason: DETACHED_SKIP_REASON })
+  })
+
+  it('leaves out a voucher another cheque already holds at the portal, and sends nothing when that is all of them', async () => {
+    const old = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000030', 'AP-ST000031'], checkNumber: '6000354900' })
+    await told(old.id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z')
+    // The re-issue is already READY on one of the two bills: its row at the portal is the re-issue's.
+    await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000031'], checkNumber: '6000354974' })
+    await voidCheck(testDb, { checkId: old.id, reason: 'Voided in Acumatica', now: NOW })
+    const ev = await testDb.portalEvent.findFirstOrThrow({ where: { checkId: old.id, kind: 'REVERT' } })
+    expect(ev.payload).toMatchObject({ apvs: ['AP-ST000030'] })
+    const audit = await testDb.auditLog.findFirstOrThrow({ where: { checkId: old.id, action: 'voided' } })
+    expect(audit.details).toMatchObject({ portalNotified: true, portalWithdrawn: ['AP-ST000030'], portalHeldByAnother: ['AP-ST000031'] })
+
+    const second = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000031'], checkNumber: '6000354901' })
+    await told(second.id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z')
+    await voidCheck(testDb, { checkId: second.id, reason: 'Voided in Acumatica', now: NOW })
+    expect(await testDb.portalEvent.count({ where: { checkId: second.id, kind: 'REVERT' } })).toBe(0)
+    const audit2 = await testDb.auditLog.findFirstOrThrow({ where: { checkId: second.id, action: 'voided' } })
+    expect(audit2.details).toMatchObject({ portalNotified: false, portalSkipReason: HELD_BY_ANOTHER_SKIP_REASON, portalHeldByAnother: ['AP-ST000031'] })
+    expect((await testDb.check.findUniqueOrThrow({ where: { id: second.id } })).portalSyncStatus).toBe('NOT_APPLICABLE')
+  })
+
+  it('a SIGNED re-issue on the same bill does not hold the row: the dead cheque is still withdrawn', async () => {
+    const old = await makeCheck({ status: 'READY_FOR_RELEASE', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000040'], checkNumber: '6000354902' })
+    await told(old.id, 'MARK_AVAILABLE', '2026-10-27T00:00:00Z')
+    await makeCheck({ status: 'SIGNED', eligibility: 'SUPPLIER', apvNumbers: ['AP-ST000040'], checkNumber: '6000354975' })
+    await voidCheck(testDb, { checkId: old.id, reason: 'Voided in Acumatica', now: NOW })
+    expect(await testDb.portalEvent.count({ where: { checkId: old.id, kind: 'REVERT' } })).toBe(1)
   })
 })

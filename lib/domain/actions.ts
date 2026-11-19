@@ -8,6 +8,7 @@ import { portalApvs } from '@/lib/integrations/portal/apvs'
 import { loadSettings } from '@/lib/settings/read'
 import { DomainError } from './errors'
 import { deliveredToPortal } from '@/lib/integrations/portal/delivered'
+import { cancelWithdrawalPayload } from '@/lib/integrations/portal/withdrawal'
 import { portalRoute, type Eligibility } from './eligibility'
 import { checkDeletable } from './incomplete'
 import {
@@ -257,19 +258,100 @@ export async function detachFromBills(
   }
 }
 
+/** What `withdrawOnCancel` decided: the vouchers a REVERT was queued for, and those left to another cheque. */
+export type CancelWithdrawalOutcome = { withdrawn: string[]; heldByAnother: string[] }
+
+/** The statuses under which another cheque owns a bill's row at the portal. */
+const HOLDS_PORTAL_ROW: CheckStatus[] = ['READY_FOR_RELEASE', 'SCHEDULED', 'RELEASED']
+
+/**
+ * USER RULING 2026-11-19 ("Yes, build it"), narrowing the 2026-10-29 rule that
+ * the portal is told nothing of a cancellation. Measured that day: 73 READY FOR
+ * RELEASE here against 78 CHECKS AVAILABLE in the portal; two of the five were
+ * `1791406353` and `6000318593`, announced available on 5 November and voided
+ * by the Acumatica sync on 12 and 13 November. Nothing withdrew them, so the
+ * portal went on listing — and reminding the supplier about — a cheque that no
+ * longer exists, and would have answered `already` to the replacement's
+ * MARK_AVAILABLE, keeping the dead cheque's number and pickup date.
+ *
+ * So a cancel or void of a cheque THE PORTAL LISTS AS AVAILABLE queues one
+ * REVERT — a withdrawal, which is what happened; never CANCELLED, which cancels
+ * the bill's row and refuses the re-issue (the 2026-10-29 defect). "Lists as
+ * available" is read off the outbox, not the status: the newest status-lane
+ * event delivered or in flight is MARK_AVAILABLE or RELEASE_REVERSED. That also
+ * covers a cheque reverted to SIGNED whose REVERT had not gone out yet — the
+ * outbox would close that one as stale against a dead cheque.
+ *
+ * The vouchers ride in the payload (`cancelWithdrawalPayload`), because the
+ * detach leaves the cheque none to match on. A voucher another cheque already
+ * holds at READY, SCHEDULED or RELEASED is left out: the bill's row at the
+ * portal is that cheque's now, and a REVERT would withdraw (or un-release) it.
+ *
+ * Never for an INTERNAL cheque (rule 2: no MARK_AVAILABLE is ever sent for
+ * one, and the client refuses its REVERT). Returns null when nothing is queued.
+ */
+export async function withdrawOnCancel(
+  tx: Prisma.TransactionClient,
+  check: { id: string; checkNumber: string; eligibility: string },
+  detached: DetachedBills, now: Date,
+): Promise<CancelWithdrawalOutcome | null> {
+  if (portalRoute(check.eligibility as Eligibility) === null) return null
+  const events = await tx.portalEvent.findMany({
+    where: { checkId: check.id, kind: { not: 'RECEIPT' } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    select: { kind: true, status: true, lastError: true },
+  })
+  const told = events.filter((e) => e.status === 'IN_FLIGHT' || deliveredToPortal(e)).at(-1)
+  if (!told || (told.kind !== 'MARK_AVAILABLE' && told.kind !== 'RELEASE_REVERSED')) return null
+
+  const apvs = portalApvs({ apvNumbers: detached.apvNumbersDetached, bills: detached.billsDetached })
+  if (apvs.length === 0) return null
+  const others = await tx.check.findMany({
+    where: {
+      id: { not: check.id }, status: { in: HOLDS_PORTAL_ROW },
+      OR: [{ apvNumbers: { hasSome: apvs } }, { bills: { some: { apvNumber: { in: apvs } } } }],
+    },
+    select: { apvNumbers: true, bills: { select: { apvNumber: true } } },
+  })
+  const taken = new Set(others.flatMap((o) => [...o.apvNumbers, ...o.bills.map((b) => b.apvNumber)]))
+  const withdrawn = apvs.filter((a) => !taken.has(a))
+  const heldByAnother = apvs.filter((a) => taken.has(a))
+  if (withdrawn.length === 0) return { withdrawn, heldByAnother }
+
+  const poByApv = new Map(detached.billsDetached.map((b) => [b.apvNumber, b.poNumber ?? '']))
+  await tx.portalEvent.create({
+    data: {
+      checkId: check.id, direction: 'OUT', kind: 'REVERT', status: 'PENDING',
+      idempotencyKey: portalEventKey(check.id, 'REVERT', now),
+      payload: cancelWithdrawalPayload(check.checkNumber, { apvs: withdrawn, poNumbers: withdrawn.map((a) => poByApv.get(a) ?? '') }),
+    },
+  })
+  return { withdrawn, heldByAnother }
+}
+
+/** Recorded when a listed-as-available cheque's vouchers all belong to another cheque by now. */
+export const HELD_BY_ANOTHER_SKIP_REASON = 'its AP bills are held by another cheque at the portal'
+
 /** The audit keys for a cancellation: the portal decision (routed cheques only) and what was detached. */
-function cancelAuditDetails(routed: boolean, detached: DetachedBills): Prisma.InputJsonObject {
+function cancelAuditDetails(routed: boolean, detached: DetachedBills, withdrawal: CancelWithdrawalOutcome | null = null): Prisma.InputJsonObject {
   const anyDetached = detached.apvNumbersDetached.length > 0 || detached.billsDetached.length > 0
+  const sent = withdrawal !== null && withdrawal.withdrawn.length > 0
+  const portal: Prisma.InputJsonObject = !routed ? {}
+    : sent ? { portalNotified: true, portalEvent: 'REVERT', portalWithdrawn: withdrawal.withdrawn }
+    : { portalNotified: false, portalSkipReason: withdrawal ? HELD_BY_ANOTHER_SKIP_REASON : DETACHED_SKIP_REASON }
   return {
-    ...(routed ? { portalNotified: false, portalSkipReason: DETACHED_SKIP_REASON } : {}),
+    ...portal,
+    ...(withdrawal && withdrawal.heldByAnother.length ? { portalHeldByAnother: withdrawal.heldByAnother } : {}),
     ...(anyDetached ? detached : {}),
   }
 }
 
 /** One sentence naming what a cancellation detached, for the remark a reader sees on the trail. */
-function detachedRemark(detached: DetachedBills): string {
+function detachedRemark(detached: DetachedBills, withdrawal: CancelWithdrawalOutcome | null = null): string {
   const apvs = [...new Set([...detached.apvNumbersDetached, ...detached.billsDetached.map((b) => b.apvNumber)])].sort()
-  return apvs.length ? ` Detached from ${apvs.join(', ')} (user ruling 2026-10-29).` : ''
+  const base = apvs.length ? ` Detached from ${apvs.join(', ')} (user ruling 2026-10-29).` : ''
+  return withdrawal && withdrawal.withdrawn.length
+    ? `${base} Its availability is withdrawn at the portal (user ruling 2026-11-19).` : base
 }
 
 async function load(tx: Prisma.TransactionClient, checkId: string) {
@@ -586,7 +668,11 @@ export async function revertAvailability(
  * bill since 2026-11-03). An INTERNAL cheque gets the quiet `RELEASE_REVERSED`
  * for either destination — REVERT is never sent for one (rule 2), and the
  * quiet reversal is what lets its bill age again. `kindMatchesStatus` admits
- * RELEASE_REVERSED on a SIGNED cheque for exactly that case.
+ * RELEASE_REVERSED on a SIGNED cheque for exactly that case. The portal lands
+ * that quiet reversal on READY_FOR_SIGNATURE, never AVAILABLE_FOR_RELEASE
+ * (spec 2026-11-11-cm-internal-reversal-not-available): until then three
+ * INTERNAL cheques reversed to SIGNED on 2026-11-09 counted on its Checks
+ * Available tile, 109 against the 106 READY here.
  *
  * Availability. A cheque reversed to READY_FOR_RELEASE keeps the availability
  * it has. One that was never readied HERE has none to keep: the 11,225 cheques
@@ -1299,11 +1385,13 @@ export const VOID_AFTER_RELEASE_WARNING =
  * a void arriving for a cancelled cheque throws rather than overwriting a
  * Finance decision that carries a recorded reason.
  *
- * Queues NOTHING for the portal and detaches the cheque from its AP bills
- * (`detachFromBills`, user ruling 2026-10-29) — the same as `cancelCheck`. Until
+ * Detaches the cheque from its AP bills (`detachFromBills`, user ruling
+ * 2026-10-29) and never queues CANCELLED — the same as `cancelCheck`. Until
  * that day a CANCELLED event went to the portal, which cancelled the BILL's row
- * there and refused the re-issued cheque's RELEASED. The audit row says what
- * was detached and that the portal was not told.
+ * there and refused the re-issued cheque's RELEASED. The one thing the portal
+ * is told (ruling 2026-11-19, `withdrawOnCancel`): a cheque it lists as
+ * available is withdrawn with a REVERT. The audit row says what was detached
+ * and what the portal was or was not told.
  */
 export async function voidCheck(
   db: Db, args: { checkId: string; reason: string; now: Date },
@@ -1318,6 +1406,7 @@ export async function voidCheck(
 
     const route = portalRoute(check.eligibility as Eligibility)
     const detached = await detachFromBills(tx, check)
+    const withdrawal = await withdrawOnCancel(tx, check, detached, args.now)
 
     const updated = await tx.check.update({
       where: { id: check.id },
@@ -1327,7 +1416,7 @@ export async function voidCheck(
       data: {
         status: 'VOIDED',
         voidedAt: args.now,
-        portalSyncStatus: 'NOT_APPLICABLE',
+        portalSyncStatus: withdrawal?.withdrawn.length ? 'PENDING' : 'NOT_APPLICABLE',
         portalDomain: route,
       },
     })
@@ -1342,9 +1431,9 @@ export async function voidCheck(
       action: afterRelease ? 'voided_after_release' : 'voided',
       details: {
         fromStatus: from, releasedAt: check.releasedAt?.toISOString() ?? null,
-        ...cancelAuditDetails(route !== null, detached),
+        ...cancelAuditDetails(route !== null, detached, withdrawal),
       },
-      remarks: (afterRelease ? `${VOID_AFTER_RELEASE_WARNING} ${args.reason}` : args.reason) + detachedRemark(detached),
+      remarks: (afterRelease ? `${VOID_AFTER_RELEASE_WARNING} ${args.reason}` : args.reason) + detachedRemark(detached, withdrawal),
     })
 
     return updated
@@ -1522,6 +1611,7 @@ export async function cancelCheck(
     // read the cheque live still finds its lock after the detach and sees the
     // status (lib/sync/bills.ts re-reads both under FOR UPDATE).
     const detached = await detachFromBills(tx, check)
+    const withdrawal = await withdrawOnCancel(tx, check, detached, args.now)
 
     const updated = await tx.check.update({
       where: { id: check.id },
@@ -1530,14 +1620,14 @@ export async function cancelCheck(
         cancelledById: args.userId,
         cancelledAt: args.now,
         cancelReason: args.reason,
-        portalSyncStatus: 'NOT_APPLICABLE',
+        portalSyncStatus: withdrawal?.withdrawn.length ? 'PENDING' : 'NOT_APPLICABLE',
         portalDomain: route,
       },
     })
-    const details = cancelAuditDetails(route !== null, detached)
+    const details = cancelAuditDetails(route !== null, detached, withdrawal)
     await writeAudit(tx, {
       checkId: check.id, actorType: 'USER', userId: args.userId,
-      action: 'cancelled', remarks: args.reason + detachedRemark(detached),
+      action: 'cancelled', remarks: args.reason + detachedRemark(detached, withdrawal),
       ...(Object.keys(details).length ? { details } : {}),
     })
     return updated

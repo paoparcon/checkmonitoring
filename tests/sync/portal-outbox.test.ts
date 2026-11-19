@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { testDb, resetDb } from '../helpers/db'
 import { makeCheck, makeUser } from '../helpers/factory'
-import { deliverPortalEvents, kindMatchesStatus, RETRY_DELAYS_MS, MAX_ATTEMPTS, UNMATCHED_MAX_ATTEMPTS } from '@/lib/sync/portal-outbox'
+import { deliverPortalEvents, kindMatchesStatus, eventMatchesCheck, RETRY_DELAYS_MS, MAX_ATTEMPTS, UNMATCHED_MAX_ATTEMPTS } from '@/lib/sync/portal-outbox'
 import type { PortalClient, PortalDeliveryResult, PortalEventBody } from '@/lib/integrations/portal/client'
 
 const NOW = new Date('2026-09-26T10:00:00+08:00')
@@ -588,6 +588,43 @@ describe('kindMatchesStatus', () => {
     expect(allowed('RELEASED')).toEqual(['RELEASED'])
     expect(allowed('REVERT')).toEqual(['GENERATED', 'SIGNATURE_PENDING', 'SIGNED'])
     expect(allowed('CANCELLED')).toEqual(['CANCELLED', 'VOIDED'])
+  })
+})
+
+describe('a cancel-withdrawal REVERT (ruling 2026-11-19)', () => {
+  const payload = { action: 'REVERT', checkNumber: '1', withdrawnOnCancel: true, apvs: ['AP-7'], poNumbers: [''] }
+
+  it('eventMatchesCheck admits it on a CANCELLED or VOIDED cheque, and nothing else new', () => {
+    expect(eventMatchesCheck({ kind: 'REVERT', payload }, 'VOIDED')).toBe(true)
+    expect(eventMatchesCheck({ kind: 'REVERT', payload }, 'CANCELLED')).toBe(true)
+    expect(eventMatchesCheck({ kind: 'REVERT', payload }, 'SIGNED')).toBe(true)
+    expect(eventMatchesCheck({ kind: 'REVERT', payload }, 'READY_FOR_RELEASE')).toBe(false)
+    expect(eventMatchesCheck({ kind: 'REVERT', payload }, 'RELEASED')).toBe(false)
+    expect(eventMatchesCheck({ kind: 'REVERT', payload: { action: 'REVERT' } }, 'VOIDED')).toBe(false)
+    expect(eventMatchesCheck({ kind: 'REVERT', payload: { ...payload, apvs: [] } }, 'VOIDED')).toBe(false)
+    expect(eventMatchesCheck({ kind: 'MARK_AVAILABLE', payload }, 'VOIDED')).toBe(false)
+  })
+
+  it('is delivered for a voided cheque with the vouchers it carries, superseding the stale MARK_AVAILABLE', async () => {
+    const check = await makeCheck({ status: 'VOIDED', apvNumbers: [] })
+    const stale = await queue(check.id, 'MARK_AVAILABLE', NOW)
+    const ev = await queue(check.id, 'REVERT', new Date(NOW.getTime() + 1_000), { payload })
+    const client = fakeClient(() => ok())
+    const out = await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+    expect(out).toMatchObject({ delivered: 1, synced: 1, superseded: 1, stale: 0, parked: 0 })
+    expect(client.sent).toHaveLength(1)
+    expect(client.sent[0]).toMatchObject({ eventId: ev.id, kind: 'REVERT', apvs: ['AP-7'] })
+    expect((await testDb.portalEvent.findUniqueOrThrow({ where: { id: ev.id } })).lastError).toBeNull()
+    expect((await testDb.portalEvent.findUniqueOrThrow({ where: { id: stale.id } })).lastError).toMatch(/^superseded by/)
+  })
+
+  it('an ordinary REVERT for a voided cheque is still closed unsent', async () => {
+    const check = await makeCheck({ status: 'VOIDED', apvNumbers: [] })
+    await queue(check.id, 'REVERT', NOW)
+    const client = fakeClient(() => ok())
+    const out = await deliverPortalEvents(testDb, { now: LATER, deadline: new Date(LATER.getTime() + 10_000), client })
+    expect(out).toMatchObject({ delivered: 0, stale: 1 })
+    expect(client.sent).toHaveLength(0)
   })
 })
 

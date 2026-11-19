@@ -14,6 +14,7 @@ import type { Check, PortalEventKind } from '@prisma/client'
 import { portalRoute, type Eligibility } from '@/lib/domain/eligibility'
 import { portalAcceptsReceiptType } from '@/lib/domain/receipt'
 import { portalApvs } from './apvs'
+import { cancelWithdrawal } from './withdrawal'
 import type { PortalCheckRow } from './check-feed'
 
 export type PortalFetch = (
@@ -130,15 +131,21 @@ export function manilaDay(d: Date): string {
  */
 export const INTERNAL_PORTAL_KINDS: readonly PortalEventKind[] = ['RELEASED', 'RELEASE_REVERSED', 'CANCELLED']
 
-export function buildPortalEventBody(event: { id: string; kind: PortalEventKind }, check: CheckForPortal): PortalEventBody {
+export function buildPortalEventBody(event: { id: string; kind: PortalEventKind; payload?: unknown }, check: CheckForPortal): PortalEventBody {
   const internal = check.eligibility === 'INTERNAL'
   if (portalRoute(check.eligibility as Eligibility) === null && !(internal && INTERNAL_PORTAL_KINDS.includes(event.kind))) {
     throw new PortalPayloadError('INTERNAL', `INTERNAL check ${check.id} must never reach the portal as ${event.kind}.`)
   }
   // apvNumbers is the source's list; the bills are the same vouchers with
   // their PO numbers. A cheque imported before 2026-09-07 may carry only bills.
-  const apvs = portalApvs(check)
-  const poByApv = new Map(check.bills.map((b) => [b.apvNumber, b.poNumber ?? '']))
+  // The one exception to "the cheque as it stands" (ruling 2026-11-19): a REVERT
+  // for a cheque cancelled or voided while the portal listed it as available. The
+  // cancel detached its vouchers, so they come from the event (./withdrawal.ts).
+  const withdrawn = event.kind === 'REVERT' ? cancelWithdrawal(event.payload) : null
+  const apvs = withdrawn ? withdrawn.apvs : portalApvs(check)
+  const poByApv = withdrawn
+    ? new Map(withdrawn.apvs.map((a, i) => [a, withdrawn.poNumbers[i] ?? '']))
+    : new Map(check.bills.map((b) => [b.apvNumber, b.poNumber ?? '']))
   const body: PortalEventBody = {
     eventId: event.id,
     kind: event.kind,
@@ -162,7 +169,9 @@ export function buildPortalEventBody(event: { id: string; kind: PortalEventKind 
   }
   if (event.kind === 'MARK_AVAILABLE' || event.kind === 'RELEASE_REVERSED') {
     if (!check.availablePickupDate) {
-      // An INTERNAL reversal needs no pickup date: nobody is told to collect (spec 2026-10-19).
+      // An INTERNAL reversal needs no pickup date: nobody is told to collect (spec 2026-10-19),
+      // and the portal lands it on READY_FOR_SIGNATURE, never AVAILABLE_FOR_RELEASE
+      // (spec 2026-11-11-cm-internal-reversal-not-available).
       if (!(internal && event.kind === 'RELEASE_REVERSED')) {
         throw new PortalPayloadError('MISSING_DATE', `${event.kind} check ${check.id} has no availablePickupDate; the portal requires availablePickupDate`)
       }

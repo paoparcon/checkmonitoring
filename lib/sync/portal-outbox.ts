@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { CheckStatus, Prisma, PrismaClient, PortalEvent, PortalEventKind } from '@prisma/client'
 import { writeAudit } from '@/lib/audit'
+import { cancelWithdrawal } from '@/lib/integrations/portal/withdrawal'
 import { notify } from '@/lib/notifications/notify'
 import { parkedNotice } from '@/lib/notifications/messages'
 import {
@@ -101,6 +102,16 @@ export function kindMatchesStatus(kind: PortalEventKind, status: CheckStatus): b
     default:
       return false
   }
+}
+
+/**
+ * `kindMatchesStatus`, plus the one event that describes a dead cheque on
+ * purpose (ruling 2026-11-19): the REVERT `voidCheck` / `cancelCheck` queue for
+ * a cheque the portal still lists as available. It carries its own vouchers.
+ */
+export function eventMatchesCheck(ev: { kind: PortalEventKind; payload: unknown }, status: CheckStatus): boolean {
+  if (kindMatchesStatus(ev.kind, status)) return true
+  return ev.kind === 'REVERT' && (status === 'CANCELLED' || status === 'VOIDED') && cancelWithdrawal(ev.payload) !== null
 }
 
 function backoff(attempts: number): number {
@@ -385,7 +396,7 @@ export async function deliverPortalEvents(
         continue
       }
 
-      if (!kindMatchesStatus(ev.kind, check.status)) {
+      if (!eventMatchesCheck(ev, check.status)) {
         if (await closeStale(db, ev, check.status, claimedBy)) {
           out.stale += 1
           // A closed status event no longer stands before the receipt.
@@ -401,7 +412,7 @@ export async function deliverPortalEvents(
         // sending MARK_AVAILABLE, REVERT or RECEIPT throws before any request
         // exists and parks below (RELEASED, RELEASE_REVERSED and CANCELLED go
         // out flagged internal, ruling 2026-10-19).
-        const body = buildPortalEventBody({ id: ev.id, kind: ev.kind }, check)
+        const body = buildPortalEventBody({ id: ev.id, kind: ev.kind, payload: ev.payload }, check)
         out.delivered += 1
         const remaining = args.deadline.getTime() - clock()
         const capMs = ev.kind === 'RECEIPT' ? RECEIPT_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS

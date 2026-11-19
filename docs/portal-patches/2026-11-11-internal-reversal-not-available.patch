@@ -1,0 +1,193 @@
+Supplier Portal: an INTERNAL check un-released in Check Monitoring is not available (2026-11-11)
+Spec: docs/superpowers/specs/2026-11-11-cm-internal-reversal-not-available-design.md (identical in both repos).
+Made in the 2026-10-29 ZIP extract (Supplier-Database-claude-reissue-revives-cancelled-row), whose
+tests pass with it (node --test). Apply to the portal checkout that holds migration 096:
+    git apply --check 2026-11-11-internal-reversal-not-available.patch && git apply 2026-11-11-internal-reversal-not-available.patch
+Renumber migrations/097_internal_reversal_not_available.sql if a 097 already exists there (and the
+filename inside test/check-monitoring-internal.test.js with it). Then: npm test, npm run migrate, vercel --prod.
+
+--- a/src/integrations/check-monitoring.js
++++ b/src/integrations/check-monitoring.js
+@@ -200,7 +200,19 @@
+     case 'RELEASE_REVERSED': {
+       if (!cur || cur.status !== 'RELEASED') return res(cur && cur.status === 'CANCELLED' ? 'refused' : 'noop',
+         cur && cur.status === 'CANCELLED' ? { reason: 'cancelled in the portal; a super must resolve' } : {});
+-      await d.update(pool, { id: cur.id, status: 'AVAILABLE_FOR_RELEASE', releaseDate: ev.internal ? (ev.availablePickupDate || null) : ev.availablePickupDate, actorId, ip, quiet: ev.internal });   // spec 2026-10-19: an internal reversal clears the old release day
++      if (ev.internal) {
++        // spec 2026-11-11-cm-internal-reversal-not-available: an INTERNAL check is never
++        // AVAILABLE here - Check Monitoring sends no MARK_AVAILABLE for one, so no payee is
++        // ever told to collect it. Until 2026-11-11 this put the row at AVAILABLE_FOR_RELEASE
++        // (spec 2026-10-19, "the bill ages again"), and the Checks Available tile counted it:
++        // three internal checks un-released on 2026-11-09 read 109 here against 106 in Check
++        // Monitoring. The bill ages again on ANY status but RELEASED, so the row goes back to
++        // READY_FOR_SIGNATURE, the last stage before availability (In Process on the tiles),
++        // whatever Check Monitoring's destination; the old release day is cleared as before.
++        await d.update(pool, { id: cur.id, status: 'READY_FOR_SIGNATURE', releaseDate: null, actorId, ip, quiet: true });
++        return res('applied');
++      }
++      await d.update(pool, { id: cur.id, status: 'AVAILABLE_FOR_RELEASE', releaseDate: ev.availablePickupDate, actorId, ip });
+       return res('applied');
+     }
+     case 'REVERT': {
+--- a/test/check-monitoring-internal.test.js
++++ b/test/check-monitoring-internal.test.js
+@@ -63,20 +63,76 @@
+   assert.deepStrictEqual(again.results.map(r => r.outcome), ['already']);
+ });
+ 
+-test('internal RELEASE_REVERSED: bill ages again, no ready-for-pickup bell or email', async (t) => {
++test('internal RELEASE_REVERSED: bill ages again, row is NOT available, no ready-for-pickup bell or email', async (t) => {
+   const { pool, svc, tradeId, sent } = await fixture(t);
+   await applyEvent(pool, validateEvent(ev()), { actorId: svc });
+   const out = await applyEvent(pool, validateEvent(ev({ eventId: 'ev-2', kind: 'RELEASE_REVERSED', releaseDate: undefined })), { actorId: svc });
+   assert.deepStrictEqual(out.results.map(r => r.outcome), ['applied']);
+   assert.ok(!(await releasedTradeIds(pool)).has(Number(tradeId)));
+-  const cr = (await pool.query('select status, notified_at n from check_release')).rows[0];
+-  assert.strictEqual(cr.status, 'AVAILABLE_FOR_RELEASE'); assert.strictEqual(cr.n, null);
++  const cr = (await pool.query('select status, notified_at n, released_at ra, internal_payee ip from check_release')).rows[0];
++  // spec 2026-11-11-cm-internal-reversal-not-available: an internal check is never AVAILABLE
++  // here (no MARK_AVAILABLE is ever sent for one), so the undo lands on the stage before
++  // availability and the Checks Available tile does not count it.
++  assert.strictEqual(cr.status, 'READY_FOR_SIGNATURE'); assert.strictEqual(cr.n, null);
++  assert.strictEqual(cr.ra, null); assert.strictEqual(cr.ip, true);
+   // spec 2026-10-19: the old release day does not linger on a reversed row.
+   assert.strictEqual((await pool.query('select release_date rd from check_release')).rows[0].rd, null);
+   assert.strictEqual(await count(pool, 'select count(*)::int c from notification'), 0);
+   assert.strictEqual(sent.length, 0);
++  // Replay and a second delivery: nothing to undo any more.
++  const again = await applyEvent(pool, validateEvent(ev({ eventId: 'ev-3', kind: 'RELEASE_REVERSED', releaseDate: undefined })), { actorId: svc });
++  assert.deepStrictEqual(again.results.map(r => r.outcome), ['noop']);
++  // A re-release after the undo pays the bill again, quietly.
++  const re = await applyEvent(pool, validateEvent(ev({ eventId: 'ev-4', releaseDate: '2026-11-10' })), { actorId: svc });
++  assert.deepStrictEqual(re.results.map(r => r.outcome), ['applied']);
++  assert.strictEqual((await pool.query('select status from check_release')).rows[0].status, 'RELEASED');
++  assert.strictEqual(sent.length, 0);
+ });
+ 
++test('a supplier RELEASE_REVERSED still lands on AVAILABLE_FOR_RELEASE with its pickup date', async (t) => {
++  const { pool, svc } = await fixture(t);
++  await applyEvent(pool, validateEvent(ev({ internal: undefined })), { actorId: svc });
++  const out = await applyEvent(pool, validateEvent(ev({ eventId: 'ev-2', kind: 'RELEASE_REVERSED', internal: undefined, releaseDate: undefined, availablePickupDate: '2026-10-07' })), { actorId: svc });
++  assert.deepStrictEqual(out.results.map(r => r.outcome), ['applied']);
++  const cr = (await pool.query('select status, release_date rd from check_release')).rows[0];
++  assert.strictEqual(cr.status, 'AVAILABLE_FOR_RELEASE');
++  assert.strictEqual(new Date(cr.rd).toISOString().slice(0, 10), '2026-10-07');
++});
++
++test('097: an internal row left AVAILABLE_FOR_RELEASE by an earlier undo is moved to READY_FOR_SIGNATURE, audited; announced and supplier rows untouched', async (t) => {
++  const { pool } = await fixture(t);
++  const tn = (await pool.query('select id from tenant')).rows[0].id;
++  const s = (await pool.query('select id from supplier')).rows[0].id;
++  for (const [nk, apv] of [['nk2', 'AP-ST045586'], ['nk3', 'AP-HF002250'], ['nk4', 'AP-X1']]) {
++    await pool.query(
++      `insert into trade (tenant_id,supplier_id,natural_key,apv_number,description,po_amount,balance,settled,payment_terms)
++       values ($1,$2,$3,$4,'A',100,100,false,'30 DAYS')`, [tn, s, nk, apv]);
++  }
++  const ids = (await pool.query('select id, apv_number apv from trade order by id')).rows;
++  const tid = (apv) => ids.find(r => r.apv === apv).id;
++  // The 2026-11-09 shape: internal, un-released into AVAILABLE_FOR_RELEASE, never announced.
++  await pool.query("insert into check_release (trade_id, status, internal_payee, release_date, check_number) values ($1,'AVAILABLE_FOR_RELEASE',true,'2026-11-09','6000363516')", [tid('AP-ST045586')]);
++  // An internal row a portal user announced (notified_at set) is theirs to settle: left alone.
++  await pool.query("insert into check_release (trade_id, status, internal_payee, notified_at) values ($1,'AVAILABLE_FOR_RELEASE',true,now())", [tid('AP-HF002250')]);
++  // A supplier row at AVAILABLE_FOR_RELEASE is what the tile is for: left alone.
++  await pool.query("insert into check_release (trade_id, status, internal_payee) values ($1,'AVAILABLE_FOR_RELEASE',false)", [tid('AP-X1')]);
++  await pool.query("delete from schema_migrations where filename = '097_internal_reversal_not_available.sql'");
++  const applied = await runMigrations(pool);
++  assert.deepStrictEqual(applied, ['097_internal_reversal_not_available.sql']);
++  const rows = (await pool.query('select t.apv_number apv, cr.status, cr.release_date rd from check_release cr join trade t on t.id = cr.trade_id order by t.id')).rows;
++  assert.deepStrictEqual(rows.map(r => [r.apv, r.status, r.rd]), [
++    ['AP-ST045586', 'READY_FOR_SIGNATURE', null],
++    ['AP-HF002250', 'AVAILABLE_FOR_RELEASE', null],
++    ['AP-X1', 'AVAILABLE_FOR_RELEASE', null],
++  ]);
++  const audit = (await pool.query("select entity_id, before, after from audit_log where action = 'check_monitoring_internal_reversal_fix'")).rows;
++  assert.strictEqual(audit.length, 1);
++  assert.deepStrictEqual(audit[0].before, { status: 'AVAILABLE_FOR_RELEASE' });
++  assert.deepStrictEqual(audit[0].after, { status: 'READY_FOR_SIGNATURE' });
++  // Running the migrations again applies nothing and changes nothing.
++  assert.deepStrictEqual(await runMigrations(pool), []);
++});
++
+ test('internal CANCELLED cancels quietly', async (t) => {
+   const { pool, svc, sent } = await fixture(t);
+   await applyEvent(pool, validateEvent(ev()), { actorId: svc });
+--- a/docs/superpowers/specs/2026-10-19-cm-internal-release-quiet-design.md
++++ b/docs/superpowers/specs/2026-10-19-cm-internal-release-quiet-design.md
+@@ -32,7 +32,7 @@
+   - It does not call `refreshReleasedDigest`, so procurement's "Checks released today" bell never shows an internal payment.
+   - It still settles any SOA that waits on the bill (`settleSoasForTrade`), because the bill is paid.
+   - It notifies nobody.
+-- **RELEASE_REVERSED with `internal: true`:** the row goes back to `AVAILABLE_FOR_RELEASE`, so the bill ages again. Because the row is `internal_payee`, the existing "ready for pickup" bell and email latch is skipped, and so is the 2307 draft that runs when a check turns available.
++- **RELEASE_REVERSED with `internal: true`:** ~~the row goes back to `AVAILABLE_FOR_RELEASE`~~ — **superseded 2026-11-11** (spec `2026-11-11-cm-internal-reversal-not-available`): the row goes back to `READY_FOR_SIGNATURE`, never AVAILABLE_FOR_RELEASE, because no payee is ever told an internal check is available and the Checks Available tile counted it. The bill ages again on either status. Because the row is `internal_payee`, the existing "ready for pickup" bell and email latch is skipped, and so is the 2307 draft that runs when a check turns available.
+ - **CANCELLED with `internal: true`:** the existing cancel path runs. Its email to the payee already goes out only if the payee had been told the check was available. An internal row never has `notified_at` set, so nobody is told.
+ - **The `internal_payee` column also guards later actions on the row:**
+   - `src/checks/reminders.js` (missed-pickup reminders) skips `internal_payee` rows.
+--- /dev/null
++++ b/migrations/097_internal_reversal_not_available.sql
+@@ -0,0 +1,22 @@
++-- An INTERNAL check (payroll, tax, inter-company, petty cash) that Check
++-- Monitoring un-releases is NOT available for release here (spec
++-- 2026-11-11-cm-internal-reversal-not-available). Check Monitoring sends no
++-- MARK_AVAILABLE for an internal check, so no payee is ever told to collect
++-- one; until 2026-11-11 an internal RELEASE_REVERSED still put the row at
++-- AVAILABLE_FOR_RELEASE (spec 2026-10-19), and the Checks Available tile counted
++-- it: three internal checks un-released on 2026-11-09 (AP-ST045586, AP-HF002250,
++-- AP-ST045588) read 109 here against 106 in Check Monitoring. The code now lands
++-- such an undo on READY_FOR_SIGNATURE; this moves the rows that are already
++-- wrong, audited one row each. An internal row a portal user announced
++-- (notified_at set) is theirs and is left alone, as is every supplier row.
++insert into audit_log (action, entity, entity_id, before, after, remarks)
++select 'check_monitoring_internal_reversal_fix', 'check_release', id::text,
++       '{"status":"AVAILABLE_FOR_RELEASE"}'::jsonb, '{"status":"READY_FOR_SIGNATURE"}'::jsonb,
++       'migration 097: an internal check un-released by Check Monitoring is not available for release (spec 2026-11-11)'
++  from check_release
++ where internal_payee = true and status = 'AVAILABLE_FOR_RELEASE' and notified_at is null;
++update check_release
++   set status = 'READY_FOR_SIGNATURE', release_date = null,
++       pickup_date = null, pickup_time = '', pickup_rep = '', confirmed_at = null, confirmed_by = null,
++       reminded_on = null, remind_count = 0, updated_at = now()
++ where internal_payee = true and status = 'AVAILABLE_FOR_RELEASE' and notified_at is null;
+--- /dev/null
++++ b/docs/superpowers/specs/2026-11-11-cm-internal-reversal-not-available-design.md
+@@ -0,0 +1,41 @@
++# An INTERNAL check un-released in Check Monitoring is not available in the portal
++
++**Date:** 2026-11-11 · **Status:** built; portal migration 097 and the portal deploy first, then nothing on the Check Monitoring side needs deploying (comments and this file only).
++
++This file is kept identical in both repositories: Supplier Portal (`prop-db/Supplier-Database`) and Check Monitoring (`RCL PROJECTS/Check Monitoring`).
++
++## What was wrong
++
++Measured 2026-11-11 against production: Check Monitoring's dashboard said **106 checks READY FOR RELEASE (₱5,847,506.53)**; the portal's Check Availability tile said **109 CHECKS AVAILABLE**. All 106 are in the portal. The three extra are `6000363516` (STK, AP-ST045586), `6000363517` (HAMFI, AP-HF002250) and `6000363518` (STK, AP-ST045588): INTERNAL checks, SIGNED in Check Monitoring.
++
++On 2026-11-09 at 15:48 Manila a Finance user signed, readied and released the three in one action, then reversed each release six minutes later with the destination SIGNED. Check Monitoring sent the portal RELEASED and then RELEASE_REVERSED, both flagged `internal: true` (rule 2: an INTERNAL check is sent only RELEASED, RELEASE_REVERSED and CANCELLED, never MARK_AVAILABLE or REVERT). The portal's RELEASE_REVERSED case, written under spec `2026-10-19-cm-internal-release-quiet` ("the row goes back to AVAILABLE_FOR_RELEASE, so the bill ages again"), set the rows to AVAILABLE_FOR_RELEASE — quietly, nobody notified — and the Checks Available tile counts every row at that status, internal or not.
++
++An internal bill never legitimately holds AVAILABLE_FOR_RELEASE in the portal: Check Monitoring never sends MARK_AVAILABLE for one, so no payee is ever told to collect it. The status was reached only through an undo. The 2026-10-19 goal — the bill ages again — holds on any status but RELEASED (`src/data/paid.js`), so it did not need AVAILABLE_FOR_RELEASE.
++
++## The rule
++
++**The portal never holds an INTERNAL bill at AVAILABLE_FOR_RELEASE.** An internal RELEASE_REVERSED returns the row to **READY_FOR_SIGNATURE** — the last stage before availability, which the admin tiles count as IN PROCESS — whatever Check Monitoring's destination (READY FOR RELEASE or SIGNED). The old release day is cleared, `released_at` is cleared (the existing RELEASED → other transition in `updateCheckRelease`), `internal_payee` stays true, nobody is notified, and the bill ages again. A supplier RELEASE_REVERSED is unchanged: AVAILABLE_FOR_RELEASE with the pickup date the event carries.
++
++Check Monitoring sends nothing new. The event body already carries `internal: true` and the portal decides on that alone; a destination is not sent because the portal has no stage for "signed" and an internal check is never announced either way.
++
++## Portal changes
++
++- `src/integrations/check-monitoring.js`, `applyOne`, case RELEASE_REVERSED: `ev.internal` → `updateCheckRelease({ status: 'READY_FOR_SIGNATURE', releaseDate: null, quiet: true })`; otherwise as before. A row not at RELEASED is still `noop` (CANCELLED: `refused`).
++- Migration `097_internal_reversal_not_available.sql`: every `check_release` row with `internal_payee = true`, `status = 'AVAILABLE_FOR_RELEASE'` and `notified_at is null` (never announced) moves to READY_FOR_SIGNATURE with `release_date`, the pickup confirmation and the reminder counters cleared, one `audit_log` row each (`action = check_monitoring_internal_reversal_fix`, before/after status). An internal row a portal user announced, and every supplier row, is left alone. Expected on production: the three rows above. **If the portal checkout already has a 097, renumber this file; the runner applies files in name order and records each by filename.**
++- Tests (`test/check-monitoring-internal.test.js`, node:test on pg-mem): the internal reversal lands on READY_FOR_SIGNATURE with `released_at` and `release_date` null, `internal_payee` kept, no notification or email; a second reversal is `noop`; a re-release pays the bill again; a supplier reversal still lands on AVAILABLE_FOR_RELEASE with its date; migration 097 moves the internal unannounced row only, writes the audit row, and is idempotent.
++
++## Check Monitoring changes
++
++None in behaviour. `lib/domain/actions.ts` (`reverseRelease`) and `lib/integrations/portal/client.ts` carry a note that the portal lands an internal reversal on READY_FOR_SIGNATURE since this date; `CLAUDE.md` records the measurement. The existing test pins that an INTERNAL RELEASE_REVERSED body is flagged `internal: true` and needs no pickup date.
++
++## Rollout
++
++1. Portal: carry the change into the portal checkout that holds migration 096 (the check list) — the 2026-10-29 ZIP extract on the Mac does NOT; deploying from it would regress the portal. Run its tests, `npm run migrate` (097), `vercel --prod` from that checkout, merge to `main`.
++2. Check the tile: 106 CHECKS AVAILABLE, 3 IN PROCESS.
++3. Check Monitoring: merge to master (comments and docs only; the auto-deploy carries nothing that changes behaviour).
++
++## Decisions taken by default
++
++- READY_FOR_SIGNATURE rather than FOR_PROCESSING (the row's default): a released check had been printed and signed, so the stage before availability is the honest one. Either keeps the row off the Checks Available tile.
++- The migration does not move an internal row with `notified_at` set: a portal user announced it, so a portal user settles it.
++- Rows reversed again in future under the old code: none can be — the fix ships before any further use.
