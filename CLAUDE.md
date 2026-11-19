@@ -549,9 +549,13 @@ HELD_BY_ANOTHER_SKIP_REASON` when that is all of them. The `cancelled` / `voided
 until it is delivered. INTERNAL never (rule 2). The supplier gets the portal's "check pickup reverted"
 notice. `scripts/withdraw-dead-available.ts [--apply]` (`lib/admin/withdraw-dead-available.ts`) queues
 the same REVERT for checks cancelled before this rule, vouchers read from the cancel/void audit row,
-snapshot first, one `availability_withdrawn_after_cancel` row each — **dry run 2026-11-19 lists exactly
-those two; `--apply` NOT yet run, and it is useful only once this code is deployed** (the deployed
-outbox would close the event as stale). When the two counts disagree again, the read-only comparison is:
+snapshot first, one `availability_withdrawn_after_cancel` row each — **deployed 2026-11-19 13:47 Manila (push of 2a455c1 to master, Ready in 43 s), then `--apply` run by
+Claude on the user's instruction: 2 of 2 queued, snapshot
+`snapshots/withdraw-dead-available-2026-11-19T05-47-35-565Z.json`, delivered with DELIVER NOW on
+`/admin/portal` — both SYNCED on the first attempt, no error; 0 left.** The portal should then read 76:
+the remaining three are the INTERNAL reversals, which wait for the portal deploy. Run the script only
+with this code live (an older outbox closes the event as stale); this Mac's `.env` has no
+`PORTAL_TOKEN`, so delivery is from production. When the two counts disagree again, the read-only comparison is:
 READY/SCHEDULED here against the last delivered status-lane event per check.
 
 **Every check, cancelled and voided included, is mirrored into the portal's own check list**
