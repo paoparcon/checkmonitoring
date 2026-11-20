@@ -151,13 +151,15 @@ describe('GET /api/cron/sync — the run', () => {
     const body = await res.json()
     expect(body.outcomes.map((o: { tenant: string; outcome: string }) => [o.tenant, o.outcome]))
       .toEqual([['GOLIVE', 'RAN'], ['MANUFACTURING', 'RAN']])
-    expect(state.requested).toEqual(['GOLIVE', 'MANUFACTURING', 'GOLIVE', 'MANUFACTURING', 'GOLIVE', 'MANUFACTURING'])
+    expect(state.requested).toEqual(['GOLIVE', 'MANUFACTURING', 'GOLIVE', 'MANUFACTURING', 'GOLIVE', 'MANUFACTURING', 'GOLIVE', 'MANUFACTURING'])
+    expect(body.otherPayments.map((o: { tenant: string; outcome: string }) => [o.tenant, o.outcome]))
+      .toEqual([['GOLIVE', 'RAN'], ['MANUFACTURING', 'RAN']])
 
     const scheduled = await testDb.syncRun.findMany({ where: { trigger: 'SCHEDULED' } })
-    // A payment read, a voucher read and a PO read per tenant.
+    // A payment read, a voucher read, a PO read and an other-payments read per tenant.
     expect(scheduled.map((r) => `${r.tenant}:${r.mode}`).sort()).toEqual([
-      'GOLIVE:BILLS', 'GOLIVE:BILL_REFS', 'GOLIVE:INCREMENTAL',
-      'MANUFACTURING:BILLS', 'MANUFACTURING:BILL_REFS', 'MANUFACTURING:INCREMENTAL',
+      'GOLIVE:BILLS', 'GOLIVE:BILL_REFS', 'GOLIVE:INCREMENTAL', 'GOLIVE:OTHER_PAYMENTS',
+      'MANUFACTURING:BILLS', 'MANUFACTURING:BILL_REFS', 'MANUFACTURING:INCREMENTAL', 'MANUFACTURING:OTHER_PAYMENTS',
     ])
   })
 
@@ -171,8 +173,10 @@ describe('GET /api/cron/sync — the run', () => {
     const body = await res.json()
     expect(body.outcomes.map((o: { outcome: string }) => o.outcome)).toEqual(['FAILED', 'RAN'])
     // GOLIVE's voucher and PO reads are both skipped (its payment read did not run), so no
-    // second client is built for it.
-    expect(state.requested).toEqual(['GOLIVE', 'MANUFACTURING', 'MANUFACTURING', 'MANUFACTURING'])
+    // second client is built for it until the other-payments read, which is not
+    // gated on the payment read and is tried for both tenants.
+    expect(state.requested).toEqual(['GOLIVE', 'MANUFACTURING', 'MANUFACTURING', 'MANUFACTURING', 'GOLIVE', 'MANUFACTURING'])
+    expect(body.otherPayments.map((o: { outcome: string }) => o.outcome)).toEqual(['FAILED', 'RAN'])
   })
 
   it('answers 200 when a tenant merely had no watermark — the refusal is recorded, not a fault of the cron', async () => {

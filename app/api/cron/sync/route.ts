@@ -9,6 +9,7 @@ import {
   runScheduledBillRefsSync,
   type ScheduledBillRefsOutcome,
 } from '@/lib/sync/bill-refs'
+import { runScheduledOtherPaymentsSync, type ScheduledOtherPaymentsOutcome } from '@/lib/sync/other-payments'
 import { runAutoSign } from '@/lib/sync/auto-sign'
 import { kickPortalDelivery } from '@/lib/sync/portal-kick'
 import { notifyCronResults } from '@/lib/notifications/cron'
@@ -60,6 +61,14 @@ import { notifyCronResults } from '@/lib/notifications/cron'
  * records FAILED, the response is 500, and the next run continues what it
  * left. That is the same exposure BILLS already had.
  *
+ * Then OTHER PAYMENTS (lib/sync/other-payments.ts), both tenants: the same
+ * inquiry's telegraphic transfers, letters of credit, DP at sight and
+ * manager's checks, mirrored into OtherPayment. Always the full in-scope set
+ * (about 1,700 rows, one request), so it needs no watermark and no first read
+ * from a terminal. Not gated on the payment read - it shares nothing with it -
+ * but not begun once 30 s of the run have passed (SKIPPED_TIME_BUDGET; the
+ * next run reads the same full set). FAILED turns the response 500.
+ *
  * Then AUTO-SIGN (lib/sync/auto-sign.ts): on a Manila Monday or Tuesday, every
  * due Acumatica check first read before that day becomes SIGNED; on any other
  * day the run records IDLE. It runs even when a tenant failed, and its own
@@ -89,6 +98,8 @@ export const maxDuration = 60
  */
 // Not exported: a Next route module may export only its handlers and config.
 const BILL_REFS_SKIP_AFTER_MS = 20_000
+/** The other-payments read is not begun for a tenant once this much has passed. */
+const OTHER_PAYMENTS_SKIP_AFTER_MS = 30_000
 
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -174,6 +185,19 @@ export async function GET(request: Request): Promise<Response> {
     )
   }
 
+  // The payments that are not checks (TT, LC, DP, MC) into OtherPayment. A
+  // full read every time, so a skipped or failed run loses nothing.
+  const otherPayments: ScheduledOtherPaymentsOutcome[] = []
+  for (const tenant of SYNC_TENANTS) {
+    if (Date.now() - now.getTime() > OTHER_PAYMENTS_SKIP_AFTER_MS) {
+      otherPayments.push({ tenant, outcome: 'SKIPPED_TIME_BUDGET' })
+      continue
+    }
+    otherPayments.push(
+      await runScheduledOtherPaymentsSync(prisma, { tenant, now, client: () => createClientForTenant(tenant) }),
+    )
+  }
+
   // After both tenants, whether or not either failed: cheques already in the
   // app keep ageing, and a failed read delays new cheques, not old ones.
   // A 50s budget, inside the route's 60s ceiling: it leaves room for the
@@ -197,6 +221,7 @@ export async function GET(request: Request): Promise<Response> {
     outcomes.some((o) => o.outcome === 'FAILED') ||
     bills.some((b) => b.outcome === 'FAILED') ||
     billRefs.some((b) => b.outcome === 'FAILED') ||
+    otherPayments.some((p) => p.outcome === 'FAILED') ||
     autoSign.outcome === 'FAILED'
-  return json({ ranAt: now.toISOString(), outcomes, bills, billRefs, autoSign, portal }, failed ? 500 : 200)
+  return json({ ranAt: now.toISOString(), outcomes, bills, billRefs, otherPayments, autoSign, portal }, failed ? 500 : 200)
 }

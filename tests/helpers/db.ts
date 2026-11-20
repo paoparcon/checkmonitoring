@@ -48,6 +48,9 @@ export async function resetDb() {
     // reason stagedCheck and stagedBill are: one file's rows must not become
     // another file's leftovers.
     await tx.plannedOutflow.deleteMany()
+    // OTHER PAYMENTS (2026-11-20): a marked payment points at a user, so it
+    // goes before the users do.
+    await tx.otherPayment.deleteMany()
     // Not a child of Check: a staged row exists precisely because it could not
     // become one. Truncated here all the same, so a test's staging count is its
     // own.

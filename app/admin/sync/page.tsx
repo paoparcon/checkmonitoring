@@ -3,7 +3,7 @@ import { prisma } from '@/lib/db'
 import { getSyncOverview, type TenantSync } from '@/lib/admin/sync-overview'
 import { getLastAutoSign } from '@/lib/sync/auto-sign'
 import { BILLS_MODE } from '@/lib/sync/bills'
-import { BILL_REFS_MODE } from '@/lib/sync/modes'
+import { BILL_REFS_MODE, OTHER_PAYMENTS_MODE } from '@/lib/sync/modes'
 import { EmptyState } from '@/components/EmptyState'
 import { SyncNowButton } from '@/components/SyncNowButton'
 import { KitTable, type KitRow } from '@/components/table-kit/KitTable'
@@ -158,6 +158,10 @@ const COUNT_CAPTIONS: Partial<Record<string, { short: string; titles: readonly [
   [BILL_REFS_MODE]: {
     short: 'bills written · deleted · ref but no PO (due dates in MESSAGE)',
     titles: ['bills with a PO written', 'bills deleted (VendorRef no longer names a PO)', 'bills with a VendorRef that names no PO'],
+  },
+  [OTHER_PAYMENTS_MODE]: {
+    short: 'payments new · changed · void reversals with no original',
+    titles: ['payments first seen', 'payments whose Acumatica details changed', 'void reversals whose original Acumatica did not list'],
   },
 }
 

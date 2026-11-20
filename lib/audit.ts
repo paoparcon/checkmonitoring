@@ -26,3 +26,22 @@ export async function writeAudit(db: Db, input: AuditInput): Promise<void> {
     },
   })
 }
+
+/**
+ * Several rows in one statement, for a bulk action whose rows are all known
+ * before any is written (OTHER PAYMENTS' marking, 2026-11-20). Still append
+ * only, and still this module: nothing else creates an audit row.
+ */
+export async function writeAudits(db: Db, inputs: readonly AuditInput[]): Promise<void> {
+  if (inputs.length === 0) return
+  await db.auditLog.createMany({
+    data: inputs.map((input) => ({
+      checkId: input.checkId,
+      actorType: input.actorType,
+      userId: input.userId,
+      action: input.action,
+      details: input.details,
+      remarks: input.remarks,
+    })),
+  })
+}

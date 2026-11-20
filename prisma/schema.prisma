@@ -908,6 +908,7 @@ model User {
   availabilityRequestsDecided AvailabilityRequest[] @relation("availabilityDecidedBy")
   cashBankBalancesUploaded    CashBalance[] @relation("cashBankBalanceRecordedBy")
   cashBookFiguresRecorded     CashBalance[] @relation("cashBookFiguresRecordedBy")
+  otherPaymentsMarked         OtherPayment[] @relation("otherPaymentMarkedBy")
 }
 
 /// An outflow that is not a cheque — payroll, a tax remittance, loan
@@ -1133,4 +1134,65 @@ model CashBalance {
 
   @@unique([accountId, asOf])
   @@index([asOf])
+}
+
+// OTHER PAYMENTS (2026-11-20, user: "we will also include payments on foreign
+// suppliers in the monitoring and other forms" - DP at sight, Letter of
+// Credit, Manager's check, Telegraphic). A payment Acumatica records under a
+// method that is NOT a check here. Deliberately NOT a `Check`: it has no check
+// number, no check book, no signature, no counter release and nothing for the
+// Supplier Portal, and every one of those paths reads `Check`.
+//
+// Keyed by the payment document's own reference (the CV number) within a
+// tenant. The Acumatica columns are written only by lib/sync/other-payments.ts;
+// `marking` and the fields under it only by lib/payments/actions.ts. The sync
+// sets `marking` once, when the row is first created, and never again.
+enum PaymentMarking {
+  ON_PROCESS
+  PROCESSED
+  CLEARED
+}
+
+model OtherPayment {
+  id              String    @id @default(cuid())
+  tenant          String
+  referenceNbr    String
+  // Acumatica's PaymentMethod code: TT, MC, LC, DP.
+  method          String
+  docType         String?
+  acumaticaStatus String?
+  // An Acumatica fact. A voided payment reads CANCELLED on screen whatever
+  // its marking; the marking itself is left as Finance set it.
+  voided          Boolean   @default(false)
+  paymentDate     DateTime?
+  // What Acumatica holds as the payment's reference. For a telegraphic
+  // transfer this is the bill number(s) it pays, not a bank reference.
+  paymentRef      String?
+  amount          Decimal?  @db.Decimal(18, 2)
+  currency        String?
+  vendorCode      String?
+  payeeName       String?
+  description     String?
+  cashAccount     String?
+  branch          String?
+  companyCode     String?
+  lastModifiedOn  DateTime?
+
+  marking         PaymentMarking @default(ON_PROCESS)
+  // Null while the marking is the one the row arrived with.
+  markedById      String?
+  markedAt        DateTime?
+  processedDate   DateTime?
+  clearedDate     DateTime?
+  bankReference   String?
+  remarks         String?
+
+  markedBy        User?     @relation("otherPaymentMarkedBy", fields: [markedById], references: [id])
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([tenant, referenceNbr])
+  @@index([method])
+  @@index([marking])
 }

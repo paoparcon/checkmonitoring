@@ -171,6 +171,8 @@ npx tsx scripts/sync.ts GOLIVE --full               # snapshot, re-read every 20
 npx tsx scripts/reconcile-with-acumatica.ts "<file>.xlsx" [--apply --user <email>]   # AFTER --full: Closed-in-Acumatica checks to RELEASED, Finance verdicts (2026-10-06)
 npx tsx scripts/revert-recent-signed.ts 2026-10-19 [--apply --user <email>]   # SIGNED first read on/after that Manila day back to PENDING (signing manual, 2026-10-22)
 npx tsx scripts/push-checks-to-portal.ts [--full] [--dry-run]   # push every check (status, APVs, detached APVs, dates) to the portal's All Checks list; --full re-sends all
+npx tsx scripts/sync.ts GOLIVE --other-payments --dry-run   # read the TT / LC / DP / MC payments, write nothing (MANUFACTURING likewise)
+npx tsx scripts/sync.ts GOLIVE --other-payments             # mirror them into OtherPayment; always the full set, markings untouched
 ```
 
 **On Windows, use `npx.cmd` / `npm.cmd`.** PowerShell's execution policy is `Undefined` (i.e.
@@ -762,6 +764,63 @@ stays on its loading text: React reveals it on `requestAnimationFrame`, which a 
 
 **A time shown to Finance is formatted in Manila, by name** (`formatManila`, `lib/manila-format.ts`, 2026-11-03). Every page renders on the server and Vercel's clock is UTC: /admin/portal said "Last push Nov 3, 9:23 AM" for the 5:23 PM push that completed the check list, and the sync, users, print, check, receipt, staged, voucher and import-preview pages, the audit trail and the dashboard workbook's stamp were the same 8 hours behind. A day stored at Manila midnight (`manilaDayStart`) is the evening before in UTC, so an unzoned date-only format is a day early too. Every `toLocaleString('en-PH', …)` in server code now goes through `formatManila` or names `timeZone: 'Asia/Manila'`; a new formatter without the zone repeats the defect, and `tests/manila-format.test.ts` pins the rule. Client components (`CheckTable`) format in the browser, which is already Manila.
 
+**OTHER PAYMENTS (`/payments`, 2026-11-20, user: "we will also include payments on foreign suppliers
+in the monitoring and other forms" — DP at sight, Letter of Credit, Manager's check, Telegraphic; then
+"Processing also can be done here. Should have markings like processed, cleared, on process"; then "for
+the reports, leave it for now. Just an presentable excel extraction").** A payment Acumatica records
+under `TT`, `LC`, `DP` or `MC` is mirrored into its own table, `OtherPayment`, keyed by tenant + the
+payment document's reference (the CV number). **Deliberately NOT a `Check`**: it has no check number
+(a TT's `PaymentRef` holds the bill numbers it pays), no check book, no signature, no counter release,
+and nothing for the Supplier Portal — and every one of those paths reads `Check`. Nothing in the check
+sync, `upsertCheck`, NUMBERING, the outbox or the portal check list changed; `CHEQUE_PAYMENT_METHODS`
+and the check feed filter are still `CHK` + `CASH`. Measured read-only that day over the 2026 feed:
+**Go-Live TT 1,681 rows (CNY 985, USD 690, PHP 6; about CNY 111.2M and USD 28.0M), MC 1 (PHP 877,000.00),
+LC 0, DP 0; Manufacturing none of the four.** LC (3) and DP (37) exist only on 2024–2025 payments.
+`DEBIT ADV` (2 Go-Live, 4 Manufacturing — PHP 6.4M) and `BT` (3) are NOT on the user's list and are not
+read. **Every TT is Closed (1,669) or Voided (12) — none is waiting**, so Finance records a TT in
+Acumatica after it is done; and TT entries thin out after June (May 484, Jul 9, Aug 138, Sep 83, Oct 0,
+Nov 1) — encoding is behind or foreign payments are now recorded another way; not yet asked. TTs sit on
+six accounts this app does not otherwise know (`RMB-C-2213`, `BPI-S-4833`, `MBT-A-3716`, `MBTC-S-988`,
+`BDO-A-1914`, `BDO-S-USD`); 615 belong to the China branches SH and DG.
+**The read** (`lib/sync/other-payments.ts`, mapper and filter in `lib/integrations/acumatica/other-payments.ts`,
+`SyncRun.mode = 'OTHER_PAYMENTS'`, listed in `NON_PAYMENT_MODES`): the same `AP-Checks and Payments`
+inquiry, `PaymentDate ge 2026-01-01 and (PaymentMethod eq 'TT' or … 'LC' or … 'DP' or … 'MC')`. **Always
+the full in-scope set — about 1,700 rows, one request — so it has no watermark, no first read from a
+terminal and nothing to skip past.** Set-based upsert, 500 a statement; a void pair collapses to the
+original, flagged voided, amount its own; a payment that leaves the feed is kept; nothing is deleted;
+no audit row per payment. The cron runs it for both tenants after BILL_REFS (not gated on the payment
+read; not begun after 30 s, `SKIPPED_TIME_BUDGET`; FAILED turns the response 500; **no notification is
+sent for it yet**), the screen's REFRESH FROM ACUMATICA runs it (every Finance user), and
+`scripts/sync.ts <TENANT> --other-payments [--dry-run]` is the terminal form (dry run 2026-11-20:
+GOLIVE 1,682 feed rows → 1,670 payments, MANUFACTURING 0).
+**Markings** (`lib/payments/marking.ts`, pure; `lib/payments/actions.ts`, the only writer): ON PROCESS →
+PROCESSED (sent to the bank; day optional) → CLEARED (debited by the bank; day required, never future),
+with an optional bank reference and remarks. Any marking from any other, but a move BACKWARD needs a
+remark and drops the later stage's day; a blank box never wipes a typed reference. **CANCELLED is not a
+marking**: a payment Acumatica voided reads CANCELLED and takes none (follow Acumatica). **The sync
+sets `marking` once, on create — PROCESSED when the payment arrives Closed, ON PROCESS otherwise — and
+never again** (rule 4's twin; `markedById` null means "as it arrived"). That initial PROCESSED is
+Claude's reading of Closed (released and applied: the books say the money went), stated to the user
+and not yet ruled on. One `other_payment_marked` audit row per changed payment (`checkId` none, the
+reference in `details`; `writeAudits` in `lib/audit.ts` writes them in one statement). No limit on ticks;
+one transaction per press. Every Finance user.
+**The extract** (`/api/export/payments`, `lib/export/payments-workbook.ts`): SUMMARY (by marking, by
+method with a count per marking, by payment month), ALL PAYMENTS, and a sheet per method that has a
+payment. Amounts stay in their own currency — one column per currency on the summary, a currency
+format per cell — and are never added across currencies or converted to pesos (the inquiry publishes
+no rate). CANCELLED is counted and left out of every amount. **No executive report is built** — parked
+on the user's word.
+**Open, the user's to answer:** (1) whether Finance will encode a foreign payment in Acumatica BEFORE
+it is sent — "no Acumatica record, no check" holds here too, so until then nothing arrives ON PROCESS;
+(2) whether foreign suppliers hear anything through the portal (today: nothing is sent); (3) the stages
+Finance actually tracks for LC and DP (they use the same three markings for now); (4) a manager's check
+is a physical check and may belong on the check ladder — with one in 2026 it is marked like the others;
+(5) the scope start (2026, like checks). **Not live: built on branch `feature/other-payments`, not
+committed, not deployed. Migration `20261120000000_other_payment` is on the TEST database only and must
+reach production BEFORE the deploy (the screen and the cron read the table).** Browser-checked on the
+TEST database with 1,500 made-up payments: the list, the cards, CLEARED on two ticked payments, the
+export answering 200.
+
 **BANK RECONCILIATION (`/recon/bank`, 2026-11-09, user: "we will integrate bank recon i think this is
 important").** RECON has two screens (`components/ReconTabs.tsx`): OUTSTANDING CHECKS (`/recon`, unchanged)
 and BANK RECONCILIATION. Per account of Finance's cash schedule, for a day: **BANK BALANCE + DEPOSITS IN
@@ -889,6 +948,7 @@ category not on it.
 | `lib/forecast/` | Cash outflow by check date: `buckets.ts` (the ageing buckets, pure), `query.ts` (the population — live, real, with an amount), `matrix.ts` (bucket × bank and bucket × stage, centavo-exact, pure). `/forecast` and `/api/export/forecast` sit on it. Since 2026-09-12 a check's typed `expectedOutflowDate` wins over its check date, and `PlannedOutflow` lines (`lib/planned-outflow/`, `/forecast/planned`) join the population as their own PLANNED column. |
 | `lib/aging/` | AGING: `buckets.ts` (the portal's buckets, pure), `query.ts` (SIGNED, aged). `lib/aging-picker.ts` (strip, selection, pure). `/aging` and `/api/export/aging` sit on it (`lib/export/aging-workbook.ts`). |
 | `lib/notifications/` | `messages.ts` (pure: what each notice says and to whom), `notify.ts` (the one writer; `safeNotify` for callers whose work has committed), `queries.ts` (bell count, page, mark read), `cron.ts`, `ready.ts`. `/notifications` and the header's NOTIFICATIONS link sit on it. |
+| `lib/payments/` | OTHER PAYMENTS: `marking.ts` (the three markings, pure), `actions.ts` (the only writer of a marking), `query.ts`. `lib/payments-view.ts` (columns, cards, pure), `lib/sync/other-payments.ts` (the read), `lib/integrations/acumatica/other-payments.ts` (methods, filter, mapper, pure), `lib/export/payments-workbook.ts`. `/payments` and `/api/export/payments` sit on it. |
 | `lib/bank-recon/` | BANK RECONCILIATION: `cash-sheet.ts` (the CASH sheet read, pure), `recon.ts` (the arithmetic and the book ↔ account match, pure), `import.ts` (plan / apply the bank balances), `entries.ts` (the typed book balance and deposits in transit), `query.ts`. `/recon/bank` sits on it; `lib/bank-recon-view.ts` holds its parameters. |
 | `lib/recon/` | Outstanding checks: `outstanding.ts` (the as-of rule, pure), `summary.ts` (per account, centavo-exact, pure), `query.ts` (the released population). `/recon` and `/api/export/recon` sit on it. |
 | `lib/list-sort.ts` | The list's order: params, the `cm_sort` cookie, database and in-app keys. Pure. |
@@ -1143,7 +1203,7 @@ Plans 1 and 2 complete. Plan 3 is superseded by `docs/superpowers/plans/2026-09-
 `lib/sync/portal-outbox.ts` to the portal's `POST /api/integrations/check-monitoring/events`
 with `PORTAL_BASE_URL` / `PORTAL_TOKEN` (a bearer, no session), latest event per check wins,
 `/admin/portal` shows what parked. Pickup confirmations back (old Task 6) remain a follow-up.
-**2,446 tests across 174 files** (arithmetic: 2,428 plus 18 for the cancel-withdrawal on 2026-11-19 — `actions/portal-cancel` +11, `integrations/portal-client` +1, `sync/portal-outbox` +3, `admin/withdraw-dead-available` 3, new; those four files and every other file touching void or cancel ran green that day, not a full run). **2,428 tests across 173 files** (arithmetic: 2,380 plus 48 for BANK RECONCILIATION on 2026-11-09 — `bank-recon/cash-sheet`, `bank-recon/recon`, `bank-recon-view` (pure, 32) and `bank-recon/import`, `bank-recon/entries`, `bank-recon/query` (database, 16), all new; those six ran green, 48/48, with `recon/*`, `recon-view`, `schema` and `module-nav` green beside them earlier the same day, not a full run; browser-checked on the TEST database — the screen, SAVE BOOK BALANCES to RECONCILED, and an upload preview and confirm). **2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
+**2,516 tests across 180 files** (arithmetic: 2,446 plus 70 for OTHER PAYMENTS on 2026-11-20 — `integrations/acumatica-other-payments`, `payments/marking`, `payments-view`, `export/payments-workbook` (pure, 50) and `sync/other-payments`, `payments/actions` (database, 20), all new; those six ran green, 70/70, with `sync/cron-route` (two expectations widened for the new read), `sync/modes`, `module-nav` and `admin/sync-overview` green beside them, `tsc` clean and `next build` passing, not a full run). **2,446 tests across 174 files** (arithmetic: 2,428 plus 18 for the cancel-withdrawal on 2026-11-19 — `actions/portal-cancel` +11, `integrations/portal-client` +1, `sync/portal-outbox` +3, `admin/withdraw-dead-available` 3, new; those four files and every other file touching void or cancel ran green that day, not a full run). **2,428 tests across 173 files** (arithmetic: 2,380 plus 48 for BANK RECONCILIATION on 2026-11-09 — `bank-recon/cash-sheet`, `bank-recon/recon`, `bank-recon-view` (pure, 32) and `bank-recon/import`, `bank-recon/entries`, `bank-recon/query` (database, 16), all new; those six ran green, 48/48, with `recon/*`, `recon-view`, `schema` and `module-nav` green beside them earlier the same day, not a full run; browser-checked on the TEST database — the screen, SAVE BOOK BALANCES to RECONCILED, and an upload preview and confirm). **2,380 tests across 167 files** (arithmetic: 2,354 plus 26 for the availability approval on 2026-11-05 — `domain/availability-approval` 15, new; `actions/actions` +2, `settings/registry` +3, `settings/actions` +1, `notifications/messages` +3, `notifications/notify` +1, `admin/ready-upload` +1; those files plus `admin/actions`, `module-nav` and `settings/read` ran green, 143/143 across two runs, not a full run; the first run failed 40 because `resetDb` did not yet truncate `AvailabilityRequest`). **2,354 tests across 166 files** (arithmetic: 2,341 plus 13 for NUMBERING §K on 2026-11-03 — `check-book-alias` 3 and `admin/merge-check-book` 5, both new, `admin/check-books` +1, `import/upsert` +1, `numbering-view` +3; those five files ran green, 110/110, not a full run). **2,341 tests across 164 files** (arithmetic: 2,337 plus 4 in `manila-format`, new, 2026-11-03). **2,337 tests across 163 files** (arithmetic: 2,333 plus 4 for NUMBERING §J on 2026-11-03 — `numbering-view` +2, `export/numbering-workbook` +2, both files green). **2,333 tests across 163 files** (arithmetic: the 2,316 below plus 17 for NUMBERING §I on 2026-11-03 —
 `numbering/series` +8, `numbering/query` +3, `numbering-view` +3, `numbering/inventory` +1,
 `numbering/inventory-notes` +1, `export/numbering-workbook` +1; those seven files ran green, 133/133,
 in 130.8 s, not a full run). **2,316 tests across 163 files** (measured, full run 2026-11-03, 49.0 minutes, on

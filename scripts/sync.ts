@@ -45,6 +45,16 @@
  *   npx.cmd tsx scripts/sync.ts GOLIVE --bill-refs --dry-run   # read the feed, write nothing
  *   npx.cmd tsx scripts/sync.ts GOLIVE --bill-refs             # snapshot, then mirror
  *   npx.cmd tsx scripts/sync.ts GOLIVE --bill-refs --full      # ignore the BILL_REFS watermark
+ *
+ * OTHER PAYMENTS (`--other-payments`). The same inquiry's telegraphic
+ * transfers, letters of credit, DP-at-sight payments and manager's checks,
+ * mirrored into OtherPayment (lib/sync/other-payments.ts). Always the full
+ * in-scope set, so there is no watermark and no --full; the cron and the
+ * screen's REFRESH button run the same read. A marking Finance has set is
+ * never touched.
+ *
+ *   npx tsx scripts/sync.ts GOLIVE --other-payments --dry-run   # read and count, write nothing
+ *   npx tsx scripts/sync.ts GOLIVE --other-payments             # mirror into OtherPayment
  */
 
 import 'dotenv/config'
@@ -62,6 +72,7 @@ import { runBillRefsSync, lastBillRefsWatermark } from '../lib/sync/bill-refs'
 import {
   BILL_REFS_FEED, BILL_REF_COLUMNS, billRefsSelect, billRefsInScopeFilter, billRefsSinceFilter, mapBillRef, type BillRef,
 } from '../lib/integrations/acumatica/bill-refs'
+import { runOtherPaymentsSync } from '../lib/sync/other-payments'
 import type { AcumaticaTenant } from '../lib/integrations/acumatica/companies'
 
 const TENANTS: Record<AcumaticaTenant, string> = {
@@ -74,6 +85,7 @@ const DRY = args.includes('--dry-run')
 const FORCE_FULL = args.includes('--full')
 const BILLS = args.includes('--bills')
 const BILL_REFS = args.includes('--bill-refs')
+const OTHER_PAYMENTS = args.includes('--other-payments')
 const tenant = args.find((a) => !a.startsWith('--')) as AcumaticaTenant | undefined
 
 const db = new PrismaClient()
@@ -84,11 +96,36 @@ function env(name: string): string {
   return v
 }
 
+async function otherPayments(tenant: AcumaticaTenant): Promise<void> {
+  const client = createAcumaticaClient({
+    baseUrl: env(TENANTS[tenant]),
+    user: env('ACUMATICA_ODATA_USER'),
+    password: env('ACUMATICA_ODATA_PASSWORD'),
+  })
+  console.log(`\nTENANT      ${tenant}`)
+  console.log(`MODE        OTHER PAYMENTS (TT, LC, DP, MC), every payment dated 2026 or later`)
+  // A dry run reads Acumatica only, so it works before the table's migration has reached this database.
+  if (!DRY) console.log(`HELD        ${(await db.otherPayment.count({ where: { tenant } })).toLocaleString()} before this run`)
+  const r = await runOtherPaymentsSync(db, { client, tenant, now: new Date(), trigger: 'MANUAL', dryRun: DRY })
+  console.log(`\n${DRY ? 'DRY RUN - nothing was written.' : 'DONE.'}`)
+  console.log(`  feed rows            ${r.fetched.toLocaleString()}`)
+  console.log(`  not ours (ignored)   ${r.ignored.toLocaleString()}`)
+  console.log(`  payments             ${r.payments.toLocaleString()}`)
+  if (!DRY) {
+    console.log(`  new                  ${r.created.toLocaleString()}`)
+    console.log(`  changed              ${r.updated.toLocaleString()}`)
+  }
+  console.log(`  void reversals with no original  ${r.orphanReversals}`)
+  console.log(`  errors               ${r.errors}\n`)
+  if (r.errors > 0) process.exitCode = 1
+}
+
 async function main() {
   if (!tenant || !(tenant in TENANTS)) {
     throw new Error(`Name a tenant: ${Object.keys(TENANTS).join(' or ')}`)
   }
   if (BILLS && BILL_REFS) throw new Error('One read per run: --bills or --bill-refs, not both.')
+  if (OTHER_PAYMENTS) return otherPayments(tenant)
   if (BILL_REFS) return billRefs(tenant)
   if (BILLS) return bills(tenant)
 
