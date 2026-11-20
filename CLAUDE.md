@@ -815,9 +815,12 @@ it is sent — "no Acumatica record, no check" holds here too, so until then not
 (2) whether foreign suppliers hear anything through the portal (today: nothing is sent); (3) the stages
 Finance actually tracks for LC and DP (they use the same three markings for now); (4) a manager's check
 is a physical check and may belong on the check ladder — with one in 2026 it is marked like the others;
-(5) the scope start (2026, like checks). **Not live: built on branch `feature/other-payments`, not
-committed, not deployed. Migration `20261120000000_other_payment` is on the TEST database only and must
-reach production BEFORE the deploy (the screen and the cron read the table).** Browser-checked on the
+(5) the scope start (2026, like checks). **Live since 2026-11-20 12:40 Manila, on the user's "Yes, go live":
+migration `20261120000000_other_payment` applied to production first, commit 433683e fast-forwarded to
+master and pushed (Vercel Ready in 54 s), then the first read from this Mac — GOLIVE 1,682 feed rows →
+1,670 payments created (TT 1,657 PROCESSED and 12 voided, reading CANCELLED; MC 1 PROCESSED), 0 errors;
+MANUFACTURING 0. Nothing is ON PROCESS or CLEARED yet. The live screen itself was not opened signed-in
+by Claude.** Browser-checked on the
 TEST database with 1,500 made-up payments: the list, the cards, CLEARED on two ticked payments, the
 export answering 200.
 
