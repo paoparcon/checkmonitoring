@@ -1342,9 +1342,8 @@ Migration `20261005000100_acumatica_bill` (the `AcumaticaBill` table) must reach
    `npx vercel --prod` from that working tree (Ready ~08:02). Verified read-only after: 3 rows moved
    (three `check_monitoring_internal_reversal_fix` audit rows), 0 internal rows left at
    AVAILABLE_FOR_RELEASE, portal 73 AVAILABLE_FOR_RELEASE = 73 READY FOR RELEASE here (₱3,095,096.44).
-   The gap is closed.** Any later portal deploy must still come from THAT working tree: the patch and
-   the BRS gendocs changes (edited 12 Nov) are live but uncommitted there, so a deploy from a clean
-   `main` would take both back out.** When the two counts disagree, compare READY here with the last DELIVERED status-lane
+   The gap is closed.** The patch and the BRS gendocs changes were committed and pushed to the
+   portal's `main` the same day (`0c15a1b`, `fadbff8`); the push started no Vercel build.** When the two counts disagree, compare READY here with the last DELIVERED status-lane
    event per check before assuming a sync fault; the read-only comparison took one query.
 9. The test suite takes ~20 minutes because every test crosses the South China Sea. A local Postgres
    would make it ~2. It is the tax on every deploy.
